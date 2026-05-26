@@ -1,0 +1,124 @@
+# docker-compose.yml
+# Levanta todos los microservicios CFDI-AES con un solo comando:
+#   docker compose up --build
+
+services:
+
+  # ── Bases de datos ──────────────────────────────────────────────────────────
+  postgres_facturas:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cfdi_facturas
+      POSTGRES_USER: cfdi
+      POSTGRES_PASSWORD: secret_facturas
+    volumes: [postgres_facturas:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U cfdi -d cfdi_facturas"]
+      interval: 5s
+      retries: 5
+
+  postgres_admin:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cfdi_admin
+      POSTGRES_USER: cfdi
+      POSTGRES_PASSWORD: secret_admin
+    volumes: [postgres_admin:/var/lib/postgresql/data]
+
+  postgres_auth:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cfdi_auth
+      POSTGRES_USER: cfdi
+      POSTGRES_PASSWORD: secret_auth
+    volumes: [postgres_auth:/var/lib/postgresql/data]
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redis_data:/data]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio_secret
+    volumes: [minio_data:/data]
+    ports:
+      - "9000:9000"
+      - "9001:9001"  # MinIO Console
+
+  # ── Microservicios FastAPI ──────────────────────────────────────────────────
+  gateway:
+    build: ./backend/api_gateway
+    ports: ["8000:8000"]
+    environment:
+      JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
+    depends_on: [auth, facturacion, administracion, addenda_aes, reportes]
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  facturacion:
+    build: ./backend/microservices/facturacion
+    ports: ["8001:8001"]
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_facturas@postgres_facturas/cfdi_facturas"
+      REDIS_URL: "redis://redis:6379/0"
+      MINIO_URL: "http://minio:9000"
+      PAC_URL: "${PAC_URL}"
+      PAC_USER: "${PAC_USER}"
+      PAC_PASS: "${PAC_PASS}"
+    depends_on:
+      postgres_facturas: {condition: service_healthy}
+      redis: {condition: service_started}
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+
+  administracion:
+    build: ./backend/microservices/administracion
+    ports: ["8002:8002"]
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin"
+    depends_on: [postgres_admin]
+    command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+
+  addenda_aes:
+    build: ./backend/microservices/addenda_aes
+    ports: ["8003:8003"]
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin"
+      MINIO_URL: "http://minio:9000"
+    command: uvicorn main:app --host 0.0.0.0 --port 8003 --reload
+
+  reportes:
+    build: ./backend/microservices/reportes
+    ports: ["8004:8004"]
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_facturas@postgres_facturas/cfdi_facturas"
+    command: uvicorn main:app --host 0.0.0.0 --port 8004 --reload
+
+  auth:
+    build: ./backend/microservices/auth_usuarios
+    ports: ["8005:8005"]
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_auth@postgres_auth/cfdi_auth"
+      JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
+      REDIS_URL: "redis://redis:6379/1"
+    depends_on: [postgres_auth, redis]
+    command: uvicorn main:app --host 0.0.0.0 --port 8005 --reload
+
+  # ── Frontend React ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports: ["3000:3000"]
+    environment:
+      VITE_API_URL: "http://gateway:8000"
+    depends_on: [gateway]
+
+volumes:
+  postgres_facturas:
+  postgres_admin:
+  postgres_auth:
+  redis_data:
+  minio_data:

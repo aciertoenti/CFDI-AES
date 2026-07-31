@@ -34,3 +34,9 @@ ngrok_requests.json
 .vscode/settings.json
 .idea/
 *.swp
+
+# CSD/FIEL de prueba — nunca deben subirse a git
+certs_test/
+*.cer
+*.key
+*.sdg

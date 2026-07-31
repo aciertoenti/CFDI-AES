@@ -7,9 +7,10 @@ __pycache__/
 venv/ 
 *.egg-info/ 
  
-# Variables de entorno — NUNCA subir a Git 
-.env 
+# Variables de entorno — NUNCA subir a Git
+.env
 .env.*
+!.env.example
  
 # Python test / cache 
 .pytest_cache/ 
@@ -29,7 +30,7 @@ compose_start_log.txt
 # Capturas locales de ngrok (exponen IP/tunnels de desarrollo)
 ngrok_requests.json
  
-# IDE 
-.vscode/settings.json 
-.idea/ 
+# IDE
+.vscode/settings.json
+.idea/
 *.swp

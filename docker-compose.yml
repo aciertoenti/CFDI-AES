@@ -61,6 +61,8 @@ services:
   facturacion:
     build: ./backend/microservices/facturacion
     ports: ["8001:8001"]
+    volumes:
+      - ./certs_test:/certs_test:ro
     environment:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_facturas@postgres_facturas/cfdi_facturas"
       REDIS_URL: "redis://redis:6379/0"
@@ -69,6 +71,9 @@ services:
       PAC_CANCEL_URL: "${PAC_CANCEL_URL}"
       PAC_USER: "${PAC_USER}"
       PAC_PASS: "${PAC_PASS}"
+      CSD_CERT_PATH: "/certs_test/CSD_EKU9003173C9_20230517223903/CSD_Sucursal_1_EKU9003173C9_20230517_223850.cer"
+      CSD_KEY_PATH: "/certs_test/CSD_EKU9003173C9_20230517223903/CSD_Sucursal_1_EKU9003173C9_20230517_223850.key"
+      CSD_PASSWORD: "${CSD_PASSWORD}"
     depends_on:
       postgres_facturas: {condition: service_healthy}
       redis: {condition: service_started}

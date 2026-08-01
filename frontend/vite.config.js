@@ -1,14 +1,21 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Configuración de Vite para React + GitHub Pages
+// Configuración de Vite para React
+// Para GitHub Pages usar: VITE_BASE=/CFDI-AES/ npm run build
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 3000, // Puerto local para desarrollo
-    open: true, // Abre automáticamente el navegador al iniciar
+    port: 3000,
+    open: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    },
   },
-  base: '/CFDI-AES/', // 👈 Ruta base para GitHub Pages
+  base: process.env.VITE_BASE || '/', // '/' para Docker/local, '/CFDI-AES/' para GitHub Pages
   build: {
     outDir: 'dist', // Carpeta de salida del build
     sourcemap: false, // Desactiva mapas de código para producción

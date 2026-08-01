@@ -66,6 +66,7 @@ services:
       REDIS_URL: "redis://redis:6379/0"
       MINIO_URL: "http://minio:9000"
       PAC_URL: "${PAC_URL}"
+      PAC_CANCEL_URL: "${PAC_CANCEL_URL}"
       PAC_USER: "${PAC_USER}"
       PAC_PASS: "${PAC_PASS}"
     depends_on:
@@ -106,19 +107,54 @@ services:
     depends_on: [postgres_auth, redis]
     command: uvicorn main:app --host 0.0.0.0 --port 8005 --reload
 
+  # ── WhatsApp Bot ────────────────────────────────────────────────────────────
+  whatsapp_bot:
+    build: ./backend/microservices/whatsapp_bot
+    ports: ["8006:8006"]
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_bot@postgres_bot/cfdi_bot"
+      REDIS_URL: "redis://redis:6379/2"
+      FACTURACION_URL: "http://facturacion:8001"
+      WHATSAPP_TOKEN: "${WHATSAPP_TOKEN}"
+      WHATSAPP_PHONE_NUMBER_ID: "${WHATSAPP_PHONE_NUMBER_ID}"
+      WHATSAPP_VERIFY_TOKEN: "${WHATSAPP_VERIFY_TOKEN}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-cambia_esto_por_clave_segura}"
+      EMISOR_RFC_DEFAULT: "${EMISOR_RFC_DEFAULT:-DNS010101AAA}"
+      JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
+      PRIVACY_NOTICE_URL: "${PRIVACY_NOTICE_URL:-https://tudominio.mx/aviso-privacidad}"
+      ENVIRONMENT: "${ENVIRONMENT:-development}"
+    depends_on:
+      postgres_bot: {condition: service_healthy}
+      redis: {condition: service_started}
+      facturacion: {condition: service_started}
+    command: uvicorn main:app --host 0.0.0.0 --port 8006 --reload
+
+  postgres_bot:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cfdi_bot
+      POSTGRES_USER: cfdi
+      POSTGRES_PASSWORD: secret_bot
+    volumes: [postgres_bot:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U cfdi -d cfdi_bot"]
+      interval: 5s
+      retries: 5
+
   # ── Frontend React ──────────────────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports: ["3000:3000"]
+    ports: ["3000:80"]   # nginx escucha en 80 dentro del contenedor
     environment:
-      VITE_API_URL: "http://gateway:8000"
+      VITE_API_URL: "http://localhost:8000"  # URL pública del gateway (accesible desde el browser)
     depends_on: [gateway]
 
 volumes:
   postgres_facturas:
   postgres_admin:
   postgres_auth:
+  postgres_bot:
   redis_data:
   minio_data:

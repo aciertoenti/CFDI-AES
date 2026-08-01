@@ -1,5 +1,12 @@
 FROM python:3.11-slim
 
+# Pango para WeasyPrint (generacion de PDF, dependencia de satcfdi).
+# cairo/gdk-pixbuf ya no son necesarios desde WeasyPrint >= 54.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY . /app
 

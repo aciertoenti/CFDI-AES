@@ -13,7 +13,18 @@ from uuid import uuid4
 import httpx
 
 from satcfdi.models import Signer
-from satcfdi.create.cfd.cfdi40 import Comprobante, Emisor, Receptor, Concepto as ConceptoCFDI, Impuestos, Traslado
+from satcfdi.create.cfd.cfdi40 import (
+    Comprobante,
+    Emisor,
+    Receptor,
+    Concepto as ConceptoCFDI,
+    Impuestos,
+    Traslado,
+    InformacionGlobal,
+)
+
+RFC_PUBLICO_EN_GENERAL = "XAXX010101000"
+TASA_IVA_DECIMALES = Decimal("0.000000")
 
 load_dotenv()
 
@@ -50,6 +61,11 @@ class FacturaCreate(BaseModel):
     tipo_comprobante: str = "I"
     metodo_pago: str = "PUE"
     forma_pago: str = "03"
+    # Solo se usan si receptor.rfc es Público en General (XAXX010101000),
+    # donde el SAT exige el nodo InformacionGlobal. Defaults de prueba.
+    informacion_global_periodicidad: str = "01"
+    informacion_global_meses: str = "01"
+    informacion_global_ano: Optional[int] = None
 
 class FacturaResponse(BaseModel):
     uuid: str
@@ -80,7 +96,7 @@ LUGAR_EXPEDICION_TEST = "42501"
 
 
 @lru_cache
-def get_signer() -> Signer:
+def get_csd_bytes() -> tuple[bytes, bytes, str]:
     cert_path = os.environ.get("CSD_CERT_PATH")
     key_path = os.environ.get("CSD_KEY_PATH")
     password = os.environ.get("CSD_PASSWORD")
@@ -94,9 +110,16 @@ def get_signer() -> Signer:
             cert_bytes = f.read()
         with open(key_path, "rb") as f:
             key_bytes = f.read()
-        return Signer.load(certificate=cert_bytes, key=key_bytes, password=password)
+        return cert_bytes, key_bytes, password
     except FileNotFoundError as e:
         raise HTTPException(status_code=500, detail=f"No se encontro el archivo del CSD: {e.filename}")
+
+
+@lru_cache
+def get_signer() -> Signer:
+    cert_bytes, key_bytes, password = get_csd_bytes()
+    try:
+        return Signer.load(certificate=cert_bytes, key=key_bytes, password=password)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"No se pudo cargar el CSD: {e}")
 
@@ -131,12 +154,23 @@ def construir_comprobante(factura: FacturaCreate, signer: Signer) -> Comprobante
                 traslados=Traslado(
                     impuesto="002",
                     tipo_factor="Tasa",
-                    tasa_o_cuota=Decimal(str(c.iva_tasa)),
+                    # c_TasaOcuota exige exactamente 6 decimales (0.160000).
+                    # Se fuerza con quantize, no se depende de como Python
+                    # represente el float por default.
+                    tasa_o_cuota=Decimal(str(c.iva_tasa)).quantize(TASA_IVA_DECIMALES),
                 )
             ) if c.iva_tasa else None,
         )
         for c in factura.conceptos
     ]
+
+    informacion_global = None
+    if factura.receptor.rfc == RFC_PUBLICO_EN_GENERAL:
+        informacion_global = InformacionGlobal(
+            periodicidad=factura.informacion_global_periodicidad,
+            meses=factura.informacion_global_meses,
+            ano=factura.informacion_global_ano or datetime.now().year,
+        )
 
     comprobante = Comprobante(
         emisor=emisor,
@@ -148,6 +182,7 @@ def construir_comprobante(factura: FacturaCreate, signer: Signer) -> Comprobante
         serie=factura.serie,
         metodo_pago=factura.metodo_pago,
         forma_pago=factura.forma_pago,
+        informacion_global=informacion_global,
     )
     comprobante.sign(signer)
     return comprobante

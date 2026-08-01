@@ -3,3 +3,4 @@ uvicorn[standard]
 httpx
 satcfdi
 python-dotenv
+zeep

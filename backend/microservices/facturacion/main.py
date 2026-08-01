@@ -1,4 +1,6 @@
+import logging
 import os
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from functools import lru_cache
 
@@ -12,6 +14,9 @@ from datetime import date, datetime
 from uuid import uuid4
 import httpx
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from satcfdi.models import Signer
 from satcfdi.create.cfd.cfdi40 import (
     Comprobante,
@@ -23,12 +28,25 @@ from satcfdi.create.cfd.cfdi40 import (
     InformacionGlobal,
 )
 
+import finkok_client
+from database import Factura, get_db, create_tables
+
+logger = logging.getLogger("facturacion")
+
 RFC_PUBLICO_EN_GENERAL = "XAXX010101000"
 TASA_IVA_DECIMALES = Decimal("0.000000")
 
 load_dotenv()
 
-app = FastAPI(title="CFDI – Servicio de Facturación", version="2.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # create_all para este alcance; produccion deberia usar Alembic (tarea aparte).
+    await create_tables()
+    yield
+
+
+app = FastAPI(title="CFDI – Servicio de Facturación", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -202,25 +220,90 @@ async def generar_xml_firmado(factura: FacturaCreate):
     return PlainTextResponse(content=xml_bytes.decode("utf-8"), media_type="application/xml")
 
 
+def _factura_to_response(f: Factura) -> FacturaResponse:
+    return FacturaResponse(
+        uuid=f.uuid,
+        folio=f.folio,
+        serie=f.folio.split("-")[0] if "-" in f.folio else "A",
+        fecha_timbrado=f.fecha_timbrado,
+        subtotal=float(f.subtotal),
+        total_iva=float(f.total_iva),
+        total=float(f.total),
+        estado=f.estado,
+        # Pendiente: Storage de XML/PDF (MinIO) es tarea aparte.
+        xml_url=f"https://storage.tudominio.mx/cfdi/{f.uuid}.xml",
+        pdf_url=f"https://storage.tudominio.mx/cfdi/{f.uuid}.pdf",
+        noCertificadoSAT=f.no_certificado_sat,
+    )
+
+
 @app.post("/facturas/timbrar", response_model=FacturaResponse, status_code=201)
-async def timbrar_factura(factura: FacturaCreate):
-    subtotal = sum(c.cantidad * c.precio_unitario for c in factura.conceptos)
-    total_iva = sum(c.cantidad * c.precio_unitario * c.iva_tasa for c in factura.conceptos)
-    total = subtotal + total_iva
+async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get_db)):
+    signer = get_signer()
+    comprobante = construir_comprobante(factura, signer)
+
+    cert_bytes, key_bytes, csd_password = get_csd_bytes()
+    try:
+        finkok_client.registrar_emisor(factura.emisor_rfc, cert_bytes, key_bytes, csd_password)
+        resultado = finkok_client.timbrar_factura(comprobante.xml_bytes())
+    except finkok_client.FinkokError as e:
+        raise HTTPException(status_code=502, detail=f"[{e.codigo}] {e.mensaje}")
+
+    impuestos = comprobante.get("Impuestos") or {}
+    # folio: sigue sin ser un consecutivo real (eso es tarea aparte, "Folios
+    # consecutivos reales"); es solo un identificador local para esta respuesta.
     folio = f"A-{str(uuid4().int)[:4].zfill(4)}"
-    uuid_cfdi = str(uuid4()).upper()
+    subtotal = Decimal(str(comprobante["SubTotal"]))
+    total_iva = Decimal(str(impuestos.get("TotalImpuestosTrasladados") or 0))
+    total = Decimal(str(comprobante["Total"]))
+    fecha_timbrado = resultado["fecha_timbrado"]
+    if isinstance(fecha_timbrado, str):
+        fecha_timbrado = datetime.fromisoformat(fecha_timbrado)
+
+    # La factura YA esta timbrada en Finkok en este punto (dato fiscal real,
+    # irreversible). Un fallo al guardarla en BD no debe tirar la respuesta
+    # ni perder el timbrado — se loggea con todos los datos para poder
+    # recuperarlo/reinsertarlo manualmente despues.
+    try:
+        db.add(Factura(
+            uuid=resultado["uuid"],
+            folio=folio,
+            fecha_timbrado=fecha_timbrado,
+            emisor_rfc=factura.emisor_rfc,
+            receptor_rfc=factura.receptor.rfc,
+            subtotal=subtotal,
+            total_iva=total_iva,
+            total=total,
+            estado="Vigente",
+            no_certificado_sat=resultado["no_certificado_sat"],
+            xml=resultado["xml_timbrado"],
+        ))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.error(
+            "FACTURA TIMBRADA EN FINKOK PERO NO SE PUDO GUARDAR EN BD - "
+            "recuperar manualmente: uuid=%s folio=%s emisor_rfc=%s receptor_rfc=%s "
+            "total=%s fecha_timbrado=%s no_certificado_sat=%s",
+            resultado["uuid"], folio, factura.emisor_rfc, factura.receptor.rfc,
+            total, fecha_timbrado, resultado["no_certificado_sat"],
+            exc_info=True,
+        )
 
     return FacturaResponse(
-        uuid=uuid_cfdi,
+        uuid=resultado["uuid"],
         folio=folio,
         serie=factura.serie,
-        fecha_timbrado=datetime.utcnow(),
-        subtotal=subtotal,
-        total_iva=total_iva,
-        total=total,
+        fecha_timbrado=fecha_timbrado,
+        subtotal=float(subtotal),
+        total_iva=float(total_iva),
+        total=float(total),
         estado="Vigente",
-        xml_url=f"https://storage.tudominio.mx/cfdi/{uuid_cfdi}.xml",
-        pdf_url=f"https://storage.tudominio.mx/cfdi/{uuid_cfdi}.pdf",
+        # Pendiente: Storage de XML/PDF (MinIO) es tarea aparte. Por ahora
+        # no hay URL real donde descargar el XML timbrado ni el PDF.
+        xml_url=f"https://storage.tudominio.mx/cfdi/{resultado['uuid']}.xml",
+        pdf_url=f"https://storage.tudominio.mx/cfdi/{resultado['uuid']}.pdf",
+        noCertificadoSAT=resultado["no_certificado_sat"],
     )
 
 @app.get("/facturas", response_model=List[FacturaResponse])
@@ -232,12 +315,29 @@ async def listar_facturas(
     rfc_receptor: Optional[str] = None,
     page: int = 1,
     size: int = 50,
+    db: AsyncSession = Depends(get_db),
 ):
-    return []
+    stmt = select(Factura)
+    if estado:
+        stmt = stmt.where(Factura.estado == estado)
+    if fecha_desde:
+        stmt = stmt.where(Factura.fecha_timbrado >= fecha_desde)
+    if fecha_hasta:
+        stmt = stmt.where(Factura.fecha_timbrado <= fecha_hasta)
+    if rfc_receptor:
+        stmt = stmt.where(Factura.receptor_rfc == rfc_receptor)
+    stmt = stmt.order_by(Factura.fecha_timbrado.desc()).offset((page - 1) * size).limit(size)
+
+    result = await db.execute(stmt)
+    return [_factura_to_response(f) for f in result.scalars().all()]
 
 @app.get("/facturas/{uuid}")
-async def obtener_factura(uuid: str):
-    raise HTTPException(status_code=404, detail=f"Factura {uuid} no encontrada")
+async def obtener_factura(uuid: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Factura).where(Factura.uuid == uuid))
+    factura = result.scalar_one_or_none()
+    if factura is None:
+        raise HTTPException(status_code=404, detail=f"Factura {uuid} no encontrada")
+    return _factura_to_response(factura)
 
 @app.get("/facturas/{uuid}/xml")
 async def descargar_xml(uuid: str):

@@ -12,12 +12,14 @@ venv/
 .env.*
 !.env.example
  
-# Python test / cache 
-.pytest_cache/ 
-.mypy_cache/ 
-.ruff_cache/ 
-htmlcov/ 
-.coverage 
+# Python test / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.db
+test_output.txt
  
 # Build frontend 
 frontend/dist/ 

@@ -67,6 +67,9 @@ const useToast = () => useContext(ToastCtx);
 // ═══════════════════════════════════════════════════════════════════════════════
 const IA_BASE  = "http://localhost:8006";
 const API_BASE = "http://localhost:8000";
+// Directo al microservicio (mismo patron que IA_BASE) — el Gateway exige JWT
+// en todas las rutas y el frontend todavia no tiene login implementado.
+const FACTURACION_BASE = "http://localhost:8001";
 
 function useDocumentExtractor() {
   const [loading, setLoading] = useState(false);
@@ -117,6 +120,23 @@ function useFiscalChat() {
     finally { setStreaming(false); }
   }, [messages]);
   return { messages, send, streaming, reset:()=>setMessages([]), abort:()=>{ abortRef.current?.abort(); setStreaming(false); } };
+}
+
+function useFacturas() {
+  const [facturas, setFacturas] = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState(null);
+  const cargar = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(`${FACTURACION_BASE}/facturas`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setFacturas(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+  return { facturas, loading, error, recargar: cargar };
 }
 
 function useAnomalias() {
@@ -281,25 +301,28 @@ function NuevaFactura(){
 function FacturasGeneradas(){
   const {isMobile} = useBreakpoint();
   const toast = useToast();
+  const {facturas,loading,error,recargar} = useFacturas();
   const [q,setQ]=useState("");
   const [filtro,setFiltro]=useState("Todas");
-  const items=FACTURAS.filter(f=>(filtro==="Todas"||f.estado===filtro)&&
-    (f.receptor.toLowerCase().includes(q.toLowerCase())||f.folio.includes(q)));
+  const items=facturas.filter(f=>(filtro==="Todas"||f.estado===filtro)&&
+    (f.receptor_rfc.toLowerCase().includes(q.toLowerCase())||f.folio.includes(q)));
+
+  if (error) return <Placeholder title="Facturas generadas" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>;
 
   return (
     <div>
       <SectionTitle>Facturas generadas</SectionTitle>
       <KPIGrid>
-        <KPI label="Total emitido" value={fmt(FACTURAS.reduce((s,f)=>s+f.total,0))} dark/>
-        <KPI label="Vigentes"   value={FACTURAS.filter(f=>f.estado==="Vigente").length}/>
-        <KPI label="Vencidas"   value={FACTURAS.filter(f=>f.estado==="Vencida").length}/>
-        <KPI label="Canceladas" value={FACTURAS.filter(f=>f.estado==="Cancelada").length}/>
+        <KPI label="Total emitido" value={fmt(facturas.reduce((s,f)=>s+f.total,0))} dark/>
+        <KPI label="Vigentes"   value={facturas.filter(f=>f.estado==="Vigente").length}/>
+        <KPI label="Vencidas"   value={facturas.filter(f=>f.estado==="Vencida").length}/>
+        <KPI label="Canceladas" value={facturas.filter(f=>f.estado==="Cancelada").length}/>
       </KPIGrid>
 
       <Card style={{padding:0,overflow:"hidden"}}>
         {/* Barra de búsqueda y filtros */}
         <div style={{padding:"10px 12px",borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar folio o receptor…"
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar folio o RFC receptor…"
             style={{flex:1,minWidth:100,border:`1px solid ${C.border}`,borderRadius:8,padding:"7px 11px",fontSize:13,color:C.text,background:C.surface}}/>
           <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
             {["Todas","Vigente","Vencida","Cancelada"].map(f=>(
@@ -310,6 +333,10 @@ function FacturasGeneradas(){
               </button>
             ))}
           </div>
+          <button onClick={recargar} title="Recargar" disabled={loading}
+            style={{fontSize:11,padding:"5px 10px",borderRadius:12,border:`1px solid ${C.border}`,background:"transparent",color:C.textSec,cursor:loading?"not-allowed":"pointer"}}>
+            {loading?"Cargando…":"↻ Recargar"}
+          </button>
         </div>
 
         {/* Tabla con scroll horizontal */}
@@ -318,27 +345,32 @@ function FacturasGeneradas(){
             <thead>
               <tr style={{background:C.surface}}>
                 <th style={TH}>Folio</th>
-                <th style={TH}>Receptor</th>
-                {!isMobile&&<th style={TH}>Fecha</th>}
+                <th style={TH}>Receptor (RFC)</th>
+                {!isMobile&&<th style={TH}>Fecha timbrado</th>}
                 <th style={{...TH,textAlign:"right"}}>Total</th>
                 <th style={{...TH,textAlign:"center"}}>Estado</th>
                 {!isMobile&&<th style={TH}></th>}
               </tr>
             </thead>
             <tbody>
+              {!loading && items.length===0 && (
+                <tr><td colSpan={isMobile?4:6} style={{...TD,textAlign:"center",color:C.textMuted,padding:"24px 12px"}}>
+                  {facturas.length===0 ? "Todavía no hay facturas timbradas." : "Sin resultados para ese filtro/búsqueda."}
+                </td></tr>
+              )}
               {items.map((f,i)=>(
-                <tr key={f.folio} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"#fff":C.surface,cursor:"pointer"}}
+                <tr key={f.uuid} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"#fff":C.surface,cursor:"pointer"}}
                   onClick={()=>!isMobile&&toast(`Factura ${f.folio} · UUID: ${f.uuid}`,"info")}>
                   <td style={TD}><span style={{fontFamily:"monospace",fontSize:12,fontWeight:600,color:C.primary}}>{f.folio}</span></td>
-                  <td style={{...TD,maxWidth:isMobile?90:180}}><span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:13}}>{f.receptor}</span></td>
-                  {!isMobile&&<td style={{...TD,color:C.textSec,fontSize:12,whiteSpace:"nowrap"}}>{f.fecha}</td>}
+                  <td style={{...TD,maxWidth:isMobile?90:180}}><span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:13,fontFamily:"monospace"}}>{f.receptor_rfc}</span></td>
+                  {!isMobile&&<td style={{...TD,color:C.textSec,fontSize:12,whiteSpace:"nowrap"}}>{new Date(f.fecha_timbrado).toLocaleString("es-MX")}</td>}
                   <td style={{...TD,textAlign:"right",fontWeight:600,fontSize:13,whiteSpace:"nowrap"}}>{fmt(f.total)}</td>
                   <td style={{...TD,textAlign:"center"}}><Badge estado={f.estado}/></td>
                   {!isMobile&&(
                     <td style={{...TD,whiteSpace:"nowrap"}} onClick={e=>e.stopPropagation()}>
-                      <button onClick={()=>toast(`GET ${API_BASE}/facturas/${f.uuid}/xml`,"api")}
+                      <button onClick={()=>toast(`GET ${FACTURACION_BASE}/facturas/${f.uuid}/xml`,"api")}
                         style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",cursor:"pointer",color:C.textSec,marginRight:4}}>XML</button>
-                      <button onClick={()=>toast(`GET ${API_BASE}/facturas/${f.uuid}/pdf`,"api")}
+                      <button onClick={()=>toast(`GET ${FACTURACION_BASE}/facturas/${f.uuid}/pdf`,"api")}
                         style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",cursor:"pointer",color:C.textSec}}>PDF</button>
                     </td>
                   )}
@@ -570,25 +602,46 @@ function Clientes(){
 // ═══════════════════════════════════════════════════════════════════════════════
 // VISTA: REPORTE
 // ═══════════════════════════════════════════════════════════════════════════════
+const MESES_CORTOS=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
 function ReporteMensual(){
   const toast = useToast();
-  const meses=["Ene","Feb","Mar","Abr","May"]; const vals=[210000,345000,289000,420000,302450]; const maxV=420000;
+  const {facturas,loading,error} = useFacturas();
+
+  if (error) return <Placeholder title="Reporte mensual" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>;
+  if (loading) return <Placeholder title="Reporte mensual" detail="Cargando datos reales…"/>;
+  if (facturas.length===0) return <Placeholder title="Reporte mensual" detail="Todavía no hay facturas timbradas para reportar."/>;
+
+  const porMes = {};
+  for (const f of facturas) {
+    const d = new Date(f.fecha_timbrado);
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    porMes[key] = (porMes[key]||0) + f.total;
+  }
+  const meses = Object.keys(porMes).sort();
+  const vals = meses.map(k=>porMes[k]);
+  const maxV = Math.max(...vals, 1);
+  const totalAcumulado = facturas.reduce((s,f)=>s+f.total,0);
+  const rangoLabel = meses.length>1
+    ? `${MESES_CORTOS[Number(meses[0].slice(5))-1]} ${meses[0].slice(0,4)} – ${MESES_CORTOS[Number(meses[meses.length-1].slice(5))-1]} ${meses[meses.length-1].slice(0,4)}`
+    : `${MESES_CORTOS[Number(meses[0].slice(5))-1]} ${meses[0].slice(0,4)}`;
+
   return (
     <div>
       <SectionTitle>Reporte mensual</SectionTitle>
       <Card style={{marginTop:12}}>
-        <div style={{fontSize:11,color:C.textMuted,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.06em"}}>Facturación 2025 · Enero – Mayo</div>
+        <div style={{fontSize:11,color:C.textMuted,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.06em"}}>Facturación real · {rangoLabel}</div>
         <div style={{display:"flex",alignItems:"flex-end",gap:8,height:130,padding:"0 4px"}}>
-          {meses.map((m,i)=>(
-            <div key={m} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-              <div style={{fontSize:9,color:C.textMuted,textAlign:"center"}}>{(vals[i]/1000).toFixed(0)}k</div>
-              <div style={{width:"100%",background:i===4?C.accent:C.primary,borderRadius:"5px 5px 0 0",height:`${(vals[i]/maxV)*100}px`,opacity:i===4?1:.7}}/>
-              <div style={{fontSize:11,color:C.textSec,fontWeight:i===4?700:400}}>{m}</div>
+          {meses.map((k,i)=>(
+            <div key={k} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+              <div style={{fontSize:9,color:C.textMuted,textAlign:"center"}}>{(vals[i]/1000).toFixed(1)}k</div>
+              <div style={{width:"100%",background:i===meses.length-1?C.accent:C.primary,borderRadius:"5px 5px 0 0",height:`${(vals[i]/maxV)*100}px`,minHeight:2,opacity:i===meses.length-1?1:.7}}/>
+              <div style={{fontSize:11,color:C.textSec,fontWeight:i===meses.length-1?700:400}}>{MESES_CORTOS[Number(k.slice(5))-1]}</div>
             </div>
           ))}
         </div>
         <div style={{borderTop:`1px solid ${C.border}`,marginTop:14,paddingTop:12,display:"flex",gap:20,flexWrap:"wrap"}}>
-          {[["Total acumulado",fmt(vals.reduce((a,b)=>a+b,0))],["CFDIs emitidos","127"],["Promedio",fmt(vals.reduce((a,b)=>a+b,0)/vals.length)]].map(([l,v])=>(
+          {[["Total acumulado",fmt(totalAcumulado)],["CFDIs emitidos",String(facturas.length)],["Promedio",fmt(totalAcumulado/facturas.length)]].map(([l,v])=>(
             <div key={l}><div style={{fontSize:10,color:C.textMuted,marginBottom:3,textTransform:"uppercase"}}>{l}</div><div style={{fontSize:16,fontWeight:700,color:C.text}}>{v}</div></div>
           ))}
         </div>
@@ -598,12 +651,12 @@ function ReporteMensual(){
   );
 }
 
-function Placeholder({title}){
+function Placeholder({title,detail}){
   return (
-    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:260,color:C.textMuted}}>
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:260,color:C.textMuted,padding:"0 16px",textAlign:"center"}}>
       <div style={{fontSize:36,marginBottom:12}}>🚧</div>
       <div style={{fontSize:15,fontWeight:600,color:C.textSec}}>{title}</div>
-      <div style={{fontSize:12,marginTop:5}}>Conecta el microservicio para habilitar esta vista</div>
+      <div style={{fontSize:12,marginTop:5}}>{detail || "Conecta el microservicio para habilitar esta vista"}</div>
     </div>
   );
 }

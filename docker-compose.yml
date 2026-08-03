@@ -67,6 +67,8 @@ services:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_facturas@postgres_facturas/cfdi_facturas"
       REDIS_URL: "redis://redis:6379/0"
       MINIO_URL: "http://minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-minio_admin}"
+      MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-minio_secret}"
       PAC_URL: "${PAC_URL}"
       PAC_CANCEL_URL: "${PAC_CANCEL_URL}"
       PAC_USER: "${PAC_USER}"
@@ -77,6 +79,7 @@ services:
     depends_on:
       postgres_facturas: {condition: service_healthy}
       redis: {condition: service_started}
+      minio: {condition: service_started}
     command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 
   administracion:

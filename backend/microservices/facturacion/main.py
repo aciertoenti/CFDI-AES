@@ -18,6 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from satcfdi.models import Signer
+from satcfdi.cfdi import CFDI
+from satcfdi.render import pdf_bytes as generar_pdf_bytes
 from satcfdi.create.cfd.cfdi40 import (
     Comprobante,
     Emisor,
@@ -29,6 +31,7 @@ from satcfdi.create.cfd.cfdi40 import (
 )
 
 import finkok_client
+import storage_client
 from database import Factura, get_db, create_tables
 
 logger = logging.getLogger("facturacion")
@@ -249,6 +252,8 @@ async def generar_xml_firmado(factura: FacturaCreate):
 
 
 def _factura_to_response(f: Factura) -> FacturaResponse:
+    # Las URLs son firmadas (expiran) y no se guardan en BD - se regeneran
+    # frescas en cada lectura contra el objeto ya subido en MinIO.
     return FacturaResponse(
         uuid=f.uuid,
         folio=f.folio,
@@ -259,9 +264,8 @@ def _factura_to_response(f: Factura) -> FacturaResponse:
         total_iva=float(f.total_iva),
         total=float(f.total),
         estado=f.estado,
-        # Pendiente: Storage de XML/PDF (MinIO) es tarea aparte.
-        xml_url=f"https://storage.tudominio.mx/cfdi/{f.uuid}.xml",
-        pdf_url=f"https://storage.tudominio.mx/cfdi/{f.uuid}.pdf",
+        xml_url=storage_client.url_xml(f.uuid),
+        pdf_url=storage_client.url_pdf(f.uuid),
         noCertificadoSAT=f.no_certificado_sat,
     )
 
@@ -319,6 +323,17 @@ async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get
             exc_info=True,
         )
 
+    # El XML timbrado que regresa Finkok viene como texto con declaracion de
+    # encoding (<?xml ... encoding="utf-8"?>) - hay que codificarlo a bytes
+    # antes de re-parsearlo, porque lxml rechaza declaraciones de encoding
+    # en strings de Python.
+    xml_timbrado_bytes = resultado["xml_timbrado"].encode("utf-8")
+    cfdi_timbrado = CFDI.from_string(xml_timbrado_bytes)
+    pdf_generado = generar_pdf_bytes(cfdi_timbrado)
+
+    xml_url = storage_client.subir_xml(resultado["uuid"], xml_timbrado_bytes)
+    pdf_url = storage_client.subir_pdf(resultado["uuid"], pdf_generado)
+
     return FacturaResponse(
         uuid=resultado["uuid"],
         folio=folio,
@@ -329,10 +344,8 @@ async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get
         total_iva=float(total_iva),
         total=float(total),
         estado="Vigente",
-        # Pendiente: Storage de XML/PDF (MinIO) es tarea aparte. Por ahora
-        # no hay URL real donde descargar el XML timbrado ni el PDF.
-        xml_url=f"https://storage.tudominio.mx/cfdi/{resultado['uuid']}.xml",
-        pdf_url=f"https://storage.tudominio.mx/cfdi/{resultado['uuid']}.pdf",
+        xml_url=xml_url,
+        pdf_url=pdf_url,
         noCertificadoSAT=resultado["no_certificado_sat"],
     )
 
@@ -371,11 +384,11 @@ async def obtener_factura(uuid: str, db: AsyncSession = Depends(get_db)):
 
 @app.get("/facturas/{uuid}/xml")
 async def descargar_xml(uuid: str):
-    return {"url": f"https://storage.tudominio.mx/cfdi/{uuid}.xml"}
+    return {"url": storage_client.url_xml(uuid)}
 
 @app.get("/facturas/{uuid}/pdf")
 async def descargar_pdf(uuid: str):
-    return {"url": f"https://storage.tudominio.mx/cfdi/{uuid}.pdf"}
+    return {"url": storage_client.url_pdf(uuid)}
 
 @app.post("/facturas/{uuid}/cancelar")
 async def cancelar_factura(uuid: str, req: CancelacionRequest):

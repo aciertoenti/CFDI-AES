@@ -90,6 +90,7 @@ class FacturaResponse(BaseModel):
     folio: str
     serie: str
     fecha_timbrado: datetime
+    receptor_rfc: str
     subtotal: float
     total_iva: float
     total: float
@@ -226,6 +227,7 @@ def _factura_to_response(f: Factura) -> FacturaResponse:
         folio=f.folio,
         serie=f.folio.split("-")[0] if "-" in f.folio else "A",
         fecha_timbrado=f.fecha_timbrado,
+        receptor_rfc=f.receptor_rfc,
         subtotal=float(f.subtotal),
         total_iva=float(f.total_iva),
         total=float(f.total),
@@ -295,6 +297,7 @@ async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get
         folio=folio,
         serie=factura.serie,
         fecha_timbrado=fecha_timbrado,
+        receptor_rfc=factura.receptor.rfc,
         subtotal=float(subtotal),
         total_iva=float(total_iva),
         total=float(total),

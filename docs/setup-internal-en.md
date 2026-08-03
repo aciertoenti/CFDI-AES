@@ -101,7 +101,7 @@ PAC_CANCEL_URL=https://ws.finkok.com/servicios/soap/cancel.wsdl
 4. Associate Business Manager account
 5. Click **Create app**
 
-> **[INSERT IMAGE: "My apps" panel showing the CFDI-AES-Bot app with App ID: 3166009700262242]**
+> **[INSERT IMAGE: "My apps" panel showing the CFDI-AES-Bot app with App ID: 1111111111111111]**
 
 ### 4.3 Add WhatsApp
 
@@ -117,7 +117,7 @@ PAC_CANCEL_URL=https://ws.finkok.com/servicios/soap/cancel.wsdl
 1. Left menu → **Basic configuration** → **Step 1. Try it**
 2. Expand **"Get a WhatsApp test number"**
 
-> **[INSERT IMAGE: "Step 1. Try it" screen showing: Test number +1 (555) 663-9018, Phone Number ID: 1152873881252049, WhatsApp Business Account ID: 1257549279733383, and the "Access token" field with "Generate token" button]**
+> **[INSERT IMAGE: "Step 1. Try it" screen showing: Test number +1 (555) 000-0000, Phone Number ID: 1234567890123456, WhatsApp Business Account ID: 9876543210987654, and the "Access token" field with "Generate token" button]**
 
 3. Click **"Generate token"**
 4. Select **"Test WhatsApp Business Account"** in the OAuth popup
@@ -129,7 +129,7 @@ PAC_CANCEL_URL=https://ws.finkok.com/servicios/soap/cancel.wsdl
 Update `.env`:
 ```env
 WHATSAPP_TOKEN=EAAsBOKIWIBSI...  (complete token)
-WHATSAPP_PHONE_NUMBER_ID=1152873881252049
+WHATSAPP_PHONE_NUMBER_ID=1234567890123456
 ```
 
 ### 4.5 Add Test Recipient Number
@@ -139,7 +139,7 @@ WHATSAPP_PHONE_NUMBER_ID=1152873881252049
 3. Add number in format: `521XXXXXXXXXX` (Mexico)
 4. Enter the verification code received via WhatsApp
 
-> **[INSERT IMAGE: "Send a message from your test number" screen with recipient +52-55-3665-2444 selected and "Send message" button]**
+> **[INSERT IMAGE: "Send a message from your test number" screen with recipient +52-55-0000-0000 selected and "Send message" button]**
 
 ---
 
@@ -269,7 +269,7 @@ Expected log:
 
 ### 8.3 WhatsApp End-to-End Test
 
-1. Send message **"FACTURA"** to number `+1 (555) 663-9018`
+1. Send message **"FACTURA"** to number `+1 (555) 000-0000`
 2. Bot replies with privacy notice
 3. Reply **"SÍ"** to continue the tax data capture flow
 
@@ -312,6 +312,6 @@ ngrok http --domain=cfdi-aes-bot.ngrok-free.app 8006
 | `PAC_USER` | Finkok username | `email@domain.com` |
 | `PAC_PASS` | Finkok password | `password` |
 | `WHATSAPP_TOKEN` | Meta Cloud API token | `EAAsZCe...` |
-| `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp number ID | `1152873881252049` |
+| `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp number ID | `1234567890123456` |
 | `WHATSAPP_VERIFY_TOKEN` | Webhook verify token | `ZCdjqDmwd--Rtm...` |
 | `EMISOR_RFC_DEFAULT` | Issuer RFC | `DNS010101AAA` |

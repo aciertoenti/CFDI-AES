@@ -88,7 +88,7 @@ El PAC es el servicio que timbra las facturas ante el SAT.
 3. Haz clic en **"Generar token"**
 4. En la ventana que aparece, selecciona **"Test WhatsApp Business Account"** y haz clic en **"Continuar"**
 
-> **[INSERTAR IMAGEN: Pantalla "Paso 1. Pruébalo" mostrando el número +1 (555) 663-9018, Phone Number ID y el campo de Token de acceso con botón "Generar token"]**
+> **[INSERTAR IMAGEN: Pantalla "Paso 1. Pruébalo" mostrando el número +1 (555) 000-0000, Phone Number ID y el campo de Token de acceso con botón "Generar token"]**
 
 > **[INSERTAR IMAGEN: Ventana popup para seleccionar la cuenta de WhatsApp, con "Test WhatsApp Business Account" disponible para seleccionar]**
 
@@ -101,7 +101,7 @@ El PAC es el servicio que timbra las facturas ante el SAT.
 3. Agrega tu número de celular (formato: `521XXXXXXXXXX` para México)
 4. Meta te envía un código por WhatsApp — ingrésalo para confirmar
 
-> **[INSERTAR IMAGEN: Pantalla "Envía un mensaje desde tu número de prueba" con el destinatario +52-55-3665-2444 ya seleccionado en el dropdown]**
+> **[INSERTAR IMAGEN: Pantalla "Envía un mensaje desde tu número de prueba" con el destinatario +52-55-0000-0000 ya seleccionado en el dropdown]**
 
 ---
 
@@ -219,7 +219,7 @@ En la lista de campos del webhook, busca **"messages"** y activa el interruptor 
 
 Desde tu celular, envía un mensaje de WhatsApp al número de prueba:
 
-**Número:** `+1 (555) 663-9018`
+**Número:** `+1 (555) 000-0000`
 **Mensaje:** `FACTURA`
 
 El bot debe responderte con el aviso de privacidad en menos de 10 segundos.

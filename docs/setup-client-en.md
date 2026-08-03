@@ -88,7 +88,7 @@ The PAC is the service that stamps invoices with Mexico's SAT tax authority.
 3. Click **"Generate token"**
 4. In the window that appears, select **"Test WhatsApp Business Account"** and click **"Continue"**
 
-> **[INSERT IMAGE: "Step 1. Try it" screen showing number +1 (555) 663-9018, Phone Number ID and the access token field with "Generate token" button]**
+> **[INSERT IMAGE: "Step 1. Try it" screen showing number +1 (555) 000-0000, Phone Number ID and the access token field with "Generate token" button]**
 
 > **[INSERT IMAGE: OAuth popup window to select the WhatsApp account, with "Test WhatsApp Business Account" available to select]**
 
@@ -101,7 +101,7 @@ The PAC is the service that stamps invoices with Mexico's SAT tax authority.
 3. Add your cell number (format: `521XXXXXXXXXX` for Mexico)
 4. Meta sends a code via WhatsApp — enter it to confirm
 
-> **[INSERT IMAGE: "Send a message from your test number" screen with recipient +52-55-3665-2444 already selected in the dropdown]**
+> **[INSERT IMAGE: "Send a message from your test number" screen with recipient +52-55-0000-0000 already selected in the dropdown]**
 
 ---
 
@@ -219,7 +219,7 @@ In the webhook fields list, find **"messages"** and toggle it to **"Subscribed"*
 
 From your cell phone, send a WhatsApp message to the test number:
 
-**Number:** `+1 (555) 663-9018`
+**Number:** `+1 (555) 000-0000`
 **Message:** `FACTURA`
 
 The bot should reply with the privacy notice within 10 seconds.

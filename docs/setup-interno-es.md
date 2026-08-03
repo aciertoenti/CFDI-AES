@@ -101,7 +101,7 @@ PAC_CANCEL_URL=https://ws.finkok.com/servicios/soap/cancel.wsdl
 4. Asociar cuenta de negocio (Business Manager)
 5. Clic en **Crear app**
 
-> **[INSERTAR IMAGEN: Pantalla "Mis apps" mostrando la app CFDI-AES-Bot recién creada con Identificador de app: 3166009700262242]**
+> **[INSERTAR IMAGEN: Pantalla "Mis apps" mostrando la app CFDI-AES-Bot recién creada con Identificador de app: 1111111111111111]**
 
 ### 4.3 Agregar WhatsApp
 
@@ -117,7 +117,7 @@ PAC_CANCEL_URL=https://ws.finkok.com/servicios/soap/cancel.wsdl
 1. Menú lateral → **Configuración básica** → **Paso 1. Pruébalo**
 2. Expandir **"Solicita un número de prueba de WhatsApp"**
 
-> **[INSERTAR IMAGEN: Pantalla "Paso 1. Pruébalo" mostrando: Número de prueba +1 (555) 663-9018, Phone Number ID: 1152873881252049, WhatsApp Business Account ID: 1257549279733383, y el campo "Token de acceso" con botón "Generar token"]**
+> **[INSERTAR IMAGEN: Pantalla "Paso 1. Pruébalo" mostrando: Número de prueba +1 (555) 000-0000, Phone Number ID: 1234567890123456, WhatsApp Business Account ID: 9876543210987654, y el campo "Token de acceso" con botón "Generar token"]**
 
 3. Clic en **"Generar token"**
 4. Seleccionar **"Test WhatsApp Business Account"** en el popup de OAuth
@@ -129,7 +129,7 @@ PAC_CANCEL_URL=https://ws.finkok.com/servicios/soap/cancel.wsdl
 Actualizar `.env`:
 ```env
 WHATSAPP_TOKEN=EAAsBOKIWIBSI...  (token completo)
-WHATSAPP_PHONE_NUMBER_ID=1152873881252049
+WHATSAPP_PHONE_NUMBER_ID=1234567890123456
 ```
 
 ### 4.5 Agregar número de prueba
@@ -139,7 +139,7 @@ WHATSAPP_PHONE_NUMBER_ID=1152873881252049
 3. Agregar número en formato: `521XXXXXXXXXX` (México)
 4. Ingresar código de verificación que llega por WhatsApp
 
-> **[INSERTAR IMAGEN: Pantalla "Envía un mensaje desde tu número de prueba" mostrando número +1-555-663-9018, destinatario +52-55-3665-2444 seleccionado, y botón "Enviar mensaje"]**
+> **[INSERTAR IMAGEN: Pantalla "Envía un mensaje desde tu número de prueba" mostrando número +1-555-000-0000, destinatario +52-55-0000-0000 seleccionado, y botón "Enviar mensaje"]**
 
 ---
 
@@ -269,7 +269,7 @@ Log esperado:
 
 ### 8.3 Prueba desde WhatsApp
 
-1. Enviar mensaje **"FACTURA"** al número `+1 (555) 663-9018`
+1. Enviar mensaje **"FACTURA"** al número `+1 (555) 000-0000`
 2. El bot responde con el aviso de privacidad
 3. Responder **"SÍ"** para continuar el flujo de captura de datos fiscales
 
@@ -312,6 +312,6 @@ ngrok http --domain=cfdi-aes-bot.ngrok-free.app 8006
 | `PAC_USER` | Usuario Finkok | `correo@dominio.com` |
 | `PAC_PASS` | Contraseña Finkok | `contraseña` |
 | `WHATSAPP_TOKEN` | Token Cloud API Meta | `EAAsZCe...` |
-| `WHATSAPP_PHONE_NUMBER_ID` | ID número WhatsApp | `1152873881252049` |
+| `WHATSAPP_PHONE_NUMBER_ID` | ID número WhatsApp | `1234567890123456` |
 | `WHATSAPP_VERIFY_TOKEN` | Token verificación webhook | `ZCdjqDmwd--Rtm...` |
 | `EMISOR_RFC_DEFAULT` | RFC del emisor | `DNS010101AAA` |

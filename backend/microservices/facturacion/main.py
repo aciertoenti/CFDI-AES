@@ -104,14 +104,31 @@ class CancelacionRequest(BaseModel):
     motivo: str
     uuid_sustitucion: Optional[str] = None
 
-# ─── CSD y generación de XML CFDI 4.0 (paso 2 — NO conectado a Finkok todavía) ─
-# Datos del emisor de PRUEBA, atados al CSD EKU9003173C9 configurado en
-# CSD_CERT_PATH/CSD_KEY_PATH/CSD_PASSWORD. "administracion" todavia no
-# persiste emisores reales, por eso el regimen y el CP de expedicion no
-# vienen en el contrato de FacturaCreate y se fijan aqui como default de
-# prueba. Ambos deben revisarse antes de timbrar con Finkok real.
-EMISOR_REGIMEN_FISCAL_TEST = "601"
-LUGAR_EXPEDICION_TEST = "42501"
+# ─── Datos del emisor: consulta real a administracion (#14) ───────────────────
+# El regimen fiscal y el CP de expedicion ya NO son constantes de prueba -
+# se consultan a administracion, que persiste emisores reales desde #4.
+ADMINISTRACION_URL = os.environ.get("ADMINISTRACION_URL", "http://administracion:8002")
+
+
+async def obtener_datos_emisor(rfc: str) -> dict:
+    """Consulta administracion por regimen fiscal y CP del emisor. Si el
+    emisor no esta registrado ahi, es un error real (no hay a que hacer
+    fallback) - no se puede timbrar a nombre de un emisor sin dar de alta."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(f"{ADMINISTRACION_URL}/admin/emisores/{rfc}")
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo conectar con administracion: {e}")
+
+    if resp.status_code == 404:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Emisor {rfc} no esta registrado en administracion. Debe darse de alta antes de timbrar.",
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"administracion respondio {resp.status_code}: {resp.text}")
+
+    return resp.json()
 
 
 @lru_cache
@@ -143,17 +160,19 @@ def get_signer() -> Signer:
         raise HTTPException(status_code=500, detail=f"No se pudo cargar el CSD: {e}")
 
 
-def construir_comprobante(factura: FacturaCreate, signer: Signer) -> Comprobante:
+async def construir_comprobante(factura: FacturaCreate, signer: Signer) -> Comprobante:
     if factura.emisor_rfc != str(signer.rfc):
         raise HTTPException(
             status_code=400,
             detail=f"emisor_rfc ({factura.emisor_rfc}) no coincide con el RFC del CSD cargado ({signer.rfc})",
         )
 
+    datos_emisor = await obtener_datos_emisor(factura.emisor_rfc)
+
     emisor = Emisor(
         rfc=str(signer.rfc),
         nombre=signer.legal_name,
-        regimen_fiscal=EMISOR_REGIMEN_FISCAL_TEST,
+        regimen_fiscal=datos_emisor["regimen_fiscal"],
     )
     receptor = Receptor(
         rfc=factura.receptor.rfc,
@@ -193,7 +212,7 @@ def construir_comprobante(factura: FacturaCreate, signer: Signer) -> Comprobante
 
     comprobante = Comprobante(
         emisor=emisor,
-        lugar_expedicion=LUGAR_EXPEDICION_TEST,
+        lugar_expedicion=datos_emisor["codigo_postal"],
         receptor=receptor,
         conceptos=conceptos,
         moneda=factura.moneda,
@@ -216,7 +235,7 @@ async def generar_xml_firmado(factura: FacturaCreate):
     antes de conectar el PAC (paso 3).
     """
     signer = get_signer()
-    comprobante = construir_comprobante(factura, signer)
+    comprobante = await construir_comprobante(factura, signer)
     xml_bytes = comprobante.xml_bytes(pretty_print=True)
     return PlainTextResponse(content=xml_bytes.decode("utf-8"), media_type="application/xml")
 
@@ -242,7 +261,7 @@ def _factura_to_response(f: Factura) -> FacturaResponse:
 @app.post("/facturas/timbrar", response_model=FacturaResponse, status_code=201)
 async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get_db)):
     signer = get_signer()
-    comprobante = construir_comprobante(factura, signer)
+    comprobante = await construir_comprobante(factura, signer)
 
     cert_bytes, key_bytes, csd_password = get_csd_bytes()
     try:

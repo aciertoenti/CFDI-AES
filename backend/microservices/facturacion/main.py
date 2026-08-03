@@ -174,10 +174,18 @@ async def construir_comprobante(factura: FacturaCreate, signer: Signer) -> Compr
         nombre=signer.legal_name,
         regimen_fiscal=datos_emisor["regimen_fiscal"],
     )
+    # Regla real del SAT (CFDI40149, encontrada probando #14): si el receptor
+    # es Publico en General, DomicilioFiscalReceptor debe ser igual al
+    # LugarExpedicion del comprobante. Se fuerza aqui - quien llama a la API
+    # no tiene que saberlo ni mandarlo bien a mano.
+    domicilio_fiscal_receptor = factura.receptor.domicilio_fiscal
+    if factura.receptor.rfc == RFC_PUBLICO_EN_GENERAL:
+        domicilio_fiscal_receptor = datos_emisor["codigo_postal"]
+
     receptor = Receptor(
         rfc=factura.receptor.rfc,
         nombre=factura.receptor.nombre,
-        domicilio_fiscal_receptor=factura.receptor.domicilio_fiscal,
+        domicilio_fiscal_receptor=domicilio_fiscal_receptor,
         regimen_fiscal_receptor=factura.receptor.regimen_fiscal,
         uso_cfdi=factura.receptor.uso_cfdi,
     )

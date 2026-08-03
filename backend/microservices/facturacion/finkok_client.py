@@ -26,6 +26,9 @@ REGISTRATION_WSDL = os.environ.get(
 STAMP_WSDL = os.environ.get(
     "PAC_URL", "https://demo-facturacion.finkok.com/servicios/soap/stamp.wsdl"
 )
+CANCEL_WSDL = os.environ.get(
+    "PAC_CANCEL_URL", "https://demo-facturacion.finkok.com/servicios/soap/cancel.wsdl"
+)
 
 # (mensaje_usuario, es_reintentable)
 # Referencia: backend/microservices/whatsapp_bot/services/facturacion_client.py
@@ -64,6 +67,11 @@ def _registration_client() -> zeep.Client:
 @lru_cache
 def _stamp_client() -> zeep.Client:
     return zeep.Client(STAMP_WSDL)
+
+
+@lru_cache
+def _cancel_client() -> zeep.Client:
+    return zeep.Client(CANCEL_WSDL)
 
 
 def registrar_emisor(
@@ -144,3 +152,68 @@ def timbrar_factura(xml_firmado: bytes) -> dict:
     mensaje_amigable, reintentable = FINKOK_ERRORES.get(codigo, (mensaje, False))
     logger.error("Finkok: timbrado fallo codigo=%s mensaje=%s", codigo, mensaje_amigable)
     raise FinkokError(codigo, mensaje_amigable, reintentable)
+
+
+def cancelar_factura(
+    uuid: str,
+    rfc_emisor: str,
+    cer_bytes: bytes,
+    key_bytes_sin_cifrar: bytes,
+    motivo: str,
+    folio_sustitucion: str = "",
+) -> dict:
+    """
+    Cancela un CFDI ya timbrado contra el servicio real de cancelacion de
+    Finkok (cancel.wsdl).
+
+    Dos particularidades de Finkok descubiertas empiricamente (no
+    documentadas, no asumidas):
+    1. A diferencia de stamp/registration, el metodo cancel() NO tiene
+       parametro de passphrase - espera la llave privada ya descifrada,
+       sin password (ver Signer.key_bytes() de satcfdi, que descifra en
+       memoria sin escribir la llave plana a disco).
+    2. cancel() exige cer/key en formato PEM, no DER - con DER el SOAP
+       fault real es "wrong signature length" (probado directo contra el
+       sandbox el 03 ago 2026).
+    """
+    user, password = _pac_credentials()
+    client = _cancel_client()
+
+    uuid_type = client.get_type("ns0:UUID")
+    uuid_array_type = client.get_type("ns0:UUIDArray")
+    uuids = uuid_array_type(UUID=[
+        uuid_type(UUID=uuid, FolioSustitucion=folio_sustitucion, Motivo=motivo)
+    ])
+
+    logger.info("Finkok cancel: solicitando cancelacion de %s (motivo=%s)", uuid, motivo)
+    resultado = client.service.cancel(
+        UUIDS=uuids,
+        username=user,
+        password=password,
+        taxpayer_id=rfc_emisor,
+        cer=cer_bytes,
+        key=key_bytes_sin_cifrar,
+        store_pending=True,
+    )
+
+    folios = (resultado.Folios.Folio if resultado.Folios else None) or []
+    folio_resultado = next((f for f in folios if f.UUID == uuid), folios[0] if folios else None)
+
+    if folio_resultado is None:
+        raise FinkokError("cancel_sin_respuesta", "Finkok no regreso resultado para este UUID", reintentable=False)
+
+    logger.info(
+        "Finkok cancel: UUID=%s EstatusUUID=%s EstatusCancelacion=%s",
+        uuid, folio_resultado.EstatusUUID, folio_resultado.EstatusCancelacion,
+    )
+    return {
+        "uuid": uuid,
+        "estatus_uuid": folio_resultado.EstatusUUID,
+        # Estado real que reporta el PAC - no se traduce ni se asume, se
+        # persiste tal cual (puede ser "Cancelado", "En proceso",
+        # "Pendiente aceptacion", etc. segun el caso real).
+        "estatus_cancelacion": folio_resultado.EstatusCancelacion,
+        "acuse": resultado.Acuse,
+        "fecha": resultado.Fecha,
+        "cod_estatus": resultado.CodEstatus,
+    }

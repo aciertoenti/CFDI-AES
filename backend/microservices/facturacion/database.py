@@ -47,7 +47,16 @@ class Factura(Base):
     subtotal: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     total_iva: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     total: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
-    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="Vigente")
+    # Categorico y estable a proposito ("Vigente"/"Cancelada"/etc.) - el
+    # frontend filtra con igualdad exacta contra este campo (App.jsx,
+    # filtro Vigente/Vencida/Cancelada). El texto libre que reporta el PAC
+    # al cancelar (que puede variar entre llamadas, ej. "Cancelado sin
+    # aceptacion" vs "Peticion de cancelacion realizada exitosamente" para
+    # el mismo motivo) NO se guarda aqui - va en detalle_pac (#5).
+    estado: Mapped[str] = mapped_column(String(255), nullable=False, default="Vigente")
+    # Texto crudo de la ultima respuesta del PAC (ej. al cancelar), para
+    # auditoria/transparencia - nunca se usa para logica de negocio.
+    detalle_pac: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     no_certificado_sat: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     xml: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

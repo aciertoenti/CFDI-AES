@@ -16,6 +16,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cryptography.hazmat.primitives.serialization import Encoding
 from satcfdi.models import Signer
 from satcfdi.cfdi import CFDI
 from satcfdi.render import pdf_bytes as generar_pdf_bytes
@@ -409,9 +410,81 @@ async def descargar_xml(uuid: str):
 async def descargar_pdf(uuid: str):
     return {"url": storage_client.url_pdf(uuid)}
 
+# Catalogo real del SAT c_MotivoCancelacion (#5). "01" exige folio de
+# sustitucion - el SAT rechaza la cancelacion sin el.
+MOTIVOS_CANCELACION_VALIDOS = {"01", "02", "03", "04"}
+
+
 @app.post("/facturas/{uuid}/cancelar")
-async def cancelar_factura(uuid: str, req: CancelacionRequest):
-    return {"uuid": uuid, "estado_cancelacion": "Pendiente aceptación receptor", "acuse": None}
+async def cancelar_factura(uuid: str, req: CancelacionRequest, db: AsyncSession = Depends(get_db)):
+    if req.motivo not in MOTIVOS_CANCELACION_VALIDOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Motivo de cancelacion invalido: {req.motivo!r}. Debe ser uno de {sorted(MOTIVOS_CANCELACION_VALIDOS)}.",
+        )
+    if req.motivo == "01" and not req.uuid_sustitucion:
+        raise HTTPException(
+            status_code=400,
+            detail="El motivo 01 (comprobante con errores con relacion) exige uuid_sustitucion - "
+                   "el SAT rechaza la cancelacion sin el folio del CFDI que reemplaza al cancelado.",
+        )
+
+    result = await db.execute(select(Factura).where(Factura.uuid == uuid))
+    factura = result.scalar_one_or_none()
+    if factura is None:
+        raise HTTPException(status_code=404, detail=f"Factura {uuid} no encontrada")
+
+    signer = get_signer()
+    if factura.emisor_rfc != str(signer.rfc):
+        raise HTTPException(
+            status_code=400,
+            detail=f"emisor_rfc de la factura ({factura.emisor_rfc}) no coincide con el RFC del CSD cargado ({signer.rfc})",
+        )
+
+    try:
+        resultado = finkok_client.cancelar_factura(
+            uuid=uuid,
+            rfc_emisor=factura.emisor_rfc,
+            # cancel.wsdl exige PEM, a diferencia de stamp/registration -
+            # con DER falla con "wrong signature length" (probado hoy).
+            cer_bytes=signer.certificate_bytes(encoding=Encoding.PEM),
+            key_bytes_sin_cifrar=signer.key_bytes(encoding=Encoding.PEM),
+            motivo=req.motivo,
+            folio_sustitucion=req.uuid_sustitucion or "",
+        )
+    except finkok_client.FinkokError as e:
+        raise HTTPException(status_code=502, detail=f"[{e.codigo}] {e.mensaje}")
+
+    # El texto libre del PAC (estatus_cancelacion) varia entre llamadas -
+    # confirmado hoy: dos cancelaciones reales con motivo "02" regresaron
+    # mensajes distintos ("Cancelado sin aceptación" vs "Petición de
+    # cancelación realizada exitosamente") para el MISMO estatus_uuid
+    # ("201"). Guardarlo tal cual en Factura.estado rompe el filtro del
+    # frontend (App.jsx compara con igualdad exacta contra "Cancelada").
+    # Se guarda aparte, en detalle_pac, para auditoria/transparencia.
+    # Factura.estado se normaliza a partir de estatus_uuid, que es el
+    # campo estable - "201" es el unico codigo de exito confirmado en
+    # pruebas reales; cualquier otro codigo no se traduce a ciegas.
+    factura.detalle_pac = resultado["estatus_cancelacion"]
+    if resultado["estatus_uuid"] == "201":
+        factura.estado = "Cancelada"
+    else:
+        logger.warning(
+            "Cancelacion de %s: estatus_uuid=%s no reconocido (solo '201' esta "
+            "confirmado en pruebas reales) - no se cambia el estado categorico "
+            "automaticamente, revisar manualmente. Mensaje del PAC: %s",
+            uuid, resultado["estatus_uuid"], resultado["estatus_cancelacion"],
+        )
+    await db.commit()
+
+    return {
+        "uuid": uuid,
+        "estatus_uuid": resultado["estatus_uuid"],
+        "estado_cancelacion": resultado["estatus_cancelacion"],
+        "acuse": resultado["acuse"],
+        "fecha": resultado["fecha"],
+        "cod_estatus": resultado["cod_estatus"],
+    }
 
 @app.get("/facturas/reporte/mensual")
 async def reporte_mensual(anio: int = 2025, mes: int = Query(ge=1, le=12)):

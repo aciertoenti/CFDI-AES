@@ -11,7 +11,6 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import date, datetime
-from uuid import uuid4
 import httpx
 
 from sqlalchemy import select
@@ -132,6 +131,25 @@ async def obtener_datos_emisor(rfc: str) -> dict:
         raise HTTPException(status_code=502, detail=f"administracion respondio {resp.status_code}: {resp.text}")
 
     return resp.json()
+
+
+async def obtener_siguiente_folio(rfc: str, serie: str) -> str:
+    """Pide a administracion el siguiente folio consecutivo real para este
+    emisor+serie (#12) - el conteo atomico vive alla, no aqui. Reemplaza el
+    identificador pseudoaleatorio que se usaba antes."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{ADMINISTRACION_URL}/admin/series/{serie}/siguiente-folio",
+                params={"emisor_rfc": rfc},
+            )
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo conectar con administracion: {e}")
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"administracion respondio {resp.status_code}: {resp.text}")
+
+    return resp.json()["folio_formateado"]
 
 
 @lru_cache
@@ -283,9 +301,10 @@ async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get
         raise HTTPException(status_code=502, detail=f"[{e.codigo}] {e.mensaje}")
 
     impuestos = comprobante.get("Impuestos") or {}
-    # folio: sigue sin ser un consecutivo real (eso es tarea aparte, "Folios
-    # consecutivos reales"); es solo un identificador local para esta respuesta.
-    folio = f"A-{str(uuid4().int)[:4].zfill(4)}"
+    # Folio consecutivo real por emisor+serie, contado atomicamente en
+    # administracion (#12). Se pide DESPUES de que Finkok ya confirmo el
+    # timbrado, para no quemar folios en intentos que fallan en el PAC.
+    folio = await obtener_siguiente_folio(factura.emisor_rfc, factura.serie)
     subtotal = Decimal(str(comprobante["SubTotal"]))
     total_iva = Decimal(str(impuestos.get("TotalImpuestosTrasladados") or 0))
     total = Decimal(str(comprobante["Total"]))

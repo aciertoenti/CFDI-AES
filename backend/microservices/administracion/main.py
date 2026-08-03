@@ -15,10 +15,11 @@ from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Emisor, Cliente, get_db, create_tables
+from database import Emisor, Cliente, SerieFolio, get_db, create_tables
 
 
 @asynccontextmanager
@@ -259,7 +260,9 @@ async def eliminar_cliente(rfc: str, emisor_rfc: str, db: AsyncSession = Depends
     await db.commit()
     return {"rfc": rfc, "eliminado": True}
 
-# ─── Series (mock, fuera de alcance - ver #12 "Folios consecutivos reales") ────
+# ─── Series ─────────────────────────────────────────────────────────────────────
+# Alta/listado de series siguen mock (gestión completa de series es fuera de
+# alcance de #12). El contador de folios sí es real desde #12.
 
 @app.post("/admin/series", status_code=201)
 async def crear_serie(serie: SerieCreate):
@@ -270,9 +273,26 @@ async def listar_series(emisor_rfc: Optional[str] = None):
     return []
 
 @app.get("/admin/series/{serie}/siguiente-folio")
-async def siguiente_folio(serie: str, emisor_rfc: str):
-    """Retorna el siguiente folio disponible de forma atómica (transacción DB)."""
-    return {"serie": serie, "folio": 42, "folio_formateado": f"{serie}-0042"}
+async def siguiente_folio(serie: str, emisor_rfc: str, db: AsyncSession = Depends(get_db)):
+    """
+    Folio consecutivo real por (emisor_rfc, serie) - #12.
+
+    Atómico vía UPSERT (INSERT ... ON CONFLICT DO UPDATE ... RETURNING) en
+    una sola sentencia: Postgres serializa las escrituras concurrentes sobre
+    la misma fila a nivel de motor, así que dos timbrados casi simultáneos
+    nunca pueden leer el mismo "último folio" y calcular el mismo siguiente -
+    a diferencia de un "leer, sumar 1, guardar" hecho en dos pasos separados
+    desde la aplicación, que sí tendría condición de carrera.
+    """
+    stmt = pg_insert(SerieFolio).values(emisor_rfc=emisor_rfc, serie=serie, ultimo_folio=1)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["emisor_rfc", "serie"],
+        set_={"ultimo_folio": SerieFolio.ultimo_folio + 1},
+    ).returning(SerieFolio.ultimo_folio)
+    result = await db.execute(stmt)
+    folio = result.scalar_one()
+    await db.commit()
+    return {"serie": serie, "folio": folio, "folio_formateado": f"{serie}-{folio:04d}"}
 
 # ─── Configuración (mock, fuera de alcance de esta tarea) ──────────────────────
 

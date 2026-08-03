@@ -2,7 +2,6 @@
 Tests unitarios para la máquina de estados de conversación.
 Cubre todos los estados y transiciones incluyendo casos de error.
 """
-import pytest
 
 from models.schemas import EstadoConversacion
 from services.state_machine import (

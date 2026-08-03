@@ -3,7 +3,6 @@ Configuración de pytest para el microservicio WhatsApp Bot.
 Define variables de entorno de prueba para que Settings no falle.
 """
 import os
-import pytest
 
 # ─── Variables de entorno para tests ─────────────────────────────────────────
 # Se establecen antes de que cualquier módulo importe settings.

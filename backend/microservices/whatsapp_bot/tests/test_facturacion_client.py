@@ -5,9 +5,8 @@ Cubre: timbrado exitoso, idempotencia, doble timbrado, errores del PAC, reintent
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest

@@ -2,7 +2,6 @@
 Tests unitarios para el módulo de validación fiscal.
 Cubre: RFC, CP, Régimen Fiscal, Uso CFDI, compatibilidad régimen-uso.
 """
-import pytest
 
 from services.fiscal_validator import (
     validate_codigo_postal,

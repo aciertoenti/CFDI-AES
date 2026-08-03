@@ -7,9 +7,8 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 from typing import Optional
-from uuid import uuid4
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -20,7 +19,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base

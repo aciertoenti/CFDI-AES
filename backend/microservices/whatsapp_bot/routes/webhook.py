@@ -12,7 +12,6 @@ Diseño para cumplir <3s de respuesta:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
@@ -26,7 +25,7 @@ from services.facturacion_client import (
     facturacion_client,
 )
 from services.ocr_service import procesar_csf
-from services.session_store import delete_session, load_session, save_session
+from services.session_store import load_session, save_session
 from services.state_machine import (
     ConversationStateMachine,
     MSG_TIMBRADO_OK,

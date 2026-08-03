@@ -148,3 +148,9 @@ Variables mínimas para levantar:
 | `WHATSAPP_TOKEN` | Token Cloud API Meta |
 | `WHATSAPP_PHONE_NUMBER_ID` | ID del número WhatsApp |
 | `WHATSAPP_VERIFY_TOKEN` | Token de verificación del webhook |
+
+---
+
+## Documentación
+
+- [Mapa de dependencias del backlog](docs/BACKLOG-DEPENDENCIES.md) — Diagrama Mermaid con las fases y dependencias entre tareas pendientes del proyecto.

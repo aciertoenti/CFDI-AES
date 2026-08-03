@@ -2,14 +2,33 @@
 # Microservicio de Administración
 # Puerto: 8002
 # Responsabilidades: Emisores, Clientes, Series, Configuración
+#
+# Emisores y Clientes: persistencia real (SQLAlchemy + Postgres) - tarea #4.
+# Series/folios consecutivos y Configuración: siguen mock, fuera de alcance
+# de esta tarea (folios consecutivos es #12, tarea aparte).
 # ──────────────────────────────────────────────────────────────────────────────
-
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional, List
 
-app = FastAPI(title="CFDI – Servicio de Administración", version="2.0.0")
+from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database import Emisor, Cliente, get_db, create_tables
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # create_all para este alcance; produccion deberia usar Alembic (tarea aparte).
+    await create_tables()
+    yield
+
+
+app = FastAPI(title="CFDI – Servicio de Administración", version="2.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["*"], allow_headers=["*"])
 
 # ─── Modelos ───────────────────────────────────────────────────────────────────
@@ -23,7 +42,18 @@ class EmisorCreate(BaseModel):
     csd_key_base64: str   # Llave privada .key en base64
     csd_password: str
 
+class EmisorResponse(BaseModel):
+    rfc: str
+    razon_social: str
+    regimen_fiscal: str
+    codigo_postal: str
+    estado: str
+    created_at: datetime
+    # Deliberado: nunca se regresan csd_cert_base64/csd_key_base64/csd_password
+    # en ninguna respuesta de la API, ni siquiera al crear.
+
 class ClienteCreate(BaseModel):
+    emisor_rfc: str
     nombre: str
     rfc: str
     email: str
@@ -32,6 +62,18 @@ class ClienteCreate(BaseModel):
     uso_cfdi_default: str = "G03"
     domicilio_fiscal: str
     credito_limite: float = 0.0
+
+class ClienteResponse(BaseModel):
+    id: int
+    emisor_rfc: str
+    nombre: str
+    rfc: str
+    email: str
+    telefono: Optional[str] = None
+    regimen_fiscal: str
+    uso_cfdi_default: str
+    domicilio_fiscal: str
+    credito_limite: float
 
 class SerieCreate(BaseModel):
     serie: str  # Ej: "A", "B", "FAC"
@@ -47,49 +89,177 @@ class ConfiguracionUpdate(BaseModel):
     logo_url: Optional[str] = None
     color_primario: Optional[str] = None
 
+
+def _emisor_to_response(e: Emisor) -> EmisorResponse:
+    return EmisorResponse(
+        rfc=e.rfc,
+        razon_social=e.razon_social,
+        regimen_fiscal=e.regimen_fiscal,
+        codigo_postal=e.codigo_postal,
+        estado=e.estado,
+        created_at=e.created_at,
+    )
+
+
+def _cliente_to_response(c: Cliente) -> ClienteResponse:
+    return ClienteResponse(
+        id=c.id,
+        emisor_rfc=c.emisor_rfc,
+        nombre=c.nombre,
+        rfc=c.rfc,
+        email=c.email,
+        telefono=c.telefono,
+        regimen_fiscal=c.regimen_fiscal,
+        uso_cfdi_default=c.uso_cfdi_default,
+        domicilio_fiscal=c.domicilio_fiscal,
+        credito_limite=float(c.credito_limite),
+    )
+
+
 # ─── Emisores ──────────────────────────────────────────────────────────────────
 
-@app.post("/admin/emisores", status_code=201)
-async def crear_emisor(emisor: EmisorCreate):
-    """Registra un nuevo emisor. Valida y cifra las credenciales CSD antes de guardar."""
-    # En producción: validar CSD contra SAT, cifrar key con KMS
-    return {"rfc": emisor.rfc, "estado": "Activo", "mensaje": "Emisor registrado con CSD activo"}
+@app.post("/admin/emisores", response_model=EmisorResponse, status_code=201)
+async def crear_emisor(emisor: EmisorCreate, db: AsyncSession = Depends(get_db)):
+    """Registra un nuevo emisor real. El CSD se guarda tal cual se recibe
+    (base64) - cifrado con KMS queda pendiente, es una decision de
+    seguridad aparte."""
+    existente = await db.execute(select(Emisor).where(Emisor.rfc == emisor.rfc))
+    if existente.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail=f"El emisor {emisor.rfc} ya existe")
 
-@app.get("/admin/emisores")
-async def listar_emisores():
-    return []
+    nuevo = Emisor(
+        rfc=emisor.rfc,
+        razon_social=emisor.razon_social,
+        regimen_fiscal=emisor.regimen_fiscal,
+        codigo_postal=emisor.codigo_postal,
+        csd_cert_base64=emisor.csd_cert_base64,
+        csd_key_base64=emisor.csd_key_base64,
+        csd_password=emisor.csd_password,
+    )
+    db.add(nuevo)
+    await db.commit()
+    await db.refresh(nuevo)
+    return _emisor_to_response(nuevo)
 
-@app.put("/admin/emisores/{rfc}")
-async def actualizar_emisor(rfc: str, emisor: EmisorCreate):
-    return {"rfc": rfc, "actualizado": True}
+@app.get("/admin/emisores", response_model=List[EmisorResponse])
+async def listar_emisores(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Emisor).order_by(Emisor.created_at.desc()))
+    return [_emisor_to_response(e) for e in result.scalars().all()]
+
+@app.get("/admin/emisores/{rfc}", response_model=EmisorResponse)
+async def obtener_emisor(rfc: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Emisor).where(Emisor.rfc == rfc))
+    emisor = result.scalar_one_or_none()
+    if emisor is None:
+        raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
+    return _emisor_to_response(emisor)
+
+@app.put("/admin/emisores/{rfc}", response_model=EmisorResponse)
+async def actualizar_emisor(rfc: str, emisor: EmisorCreate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Emisor).where(Emisor.rfc == rfc))
+    existente = result.scalar_one_or_none()
+    if existente is None:
+        raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
+
+    existente.razon_social = emisor.razon_social
+    existente.regimen_fiscal = emisor.regimen_fiscal
+    existente.codigo_postal = emisor.codigo_postal
+    existente.csd_cert_base64 = emisor.csd_cert_base64
+    existente.csd_key_base64 = emisor.csd_key_base64
+    existente.csd_password = emisor.csd_password
+    await db.commit()
+    await db.refresh(existente)
+    return _emisor_to_response(existente)
 
 # ─── Clientes ──────────────────────────────────────────────────────────────────
 
-@app.post("/admin/clientes", status_code=201)
-async def crear_cliente(cliente: ClienteCreate):
-    return {"rfc": cliente.rfc, "nombre": cliente.nombre, "id": 1}
+@app.post("/admin/clientes", response_model=ClienteResponse, status_code=201)
+async def crear_cliente(cliente: ClienteCreate, db: AsyncSession = Depends(get_db)):
+    nuevo = Cliente(
+        emisor_rfc=cliente.emisor_rfc,
+        rfc=cliente.rfc,
+        nombre=cliente.nombre,
+        email=cliente.email,
+        telefono=cliente.telefono,
+        regimen_fiscal=cliente.regimen_fiscal,
+        uso_cfdi_default=cliente.uso_cfdi_default,
+        domicilio_fiscal=cliente.domicilio_fiscal,
+        credito_limite=cliente.credito_limite,
+    )
+    db.add(nuevo)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"El cliente {cliente.rfc} ya existe para el emisor {cliente.emisor_rfc}",
+        )
+    await db.refresh(nuevo)
+    return _cliente_to_response(nuevo)
 
-@app.get("/admin/clientes")
+@app.get("/admin/clientes", response_model=List[ClienteResponse])
 async def listar_clientes(
+    emisor_rfc: Optional[str] = None,
     busqueda: Optional[str] = None,
     page: int = 1,
     size: int = 50,
+    db: AsyncSession = Depends(get_db),
 ):
-    return []
+    stmt = select(Cliente)
+    if emisor_rfc:
+        stmt = stmt.where(Cliente.emisor_rfc == emisor_rfc)
+    if busqueda:
+        like = f"%{busqueda}%"
+        stmt = stmt.where((Cliente.nombre.ilike(like)) | (Cliente.rfc.ilike(like)))
+    stmt = stmt.order_by(Cliente.created_at.desc()).offset((page - 1) * size).limit(size)
+    result = await db.execute(stmt)
+    return [_cliente_to_response(c) for c in result.scalars().all()]
 
-@app.get("/admin/clientes/{rfc}")
-async def obtener_cliente(rfc: str):
-    raise HTTPException(status_code=404, detail=f"Cliente {rfc} no encontrado")
+@app.get("/admin/clientes/{rfc}", response_model=ClienteResponse)
+async def obtener_cliente(rfc: str, emisor_rfc: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    stmt = select(Cliente).where(Cliente.rfc == rfc)
+    if emisor_rfc:
+        stmt = stmt.where(Cliente.emisor_rfc == emisor_rfc)
+    result = await db.execute(stmt)
+    cliente = result.scalars().first()
+    if cliente is None:
+        raise HTTPException(status_code=404, detail=f"Cliente {rfc} no encontrado")
+    return _cliente_to_response(cliente)
 
-@app.put("/admin/clientes/{rfc}")
-async def actualizar_cliente(rfc: str, cliente: ClienteCreate):
-    return {"rfc": rfc, "actualizado": True}
+@app.put("/admin/clientes/{rfc}", response_model=ClienteResponse)
+async def actualizar_cliente(rfc: str, cliente: ClienteCreate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Cliente).where(Cliente.rfc == rfc, Cliente.emisor_rfc == cliente.emisor_rfc)
+    )
+    existente = result.scalar_one_or_none()
+    if existente is None:
+        raise HTTPException(status_code=404, detail=f"Cliente {rfc} no encontrado")
+
+    existente.nombre = cliente.nombre
+    existente.email = cliente.email
+    existente.telefono = cliente.telefono
+    existente.regimen_fiscal = cliente.regimen_fiscal
+    existente.uso_cfdi_default = cliente.uso_cfdi_default
+    existente.domicilio_fiscal = cliente.domicilio_fiscal
+    existente.credito_limite = cliente.credito_limite
+    await db.commit()
+    await db.refresh(existente)
+    return _cliente_to_response(existente)
 
 @app.delete("/admin/clientes/{rfc}")
-async def eliminar_cliente(rfc: str):
+async def eliminar_cliente(rfc: str, emisor_rfc: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Cliente).where(Cliente.rfc == rfc, Cliente.emisor_rfc == emisor_rfc)
+    )
+    cliente = result.scalar_one_or_none()
+    if cliente is None:
+        raise HTTPException(status_code=404, detail=f"Cliente {rfc} no encontrado")
+    await db.delete(cliente)
+    await db.commit()
     return {"rfc": rfc, "eliminado": True}
 
-# ─── Series ────────────────────────────────────────────────────────────────────
+# ─── Series (mock, fuera de alcance - ver #12 "Folios consecutivos reales") ────
 
 @app.post("/admin/series", status_code=201)
 async def crear_serie(serie: SerieCreate):
@@ -104,7 +274,7 @@ async def siguiente_folio(serie: str, emisor_rfc: str):
     """Retorna el siguiente folio disponible de forma atómica (transacción DB)."""
     return {"serie": serie, "folio": 42, "folio_formateado": f"{serie}-0042"}
 
-# ─── Configuración ─────────────────────────────────────────────────────────────
+# ─── Configuración (mock, fuera de alcance de esta tarea) ──────────────────────
 
 @app.get("/admin/config")
 async def obtener_config():

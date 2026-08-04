@@ -22,6 +22,19 @@ jobs:
       redis:
         image: redis:7-alpine
         ports: ["6379:6379"]
+      postgres:
+        # Misma version que ya usa el proyecto en docker-compose.yml.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U test -d test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
 
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +66,32 @@ jobs:
         run: |
           pip install mypy types-redis
           mypy . --ignore-missing-imports --no-strict-optional
+
+      - name: Bootstrap de base de datos (mismo camino que un ambiente nuevo real, #38)
+        working-directory: ${{ env.WORKDIR }}
+        env:
+          WHATSAPP_TOKEN: test_token
+          WHATSAPP_PHONE_NUMBER_ID: "123456789"
+          WHATSAPP_VERIFY_TOKEN: test_verify
+          INTERNAL_API_KEY: test_key
+          JWT_SECRET: test_secret
+          DATABASE_URL: "postgresql+asyncpg://test:test@localhost/test"
+          REDIS_URL: "redis://localhost:6379/2"
+          FACTURACION_URL: "http://facturacion:8001"
+          EMISOR_RFC_DEFAULT: "DNS010101AAA"
+          ENVIRONMENT: "test"
+        run: |
+          python -c "
+          import asyncio
+          import models.schemas  # noqa: F401 - registra las tablas reales en Base.metadata
+          from models.database import create_tables, stamp_head_si_es_ambiente_nuevo
+
+          async def bootstrap():
+              await create_tables()
+              await stamp_head_si_es_ambiente_nuevo()
+
+          asyncio.run(bootstrap())
+          "
 
       - name: Run tests
         working-directory: ${{ env.WORKDIR }}

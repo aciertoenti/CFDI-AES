@@ -66,6 +66,11 @@ class Factura(Base):
     detalle_pac: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     no_certificado_sat: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     xml: Mapped[str] = mapped_column(Text, nullable=False)
+    # Costo real cobrado por Finkok por este timbre (#6) - Numeric(10,4)
+    # para no perder centavos en acumulados (ej. reportes mensuales sumando
+    # miles de timbres). Solo se llena en timbrados exitosos; una
+    # cancelacion no genera ni quita este costo, ya se pago al timbrar.
+    costo_timbre: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

@@ -39,6 +39,12 @@ logger = logging.getLogger("facturacion")
 RFC_PUBLICO_EN_GENERAL = "XAXX010101000"
 TASA_IVA_DECIMALES = Decimal("0.000000")
 
+# Costo real por timbre exitoso, cotizado con Finkok (#6). Cambia el
+# precio de Finkok, cambia esta linea - nada mas.
+COSTO_TIMBRE_FINKOK = Decimal("0.30")
+IVA_TASA_COSTO_TIMBRE = Decimal("0.16")
+COSTO_TIMBRE_CON_IVA = (COSTO_TIMBRE_FINKOK * (1 + IVA_TASA_COSTO_TIMBRE)).quantize(Decimal("0.0001"))
+
 load_dotenv()
 
 
@@ -330,6 +336,7 @@ async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get
             estado="Vigente",
             no_certificado_sat=resultado["no_certificado_sat"],
             xml=resultado["xml_timbrado"],
+            costo_timbre=COSTO_TIMBRE_CON_IVA,
         ))
         await db.commit()
     except Exception:

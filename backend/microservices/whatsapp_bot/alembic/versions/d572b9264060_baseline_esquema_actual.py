@@ -1,14 +1,12 @@
 """baseline: esquema actual
 
 Revision ID: d572b9264060
-Revises: 
+Revises:
 Create Date: 2026-08-04 15:56:33.932858
 
 """
 from typing import Sequence, Union
 
-from alembic import op
-import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.

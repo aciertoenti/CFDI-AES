@@ -2,12 +2,14 @@
 Configuración de la base de datos async (SQLAlchemy 2.0 + asyncpg).
 Base de datos dedicada para el bot: cfdi_bot (no comparte con otros microservicios).
 """
+from typing import Any
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from core.config import settings
 
-db_kwargs = {
+db_kwargs: dict[str, Any] = {
     "echo": settings.environment == "development",
 }
 

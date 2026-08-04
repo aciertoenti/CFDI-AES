@@ -52,7 +52,7 @@ jobs:
         working-directory: ${{ env.WORKDIR }}
         run: |
           pip install mypy types-redis
-          mypy . --ignore-missing-imports --no-strict-optional || true
+          mypy . --ignore-missing-imports --no-strict-optional
 
       - name: Run tests
         working-directory: ${{ env.WORKDIR }}

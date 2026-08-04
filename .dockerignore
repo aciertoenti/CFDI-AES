@@ -1,0 +1,34 @@
+# Nota: ningún servicio de docker-compose.yml usa la raíz del repo como
+# build context hoy — cada Dockerfile construye desde su propio directorio
+# (./backend/microservices/<servicio> o ./frontend), y cada uno ya tiene su
+# propio .dockerignore. Este archivo es defensivo, por si en el futuro se
+# agrega un build con contexto raíz.
+
+# Secretos y configuración local — nunca deben entrar a ninguna imagen
+.env
+.env.*
+!.env.example
+
+# Certificados y llaves privadas (CSD de prueba)
+certs_test/
+*.cer
+*.key
+*.sdg
+
+# Entornos virtuales y cachés de Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Control de versiones y artefactos locales de desarrollo
+.git/
+.gitignore
+compose_start_log.txt

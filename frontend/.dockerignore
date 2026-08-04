@@ -1,0 +1,14 @@
+# Dependencias — se reinstalan con npm install dentro del build
+node_modules/
+
+# Configuración local / secretos
+.env
+.env.*
+!.env.example
+
+# Build output — se regenera con npm run build dentro del Dockerfile
+dist/
+
+# Control de versiones
+.git/
+.gitignore

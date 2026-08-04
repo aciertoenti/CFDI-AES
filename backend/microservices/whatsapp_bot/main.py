@@ -19,7 +19,7 @@ from starlette.responses import Response
 
 from core.config import settings
 from core.logging import configure_logging, get_logger
-from models.database import create_tables
+from models.database import create_tables, stamp_head_si_es_ambiente_nuevo
 from routes.internal import router as internal_router
 from routes.webhook import router as webhook_router
 
@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI):
     # Crear tablas en desarrollo (producción usa Alembic migrations)
     if settings.environment == "development":
         await create_tables()
+        await stamp_head_si_es_ambiente_nuevo()
     yield
     logger.info("whatsapp_bot.shutdown")
 

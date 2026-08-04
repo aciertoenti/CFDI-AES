@@ -19,13 +19,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Emisor, Cliente, SerieFolio, get_db, create_tables
+from database import Emisor, Cliente, SerieFolio, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # create_all para este alcance; produccion deberia usar Alembic (tarea aparte).
     await create_tables()
+    await stamp_head_si_es_ambiente_nuevo()
     yield
 
 

@@ -5,3 +5,4 @@ bcrypt
 python-dotenv
 sqlalchemy==2.0.36
 asyncpg==0.30.0
+alembic==1.18.5

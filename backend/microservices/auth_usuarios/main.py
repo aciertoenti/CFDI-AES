@@ -12,12 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Usuario, create_tables, get_db
+from database import Usuario, create_tables, get_db, stamp_head_si_es_ambiente_nuevo
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await create_tables()
+    await stamp_head_si_es_ambiente_nuevo()
     yield
 
 

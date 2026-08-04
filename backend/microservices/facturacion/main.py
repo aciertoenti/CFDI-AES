@@ -32,7 +32,7 @@ from satcfdi.create.cfd.cfdi40 import (
 
 import finkok_client
 import storage_client
-from database import Factura, get_db, create_tables
+from database import Factura, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 
 logger = logging.getLogger("facturacion")
 
@@ -44,8 +44,8 @@ load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # create_all para este alcance; produccion deberia usar Alembic (tarea aparte).
     await create_tables()
+    await stamp_head_si_es_ambiente_nuevo()
     yield
 
 

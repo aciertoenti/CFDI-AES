@@ -6,4 +6,5 @@ python-dotenv
 zeep
 sqlalchemy==2.0.36
 asyncpg==0.30.0
+alembic==1.18.5
 minio

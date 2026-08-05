@@ -548,10 +548,10 @@ function FacturasGeneradas(){
                   <td style={{...TD,textAlign:"center"}}><Badge estado={f.estado}/></td>
                   {!isMobile&&(
                     <td style={{...TD,whiteSpace:"nowrap"}} onClick={e=>e.stopPropagation()}>
-                      <button onClick={()=>toast(`GET ${FACTURACION_BASE}/facturas/${f.uuid}/xml`,"api")}
-                        style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",cursor:"pointer",color:C.textSec,marginRight:4}}>XML</button>
-                      <button onClick={()=>toast(`GET ${FACTURACION_BASE}/facturas/${f.uuid}/pdf`,"api")}
-                        style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",cursor:"pointer",color:C.textSec}}>PDF</button>
+                      <a href={f.xml_url} target="_blank" rel="noreferrer"
+                        style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",cursor:"pointer",color:C.textSec,marginRight:4,textDecoration:"none",display:"inline-block"}}>XML</a>
+                      <a href={f.pdf_url} target="_blank" rel="noreferrer"
+                        style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",cursor:"pointer",color:C.textSec,textDecoration:"none",display:"inline-block"}}>PDF</a>
                     </td>
                   )}
                 </tr>
@@ -560,6 +560,9 @@ function FacturasGeneradas(){
           </table>
         </div>
       </Card>
+      <div style={{fontSize:11,color:C.textMuted,marginTop:8}}>
+        Nota: las URLs de descarga apuntan a MinIO dentro de la red de Docker — hoy no son accesibles desde fuera de ese entorno (ver #8/#19/#20).
+      </div>
     </div>
   );
 }

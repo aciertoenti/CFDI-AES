@@ -176,6 +176,23 @@ function useEmisores() {
   return { emisores, loading, error };
 }
 
+function useSeries() {
+  const [series,  setSeries]  = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${ADMINISTRACION_BASE}/admin/series`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setSeries(await res.json());
+      } catch (e) { setError(e.message); }
+      finally { setLoading(false); }
+    })();
+  }, []);
+  return { series, loading, error };
+}
+
 function useClientes() {
   const [clientes, setClientes] = useState([]);
   const [loading,  setLoading]  = useState(true);
@@ -750,6 +767,71 @@ function Clientes(){
   );
 }
 
+function Emisores(){
+  const {emisores,loading,error} = useEmisores();
+
+  if (error) return <Placeholder title="Emisores" detail={`No se pudo conectar con administracion (${ADMINISTRACION_BASE}): ${error}`}/>;
+  if (loading) return <Placeholder title="Emisores" detail="Cargando datos reales…"/>;
+  if (emisores.length===0) return <Placeholder title="Emisores" detail="Todavía no hay emisores registrados."/>;
+
+  return (
+    <div>
+      <SectionTitle>Emisores</SectionTitle>
+      <SectionSub>Solo lectura por ahora — dar de alta/editar requiere subir el CSD, fuera de alcance hoy.</SectionSub>
+      <TwoCol>
+        {emisores.map(e=>(
+          <Card key={e.rfc}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,gap:8}}>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:14,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.razon_social}</div>
+                <div style={{fontSize:12,color:C.textMuted,fontFamily:"monospace",marginTop:2}}>{e.rfc}</div>
+              </div>
+              <span style={{background:e.estado==="Activo"?C.accentSoft:C.dangerSoft,color:e.estado==="Activo"?C.accentBorder:C.danger,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,flexShrink:0}}>{e.estado}</span>
+            </div>
+            <div style={{fontSize:13,color:C.textSec,marginBottom:4}}>Régimen fiscal: <strong style={{color:C.text}}>{e.regimen_fiscal}</strong></div>
+            <div style={{fontSize:13,color:C.textSec}}>CP expedición: <strong style={{color:C.text}}>{e.codigo_postal}</strong></div>
+          </Card>
+        ))}
+      </TwoCol>
+    </div>
+  );
+}
+
+function Series(){
+  const {series,loading,error} = useSeries();
+
+  if (error) return <Placeholder title="Series y folios" detail={`No se pudo conectar con administracion (${ADMINISTRACION_BASE}): ${error}`}/>;
+  if (loading) return <Placeholder title="Series y folios" detail="Cargando datos reales…"/>;
+  if (series.length===0) return <Placeholder title="Series y folios" detail="Todavía no hay series en uso — se crean automáticamente al primer timbrado."/>;
+
+  return (
+    <div>
+      <SectionTitle>Series y folios</SectionTitle>
+      <SectionSub>Solo lectura — las series se crean automáticamente al primer timbrado, no hay alta manual todavía.</SectionSub>
+      <Card>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+          <thead>
+            <tr style={{textAlign:"left",color:C.textMuted,fontSize:11,textTransform:"uppercase"}}>
+              <th style={{padding:"6px 8px 10px 0"}}>Emisor</th>
+              <th style={{padding:"6px 8px 10px 0"}}>Serie</th>
+              <th style={{padding:"6px 8px 10px 0"}}>Último folio</th>
+            </tr>
+          </thead>
+          <tbody>
+            {series.map(s=>(
+              <tr key={`${s.emisor_rfc}-${s.serie}`} style={{borderTop:`1px solid ${C.border}`}}>
+                <td style={{padding:"8px 8px 8px 0",color:C.textSec,fontFamily:"monospace"}}>{s.emisor_rfc}</td>
+                <td style={{padding:"8px 8px 8px 0",fontWeight:600,color:C.text}}>{s.serie}</td>
+                <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{s.ultimo_folio}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // VISTA: REPORTE
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -874,8 +956,8 @@ const VIEWS={
   nueva:<NuevaFactura/>,generadas:<FacturasGeneradas/>,recibidas:<Placeholder title="Facturas recibidas"/>,
   reporte:<ReporteMensual/>,costos:<DashboardCostos/>,lector:<LectorDocumentos/>,chat:<ChatFiscal/>,
   anomalias:<Anomalias/>,conciliacion:<Placeholder title="Conciliación bancaria"/>,
-  emisores:<Placeholder title="Emisores"/>,clientes:<Clientes/>,
-  usuarios:<Placeholder title="Usuarios"/>,series:<Placeholder title="Series y folios"/>,
+  emisores:<Emisores/>,clientes:<Clientes/>,
+  usuarios:<Placeholder title="Usuarios"/>,series:<Series/>,
   addenda:<Placeholder title="Addenda AES"/>,
 };
 

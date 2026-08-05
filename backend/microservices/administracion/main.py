@@ -82,6 +82,11 @@ class SerieCreate(BaseModel):
     folio_inicial: int = 1
     emisor_rfc: str
 
+class SerieResponse(BaseModel):
+    emisor_rfc: str
+    serie: str
+    ultimo_folio: int
+
 class ConfiguracionUpdate(BaseModel):
     pac_url: Optional[str] = None
     pac_usuario: Optional[str] = None
@@ -261,16 +266,26 @@ async def eliminar_cliente(rfc: str, emisor_rfc: str, db: AsyncSession = Depends
     return {"rfc": rfc, "eliminado": True}
 
 # ─── Series ─────────────────────────────────────────────────────────────────────
-# Alta/listado de series siguen mock (gestión completa de series es fuera de
-# alcance de #12). El contador de folios sí es real desde #12.
+# Alta manual sigue mock (gestion completa de series es fuera de alcance
+# hoy - las series se siguen creando implicitamente al primer timbrado, ver
+# siguiente_folio abajo). El listado si es real desde hoy - antes devolvia
+# [] siempre sin importar los datos reales que ya existian en SerieFolio.
 
 @app.post("/admin/series", status_code=201)
 async def crear_serie(serie: SerieCreate):
     return {**serie.dict(), "folio_actual": serie.folio_inicial}
 
-@app.get("/admin/series")
-async def listar_series(emisor_rfc: Optional[str] = None):
-    return []
+@app.get("/admin/series", response_model=List[SerieResponse])
+async def listar_series(emisor_rfc: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    stmt = select(SerieFolio)
+    if emisor_rfc:
+        stmt = stmt.where(SerieFolio.emisor_rfc == emisor_rfc)
+    stmt = stmt.order_by(SerieFolio.emisor_rfc, SerieFolio.serie)
+    result = await db.execute(stmt)
+    return [
+        SerieResponse(emisor_rfc=s.emisor_rfc, serie=s.serie, ultimo_folio=s.ultimo_folio)
+        for s in result.scalars().all()
+    ]
 
 @app.get("/admin/series/{serie}/siguiente-folio")
 async def siguiente_folio(serie: str, emisor_rfc: str, db: AsyncSession = Depends(get_db)):

@@ -22,8 +22,9 @@ from typing import Optional
 
 from alembic import command
 from alembic.config import Config
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
-from sqlalchemy import DateTime, Integer, Numeric, String, Text, UniqueConstraint, func, inspect
+from sqlalchemy import DateTime, Integer, Numeric, String, Text, TypeDecorator, UniqueConstraint, func, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -33,6 +34,29 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin",
 )
+
+# Cifrado del CSD en reposo (#34) - ver docs/cifrado-csd.md.
+CSD_MASTER_KEY = os.environ["CSD_MASTER_KEY"]
+_fernet = Fernet(CSD_MASTER_KEY.encode())
+
+
+class CifradoFernet(TypeDecorator):
+    """Cifra/descifra de forma transparente al escribir/leer de Postgres.
+    El resto del codigo (main.py) sigue tratando estas columnas como
+    strings normales en texto plano - nunca ve el valor cifrado."""
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return _fernet.encrypt(value.encode()).decode()
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return _fernet.decrypt(value.encode()).decode()
 
 engine = create_async_engine(DATABASE_URL, echo=False, pool_size=10, max_overflow=20)
 
@@ -55,11 +79,14 @@ class Emisor(Base):
     razon_social: Mapped[str] = mapped_column(String(300), nullable=False)
     regimen_fiscal: Mapped[str] = mapped_column(String(10), nullable=False)
     codigo_postal: Mapped[str] = mapped_column(String(5), nullable=False)
-    # Sin cifrar por ahora: cifrar con KMS es una decision de seguridad
-    # aparte, fuera del alcance de "solo persistencia" de esta tarea.
-    csd_cert_base64: Mapped[str] = mapped_column(Text, nullable=False)
-    csd_key_base64: Mapped[str] = mapped_column(Text, nullable=False)
-    csd_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Cifrados en reposo con Fernet desde #34 - ver docs/cifrado-csd.md.
+    # CifradoFernet cifra/descifra de forma transparente: este codigo (y el
+    # resto del servicio) sigue leyendo/escribiendo texto plano.
+    csd_cert_base64: Mapped[str] = mapped_column(CifradoFernet, nullable=False)
+    csd_key_base64: Mapped[str] = mapped_column(CifradoFernet, nullable=False)
+    # Text (no String(255)): el texto cifrado con Fernet es mas largo que la
+    # contrasena original.
+    csd_password: Mapped[str] = mapped_column(CifradoFernet, nullable=False)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="Activo")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

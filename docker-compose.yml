@@ -87,6 +87,7 @@ services:
     ports: ["8002:8002"]
     environment:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin"
+      CSD_MASTER_KEY: "${CSD_MASTER_KEY}"
     depends_on: [postgres_admin]
     command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 

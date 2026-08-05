@@ -50,7 +50,7 @@ class Usuario(Base):
     # Referencia suave, mismo patron que Cliente.emisor_rfc en administracion -
     # no hay modelo de tenants todavia (#15 en Backlog).
     rfc_emisor: Mapped[Optional[str]] = mapped_column(String(13), nullable=True)
-    rol: Mapped[str] = mapped_column(String(20), nullable=False, default="admin")
+    rol: Mapped[str] = mapped_column(String(20), nullable=False, default="usuario")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

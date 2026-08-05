@@ -71,6 +71,7 @@ const API_BASE = "http://localhost:8000";
 // en todas las rutas y el frontend todavia no tiene login implementado.
 const FACTURACION_BASE = "http://localhost:8001";
 const ADMINISTRACION_BASE = "http://localhost:8002";
+const AUTH_BASE = "http://localhost:8005";
 
 function useDocumentExtractor() {
   const [loading, setLoading] = useState(false);
@@ -191,6 +192,23 @@ function useSeries() {
     })();
   }, []);
   return { series, loading, error };
+}
+
+function useUsuarios() {
+  const [usuarios, setUsuarios] = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${AUTH_BASE}/auth/usuarios`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setUsuarios(await res.json());
+      } catch (e) { setError(e.message); }
+      finally { setLoading(false); }
+    })();
+  }, []);
+  return { usuarios, loading, error };
 }
 
 function useClientes() {
@@ -832,6 +850,43 @@ function Series(){
   );
 }
 
+function Usuarios(){
+  const {usuarios,loading,error} = useUsuarios();
+
+  if (error) return <Placeholder title="Usuarios" detail={`No se pudo conectar con auth (${AUTH_BASE}): ${error}`}/>;
+  if (loading) return <Placeholder title="Usuarios" detail="Cargando datos reales…"/>;
+  if (usuarios.length===0) return <Placeholder title="Usuarios" detail="Todavía no hay usuarios registrados."/>;
+
+  return (
+    <div>
+      <SectionTitle>Usuarios</SectionTitle>
+      <SectionSub>Solo lectura — promover a admin y editar/eliminar quedan fuera hasta resolver el diseño de roles (ver #10).</SectionSub>
+      <Card>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+          <thead>
+            <tr style={{textAlign:"left",color:C.textMuted,fontSize:11,textTransform:"uppercase"}}>
+              <th style={{padding:"6px 8px 10px 0"}}>Email</th>
+              <th style={{padding:"6px 8px 10px 0"}}>Rol</th>
+              <th style={{padding:"6px 8px 10px 0"}}>Creado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usuarios.map(u=>(
+              <tr key={u.id} style={{borderTop:`1px solid ${C.border}`}}>
+                <td style={{padding:"8px 8px 8px 0",color:C.text}}>{u.email}</td>
+                <td style={{padding:"8px 8px 8px 0"}}>
+                  <span style={{background:u.rol==="admin"?C.accentSoft:C.infoSoft,color:u.rol==="admin"?C.accentBorder:C.info,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20}}>{u.rol}</span>
+                </td>
+                <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{new Date(u.created_at).toLocaleDateString("es-MX")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // VISTA: REPORTE
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -957,7 +1012,7 @@ const VIEWS={
   reporte:<ReporteMensual/>,costos:<DashboardCostos/>,lector:<LectorDocumentos/>,chat:<ChatFiscal/>,
   anomalias:<Anomalias/>,conciliacion:<Placeholder title="Conciliación bancaria"/>,
   emisores:<Emisores/>,clientes:<Clientes/>,
-  usuarios:<Placeholder title="Usuarios"/>,series:<Series/>,
+  usuarios:<Usuarios/>,series:<Series/>,
   addenda:<Placeholder title="Addenda AES"/>,
 };
 

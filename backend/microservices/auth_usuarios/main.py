@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import List, Optional
 
 import bcrypt
 import jwt
@@ -62,6 +62,18 @@ class UsuarioResponse(BaseModel):
     rol: str
 
 
+class UsuarioListItem(BaseModel):
+    # Deliberado: nunca incluye password_hash. Solo lectura por ahora -
+    # gestion de roles (promover a admin) queda fuera a proposito, sigue
+    # siendo una decision de diseno sin resolver (ver nota en #10).
+    id: int
+    email: str
+    nombre: Optional[str]
+    rfc_emisor: Optional[str]
+    rol: str
+    created_at: datetime
+
+
 # Mensaje deliberadamente genérico: no revela si falló el email o la
 # contraseña (evita que un atacante use el login para enumerar cuentas).
 CREDENCIALES_INVALIDAS = "Email o contraseña incorrectos"
@@ -116,6 +128,21 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 @app.post("/auth/logout")
 async def logout():
     return {"mensaje": "Sesión cerrada"}
+
+
+@app.get("/auth/usuarios", response_model=List[UsuarioListItem])
+async def listar_usuarios(db: AsyncSession = Depends(get_db)):
+    """Solo lectura. Gestion de roles, edicion y eliminacion quedan fuera
+    a proposito - promover a un usuario a "admin" sigue siendo una
+    decision de diseno sin resolver (ver #10)."""
+    result = await db.execute(select(Usuario).order_by(Usuario.created_at.desc()))
+    return [
+        UsuarioListItem(
+            id=u.id, email=u.email, nombre=u.nombre,
+            rfc_emisor=u.rfc_emisor, rol=u.rol, created_at=u.created_at,
+        )
+        for u in result.scalars().all()
+    ]
 
 
 @app.get("/health")

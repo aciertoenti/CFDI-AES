@@ -13,7 +13,7 @@ from typing import Optional, List
 from datetime import date, datetime
 import httpx
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cryptography.hazmat.primitives.serialization import Encoding
@@ -112,6 +112,13 @@ class CancelacionRequest(BaseModel):
     uuid: str
     motivo: str
     uuid_sustitucion: Optional[str] = None
+
+class CostoResumenItem(BaseModel):
+    periodo: str  # "YYYY-MM"
+    emisor_rfc: str
+    num_timbres: int
+    costo_total: float
+    costo_promedio: float
 
 # ─── Datos del emisor: consulta real a administracion (#14) ───────────────────
 # El regimen fiscal y el CP de expedicion ya NO son constantes de prueba -
@@ -400,6 +407,48 @@ async def listar_facturas(
 
     result = await db.execute(stmt)
     return [_factura_to_response(f) for f in result.scalars().all()]
+
+@app.get("/facturas/costos-resumen", response_model=List[CostoResumenItem])
+async def costos_resumen(emisor_rfc: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    """
+    Agrega el costo real de Finkok por timbre (#6), por mes y por emisor -
+    parte "costos" de #11 (margen y costo de WhatsApp quedan fuera, sin
+    implementar todavia). Debe ir ANTES de /facturas/{uuid} en las rutas:
+    con un solo segmento de path ("costos-resumen"), {uuid} lo capturaria
+    primero si esta ruta se registrara despues (FastAPI empata por orden
+    de declaracion, no por especificidad).
+
+    Incluye facturas canceladas: el costo ya se pago a Finkok al timbrar,
+    cancelar despues no lo devuelve (ver comentario en Factura.costo_timbre).
+    Excluye timbrados sin costo_timbre (nunca deberia pasar en timbrados
+    exitosos, pero por si existe algun dato viejo de antes de #6).
+    """
+    periodo = func.to_char(Factura.fecha_timbrado, "YYYY-MM")
+    stmt = (
+        select(
+            periodo.label("periodo"),
+            Factura.emisor_rfc,
+            func.count(Factura.id).label("num_timbres"),
+            func.sum(Factura.costo_timbre).label("costo_total"),
+        )
+        .where(Factura.costo_timbre.is_not(None))
+        .group_by(periodo, Factura.emisor_rfc)
+        .order_by(periodo.desc(), Factura.emisor_rfc)
+    )
+    if emisor_rfc:
+        stmt = stmt.where(Factura.emisor_rfc == emisor_rfc)
+
+    result = await db.execute(stmt)
+    return [
+        CostoResumenItem(
+            periodo=r.periodo,
+            emisor_rfc=r.emisor_rfc,
+            num_timbres=r.num_timbres,
+            costo_total=float(r.costo_total),
+            costo_promedio=float(r.costo_total) / r.num_timbres,
+        )
+        for r in result.all()
+    ]
 
 @app.get("/facturas/{uuid}")
 async def obtener_factura(uuid: str, db: AsyncSession = Depends(get_db)):

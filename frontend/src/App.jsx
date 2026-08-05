@@ -140,6 +140,23 @@ function useFacturas() {
   return { facturas, loading, error, recargar: cargar };
 }
 
+function useCostosResumen() {
+  const [datos,   setDatos]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState(null);
+  const cargar = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(`${FACTURACION_BASE}/facturas/costos-resumen`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setDatos(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+  return { datos, loading, error, recargar: cargar };
+}
+
 // Un solo emisor registrado hoy en administración (no hay multi-tenant/login
 // todavia) — se usa el primero de la lista como "el" emisor de la cuenta.
 function useEmisores() {
@@ -214,13 +231,13 @@ const FACTURAS = [
 const EMISOR = {razon:"Distribuidora Nacional SA de CV",rfc:"DNS010101AAA",regimen:"601 – General de Ley Personas Morales",cp:"06600",csd:"Activo"};
 const CUENTA_CTX = {iva_pendiente:38640,facturas_vigentes:4,facturas_vencidas:1,total_mayo:302450,cuentas_por_cobrar:246150,proximo_vencimiento_iva:"2025-06-17"};
 const NAV = [
-  {id:"facturas",label:"Mis Facturas",icon:"📄",children:["nueva","generadas","recibidas","reporte"]},
+  {id:"facturas",label:"Mis Facturas",icon:"📄",children:["nueva","generadas","recibidas","reporte","costos"]},
   {id:"ia",label:"IA",icon:"🤖",children:["lector","chat","anomalias","conciliacion"]},
   {id:"admin",label:"Administración",icon:"⚙️",children:["emisores","clientes","usuarios","series"]},
   {id:"addenda",label:"Addenda AES",icon:"🔗",children:[]},
 ];
 const LABELS = {
-  nueva:"Nueva Factura",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",
+  nueva:"Nueva Factura",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",
   lector:"Lector de Documentos",chat:"Chat Fiscal",anomalias:"Anomalías IA",conciliacion:"Conciliación",
   emisores:"Emisores",clientes:"Clientes",usuarios:"Usuarios",series:"Series",addenda:"Addenda AES",
 };
@@ -785,6 +802,64 @@ function ReporteMensual(){
   );
 }
 
+function DashboardCostos(){
+  const {datos,loading,error} = useCostosResumen();
+
+  if (error) return <Placeholder title="Dashboard de costos" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>;
+  if (loading) return <Placeholder title="Dashboard de costos" detail="Cargando datos reales…"/>;
+
+  const costoTotal = datos.reduce((s,d)=>s+d.costo_total,0);
+  const timbresTotal = datos.reduce((s,d)=>s+d.num_timbres,0);
+  const costoPromedio = timbresTotal>0 ? costoTotal/timbresTotal : 0;
+
+  return (
+    <div>
+      <SectionTitle>Dashboard de costos</SectionTitle>
+      <SectionSub>Costo real de Finkok por timbre (#6) · margen y costo de WhatsApp fuera de alcance por ahora (#7, #16)</SectionSub>
+
+      <KPIGrid>
+        <KPI label="Costo Finkok acumulado" value={fmt(costoTotal)} sub={`${timbresTotal} timbre${timbresTotal===1?"":"s"}`} dark/>
+        <KPI label="Costo promedio por timbre" value={fmt(costoPromedio)}/>
+        <KPI label="Costo WhatsApp por interacción" value="Pendiente" sub="Requiere #7 (en pausa)"/>
+        <KPI label="Margen por negocio" value="Pendiente" sub="Requiere #7 + #16 (precios)"/>
+      </KPIGrid>
+
+      <Card>
+        <div style={{fontSize:11,color:C.textMuted,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.06em"}}>Desglose por mes y emisor</div>
+        {datos.length===0 ? (
+          <div style={{color:C.textMuted,fontSize:13,padding:"12px 0"}}>Todavía no hay timbres con costo registrado (#6 solo aplica a timbrados posteriores a su implementación).</div>
+        ) : (
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead>
+              <tr style={{textAlign:"left",color:C.textMuted,fontSize:11,textTransform:"uppercase"}}>
+                <th style={{padding:"6px 8px 10px 0"}}>Periodo</th>
+                <th style={{padding:"6px 8px 10px 0"}}>Emisor</th>
+                <th style={{padding:"6px 8px 10px 0"}}>Timbres</th>
+                <th style={{padding:"6px 8px 10px 0"}}>Costo total</th>
+                <th style={{padding:"6px 8px 10px 0"}}>Costo promedio</th>
+              </tr>
+            </thead>
+            <tbody>
+              {datos.map((d,i)=>(
+                <tr key={`${d.periodo}-${d.emisor_rfc}`} style={{borderTop:`1px solid ${C.border}`}}>
+                  <td style={{padding:"8px 8px 8px 0",fontWeight:600,color:C.text}}>{d.periodo}</td>
+                  <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{d.emisor_rfc}</td>
+                  <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{d.num_timbres}</td>
+                  <td style={{padding:"8px 8px 8px 0",color:C.text}}>{fmt(d.costo_total)}</td>
+                  <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{fmt(d.costo_promedio)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <div style={{marginTop:14,padding:"10px 12px",borderRadius:8,background:C.warnSoft,color:C.warn,fontSize:12}}>
+          ⏳ Pendiente: costo de conversación de WhatsApp (#7, en pausa) y cálculo de margen por negocio (#16, precios diferidos) — se agregarán a este dashboard cuando esas tarjetas se resuelvan. No se muestran como $0 para no dar una cifra falsa.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function Placeholder({title,detail}){
   return (
     <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:260,color:C.textMuted,padding:"0 16px",textAlign:"center"}}>
@@ -797,7 +872,7 @@ function Placeholder({title,detail}){
 
 const VIEWS={
   nueva:<NuevaFactura/>,generadas:<FacturasGeneradas/>,recibidas:<Placeholder title="Facturas recibidas"/>,
-  reporte:<ReporteMensual/>,lector:<LectorDocumentos/>,chat:<ChatFiscal/>,
+  reporte:<ReporteMensual/>,costos:<DashboardCostos/>,lector:<LectorDocumentos/>,chat:<ChatFiscal/>,
   anomalias:<Anomalias/>,conciliacion:<Placeholder title="Conciliación bancaria"/>,
   emisores:<Placeholder title="Emisores"/>,clientes:<Clientes/>,
   usuarios:<Placeholder title="Usuarios"/>,series:<Placeholder title="Series y folios"/>,

@@ -88,6 +88,7 @@ services:
     environment:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin"
       CSD_MASTER_KEY: "${CSD_MASTER_KEY}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-cambia_esto_por_clave_segura}"
     depends_on: [postgres_admin]
     command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 

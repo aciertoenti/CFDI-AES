@@ -7,12 +7,14 @@
 # Series/folios consecutivos y Configuración: siguen mock, fuera de alcance
 # de esta tarea (folios consecutivos es #12, tarea aparte).
 # ──────────────────────────────────────────────────────────────────────────────
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi import FastAPI, HTTPException, Query, Depends, Security, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -20,6 +22,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import Emisor, Cliente, SerieFolio, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+
+# ─── Autenticacion interna servicio-a-servicio ─────────────────────────────────
+# Mismo patron que whatsapp_bot/core/security.py (X-Internal-Key). Protege
+# especificamente el endpoint que devuelve el CSD ya descifrado (#42) - el
+# dato mas sensible del sistema. NUNCA loguear el resultado de este endpoint.
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
+_internal_api_key_header = APIKeyHeader(name="X-Internal-Key", auto_error=False)
+
+
+def require_internal_key(api_key: Optional[str] = Security(_internal_api_key_header)) -> str:
+    if not INTERNAL_API_KEY or not api_key or api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clave interna inválida o ausente")
+    return api_key
 
 
 @asynccontextmanager
@@ -52,6 +67,15 @@ class EmisorResponse(BaseModel):
     created_at: datetime
     # Deliberado: nunca se regresan csd_cert_base64/csd_key_base64/csd_password
     # en ninguna respuesta de la API, ni siquiera al crear.
+
+class EmisorCSDDescifrado(BaseModel):
+    # Uso exclusivo servicio-a-servicio (#42) - protegido con
+    # require_internal_key. Nunca exponer en una ruta que el frontend o el
+    # gateway puedan alcanzar.
+    rfc: str
+    csd_cert_base64: str
+    csd_key_base64: str
+    csd_password: str
 
 class ClienteCreate(BaseModel):
     emisor_rfc: str
@@ -159,6 +183,34 @@ async def obtener_emisor(rfc: str, db: AsyncSession = Depends(get_db)):
     if emisor is None:
         raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
     return _emisor_to_response(emisor)
+
+@app.get(
+    "/admin/emisores/{rfc}/csd-descifrado",
+    response_model=EmisorCSDDescifrado,
+    dependencies=[Depends(require_internal_key)],
+)
+async def obtener_csd_descifrado(rfc: str, db: AsyncSession = Depends(get_db)):
+    """
+    Uso exclusivo servicio-a-servicio (#42) - protegido con X-Internal-Key.
+    Devuelve el CSD ya descifrado (CifradoFernet lo descifra de forma
+    transparente al leer el modelo, ver database.py / #34).
+
+    Alcance de #42: solo este endpoint. facturacion NO lo consume todavia -
+    sigue firmando con los archivos estaticos de certs_test/, sin cambios.
+    Conectar facturacion a este endpoint es un paso aparte, deliberadamente
+    fuera de alcance hoy por el riesgo de romper el timbrado real que ya
+    funciona.
+    """
+    result = await db.execute(select(Emisor).where(Emisor.rfc == rfc))
+    emisor = result.scalar_one_or_none()
+    if emisor is None:
+        raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
+    return EmisorCSDDescifrado(
+        rfc=emisor.rfc,
+        csd_cert_base64=emisor.csd_cert_base64,
+        csd_key_base64=emisor.csd_key_base64,
+        csd_password=emisor.csd_password,
+    )
 
 @app.put("/admin/emisores/{rfc}", response_model=EmisorResponse)
 async def actualizar_emisor(rfc: str, emisor: EmisorCreate, db: AsyncSession = Depends(get_db)):

@@ -45,6 +45,19 @@ COSTO_TIMBRE_FINKOK = Decimal("0.30")
 IVA_TASA_COSTO_TIMBRE = Decimal("0.16")
 COSTO_TIMBRE_CON_IVA = (COSTO_TIMBRE_FINKOK * (1 + IVA_TASA_COSTO_TIMBRE)).quantize(Decimal("0.0001"))
 
+# Contador virtual (#40, Fase 1) - estimador de ISR provisional mensual
+# para RESICO Personas Fisicas. Tasa fija sobre el TOTAL del mes (no es
+# calculo marginal como las tarifas de sueldos) - Art. 113-E LISR.
+REGIMEN_RESICO = "626"  # verificado contra el catalogo oficial C756_c_RegimenFiscal (satcfdi), no asumido
+RFC_LEN_PERSONA_FISICA = 13  # 12 = Persona Moral - el codigo 626 aplica a ambas, hay que distinguir por RFC
+TABLA_ISR_RESICO_PF = [
+    (Decimal("25000.00"), Decimal("0.0100")),
+    (Decimal("50000.00"), Decimal("0.0110")),
+    (Decimal("83333.33"), Decimal("0.0150")),
+    (Decimal("208333.33"), Decimal("0.0200")),
+    (Decimal("291666.67"), Decimal("0.0250")),
+]
+
 load_dotenv()
 
 
@@ -119,6 +132,28 @@ class CostoResumenItem(BaseModel):
     num_timbres: int
     costo_total: float
     costo_promedio: float
+
+class FacturaResumenLigero(BaseModel):
+    folio: str
+    uuid: str
+    receptor_rfc: str
+    total: float
+
+class ContadorVirtualISRResicoResponse(BaseModel):
+    aplica: bool
+    motivo_no_aplica: Optional[str] = None
+    emisor_rfc: str
+    periodo: str  # "YYYY-MM"
+    ingreso_pue_incluido: float = 0.0
+    tasa_aplicada: Optional[float] = None
+    isr_estimado: float = 0.0
+    excede_tope_mensual: bool = False
+    facturas_pue_incluidas: List[FacturaResumenLigero] = []
+    facturas_ppd_excluidas: List[FacturaResumenLigero] = []
+    disclaimer: str = (
+        "Estimación informativa basada en tus CFDI emitidos. "
+        "No sustituye a tu contador ni constituye asesoría fiscal."
+    )
 
 # ─── Datos del emisor: consulta real a administracion (#14) ───────────────────
 # El regimen fiscal y el CP de expedicion ya NO son constantes de prueba -
@@ -344,6 +379,7 @@ async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get
             no_certificado_sat=resultado["no_certificado_sat"],
             xml=resultado["xml_timbrado"],
             costo_timbre=COSTO_TIMBRE_CON_IVA,
+            metodo_pago=factura.metodo_pago,
         ))
         await db.commit()
     except Exception:
@@ -449,6 +485,99 @@ async def costos_resumen(emisor_rfc: Optional[str] = None, db: AsyncSession = De
         )
         for r in result.all()
     ]
+
+@app.get("/facturas/contador-virtual/isr-resico", response_model=ContadorVirtualISRResicoResponse)
+async def contador_virtual_isr_resico(
+    emisor_rfc: str,
+    anio: int,
+    mes: int = Query(ge=1, le=12),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Contador virtual (#40, Fase 1): estimador de ISR provisional mensual
+    para RESICO Personas Fisicas, usando solo ingresos ya facturados.
+
+    Alcance deliberado - NO calcula:
+    - IVA ni retenciones de personas morales (fuera de alcance de esta fase).
+    - Actividad Empresarial/Regimen General (necesitan CFDI recibidos que
+      el sistema no tiene - ver tarjeta de seguimiento de Fase 2/3).
+
+    Solo cuenta CFDI con metodo_pago="PUE" (se presume cobrado al timbrar).
+    Los PPD se excluyen del calculo y se listan aparte - no hay complemento
+    de pago en el sistema para saber cuando se cobraron de verdad.
+    """
+    datos_emisor = await obtener_datos_emisor(emisor_rfc)
+    periodo = f"{anio:04d}-{mes:02d}"
+
+    es_resico_pf = (
+        datos_emisor["regimen_fiscal"] == REGIMEN_RESICO
+        and len(emisor_rfc) == RFC_LEN_PERSONA_FISICA
+    )
+    if not es_resico_pf:
+        if datos_emisor["regimen_fiscal"] != REGIMEN_RESICO:
+            motivo = (
+                f"Tu régimen fiscal ({datos_emisor['regimen_fiscal']}) no es RESICO Personas Físicas "
+                f"({REGIMEN_RESICO}) - el contador virtual Fase 1 solo aplica a ese régimen."
+            )
+        else:
+            motivo = (
+                "El código 626 (RESICO) de tu RFC corresponde a un patrón de Persona Moral, "
+                "no de Persona Física - este estimador solo aplica a RESICO Personas Físicas."
+            )
+        return ContadorVirtualISRResicoResponse(
+            aplica=False, motivo_no_aplica=motivo, emisor_rfc=emisor_rfc, periodo=periodo,
+        )
+
+    mes_siguiente = date(anio + 1, 1, 1) if mes == 12 else date(anio, mes + 1, 1)
+    stmt = (
+        select(Factura)
+        .where(
+            Factura.emisor_rfc == emisor_rfc,
+            Factura.estado == "Vigente",
+            Factura.fecha_timbrado >= date(anio, mes, 1),
+            Factura.fecha_timbrado < mes_siguiente,
+        )
+        .order_by(Factura.fecha_timbrado)
+    )
+    facturas = (await db.execute(stmt)).scalars().all()
+
+    pue = [f for f in facturas if f.metodo_pago == "PUE"]
+    ppd = [f for f in facturas if f.metodo_pago == "PPD"]
+
+    ingreso_pue = sum((f.total for f in pue), Decimal("0"))
+
+    tasa_aplicada = None
+    excede_tope = False
+    for limite, tasa in TABLA_ISR_RESICO_PF:
+        if ingreso_pue <= limite:
+            tasa_aplicada = tasa
+            break
+    if tasa_aplicada is None:
+        # Excede el ultimo tramo ($291,666.67/mes, equivalente al tope
+        # anual de RESICO de $3.5M) - se aplica la tasa mas alta como
+        # referencia, mostrando la advertencia explicita.
+        tasa_aplicada = TABLA_ISR_RESICO_PF[-1][1]
+        excede_tope = True
+
+    isr_estimado = (ingreso_pue * tasa_aplicada).quantize(Decimal("0.01"))
+
+    return ContadorVirtualISRResicoResponse(
+        aplica=True,
+        emisor_rfc=emisor_rfc,
+        periodo=periodo,
+        ingreso_pue_incluido=float(ingreso_pue),
+        tasa_aplicada=float(tasa_aplicada),
+        isr_estimado=float(isr_estimado),
+        excede_tope_mensual=excede_tope,
+        facturas_pue_incluidas=[
+            FacturaResumenLigero(folio=f.folio, uuid=f.uuid, receptor_rfc=f.receptor_rfc, total=float(f.total))
+            for f in pue
+        ],
+        facturas_ppd_excluidas=[
+            FacturaResumenLigero(folio=f.folio, uuid=f.uuid, receptor_rfc=f.receptor_rfc, total=float(f.total))
+            for f in ppd
+        ],
+    )
 
 @app.get("/facturas/{uuid}")
 async def obtener_factura(uuid: str, db: AsyncSession = Depends(get_db)):

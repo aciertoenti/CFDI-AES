@@ -71,6 +71,11 @@ class Factura(Base):
     # miles de timbres). Solo se llena en timbrados exitosos; una
     # cancelacion no genera ni quita este costo, ya se pago al timbrar.
     costo_timbre: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4), nullable=True)
+    # PUE (pago en una sola exhibicion) / PPD (pago en parcialidades) - #40.
+    # Nullable: las facturas timbradas antes de agregar esta columna se
+    # rellenan con un backfill aparte (parseando el XML ya guardado), no
+    # con create_all/Alembic (eso es transformacion de datos, no de esquema).
+    metodo_pago: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

@@ -105,6 +105,13 @@ services:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_facturas@postgres_facturas/cfdi_facturas"
     command: uvicorn main:app --host 0.0.0.0 --port 8004 --reload
 
+  ia:
+    build: ./backend/microservices/ia
+    ports: ["8007:8007"]
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    command: uvicorn main:app --host 0.0.0.0 --port 8007 --reload
+
   auth:
     build: ./backend/microservices/auth_usuarios
     ports: ["8005:8005"]

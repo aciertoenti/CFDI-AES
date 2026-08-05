@@ -65,7 +65,7 @@ const useToast = () => useContext(ToastCtx);
 // ═══════════════════════════════════════════════════════════════════════════════
 // HOOKS IA
 // ═══════════════════════════════════════════════════════════════════════════════
-const IA_BASE  = "http://localhost:8006";
+const IA_BASE  = "http://localhost:8007";
 const API_BASE = "http://localhost:8000";
 // Directo al microservicio (mismo patron que IA_BASE) — el Gateway exige JWT
 // en todas las rutas y el frontend todavia no tiene login implementado.

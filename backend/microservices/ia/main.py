@@ -2,27 +2,27 @@
 # Este código vivía por error dentro del API Gateway. El gateway fue
 # reescrito para ser un proxy JWT hacia los microservicios (ver
 # backend/api_gateway/main.py actual), y este módulo de IA quedó fuera de
-# esa reescritura. Se mueve aquí, a su microservicio propio, tal cual
-# estaba, como stub pendiente de integrar (Fase 3 del roadmap — ver
-# docs/CFDI-AES_Roadmap.md).
+# esa reescritura. Se movió aquí, a su microservicio propio (Fase 3 del
+# roadmap — ver docs/CFDI-AES_Roadmap.md).
 #
-# PENDIENTE antes de activarlo:
-#   - Agregar requirements.txt y Dockerfile propios.
-#   - Conectarlo en docker-compose.yml (puerto 8006 ya lo usa whatsapp_bot
-#     en el stack actual — hay que resolver el conflicto de puerto).
-#   - Agregarlo a SERVICES en backend/api_gateway/main.py para que el
-#     gateway pueda enrutar hacia él.
-#   - Definir ANTHROPIC_API_KEY como variable de entorno.
+# Activado en #18 (05 ago 2026): Lector de Documentos, Chat Fiscal y
+# Anomalías IA (los 3 modulos que el frontend ya consumia con fetch real).
+# Conciliacion y Resumen Ejecutivo quedan fuera de alcance a proposito -
+# el backend ya existe pero el frontend nunca se construyo para ellos
+# (siguen siendo un Placeholder y un boton que solo simula un toast).
+#
+# Pendiente para activar esos dos endpoints de verdad: construir el
+# frontend correspondiente (tarea aparte).
 # ──────────────────────────────────────────────────────────────────────────────
 # ─── services/ia/main.py ──────────────────────────────────────────────────────
 # Microservicio de IA – CFDI-AES
-# Puerto: 8006
+# Puerto: 8007 (8006 ya es de whatsapp_bot)
 # Módulos:
 #   1. Lector de PDFs / imágenes → extracción de datos fiscales
 #   2. Chat fiscal conversacional con contexto de la cuenta
 #   3. Detección de anomalías en facturas y pagos
-#   4. Conciliación bancaria automática
-# Modelo: Claude claude-sonnet-4-20250514 vía Anthropic API
+#   4. Conciliación bancaria automática (backend listo, sin frontend - #18)
+# Modelo: Claude claude-sonnet-5 vía Anthropic API
 # ──────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -32,10 +32,13 @@ import httpx
 from datetime import datetime, date
 from typing import Optional, List, AsyncGenerator
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+load_dotenv()
 
 app = FastAPI(title="CFDI-AES – Microservicio IA", version="1.0.0")
 
@@ -48,7 +51,7 @@ app.add_middleware(
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL      = "claude-sonnet-4-20250514"
+CLAUDE_MODEL      = "claude-sonnet-5"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -457,6 +460,6 @@ async def health():
         "service": "ia",
         "status": "ok",
         "model": CLAUDE_MODEL,
-        "api_key_configured": bool(ANTHROPIC_API_KEY),
+        "api_key_configured": bool(ANTHROPIC_API_KEY) and ANTHROPIC_API_KEY.startswith("sk-ant-"),
         "modules": ["extraccion_pdf", "chat_fiscal", "anomalias", "conciliacion", "resumen_ejecutivo"],
     }

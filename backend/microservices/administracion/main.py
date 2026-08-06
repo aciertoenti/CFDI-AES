@@ -269,7 +269,20 @@ async def crear_negocio(negocio: NegocioCreate, db: AsyncSession = Depends(get_d
 
 
 @app.get("/admin/negocios/{negocio_id}", response_model=NegocioResponse)
-async def obtener_negocio(negocio_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_negocio(
+    negocio_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """
+    Un Negocio solo puede consultar su propia informacion (#15) - antes no
+    exigia X-Negocio-Id, asi que cualquiera podia enumerar negocios ajenos
+    (nombre, plan, estado) con solo iterar ids secuenciales. 404 (no 403)
+    si el id pedido no es el propio, mismo criterio que el resto de lecturas.
+    """
+    caller_negocio_id = requerir_negocio_id(x_negocio_id)
+    if negocio_id != caller_negocio_id:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
     result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
     negocio = result.scalar_one_or_none()
     if negocio is None:
@@ -332,8 +345,17 @@ async def obtener_csd_descifrado(rfc: str, db: AsyncSession = Depends(get_db)):
     )
 
 @app.put("/admin/emisores/{rfc}", response_model=EmisorResponse)
-async def actualizar_emisor(rfc: str, emisor: EmisorCreate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Emisor).where(Emisor.rfc == rfc))
+async def actualizar_emisor(
+    rfc: str,
+    emisor: EmisorCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    # El mas grave de los IDOR (#15) - sin este check, cualquiera podia
+    # editar el CSD de un emisor ajeno adivinando el RFC. 404 (no 403) si no
+    # pertenece al Negocio del caller, mismo criterio que el resto.
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(select(Emisor).where(Emisor.rfc == rfc, Emisor.negocio_id == negocio_id))
     existente = result.scalar_one_or_none()
     if existente is None:
         raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
@@ -421,9 +443,22 @@ async def obtener_cliente(
     return _cliente_to_response(cliente)
 
 @app.put("/admin/clientes/{rfc}", response_model=ClienteResponse)
-async def actualizar_cliente(rfc: str, cliente: ClienteCreate, db: AsyncSession = Depends(get_db)):
+async def actualizar_cliente(
+    rfc: str,
+    cliente: ClienteCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    # Mismo criterio que listar/obtener clientes: Cliente no tiene negocio_id
+    # propio, se valida via el emisor_rfc contra los emisores de este Negocio.
+    rfcs_del_negocio = select(Emisor.rfc).where(Emisor.negocio_id == negocio_id)
     result = await db.execute(
-        select(Cliente).where(Cliente.rfc == rfc, Cliente.emisor_rfc == cliente.emisor_rfc)
+        select(Cliente).where(
+            Cliente.rfc == rfc,
+            Cliente.emisor_rfc == cliente.emisor_rfc,
+            Cliente.emisor_rfc.in_(rfcs_del_negocio),
+        )
     )
     existente = result.scalar_one_or_none()
     if existente is None:
@@ -441,9 +476,20 @@ async def actualizar_cliente(rfc: str, cliente: ClienteCreate, db: AsyncSession 
     return _cliente_to_response(existente)
 
 @app.delete("/admin/clientes/{rfc}")
-async def eliminar_cliente(rfc: str, emisor_rfc: str, db: AsyncSession = Depends(get_db)):
+async def eliminar_cliente(
+    rfc: str,
+    emisor_rfc: str,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    rfcs_del_negocio = select(Emisor.rfc).where(Emisor.negocio_id == negocio_id)
     result = await db.execute(
-        select(Cliente).where(Cliente.rfc == rfc, Cliente.emisor_rfc == emisor_rfc)
+        select(Cliente).where(
+            Cliente.rfc == rfc,
+            Cliente.emisor_rfc == emisor_rfc,
+            Cliente.emisor_rfc.in_(rfcs_del_negocio),
+        )
     )
     cliente = result.scalar_one_or_none()
     if cliente is None:
@@ -483,9 +529,24 @@ async def listar_series(
     ]
 
 @app.get("/admin/series/{serie}/siguiente-folio")
-async def siguiente_folio(serie: str, emisor_rfc: str, db: AsyncSession = Depends(get_db)):
+async def siguiente_folio(
+    serie: str,
+    emisor_rfc: str,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
     """
     Folio consecutivo real por (emisor_rfc, serie) - #12.
+
+    Llamado por facturacion durante el timbrado, nunca directo desde el
+    navegador (#15) - pero SI necesita X-Negocio-Id: facturacion ya lo
+    recibe del Gateway (el usuario se autentico para llegar a
+    POST /facturas/timbrar) y lo reenvia aqui tal cual. No es un endpoint
+    de servicio-a-servicio tipo csd-descifrado (X-Internal-Key) porque el
+    contexto de tenant real SI existe en la cadena de la request - usarlo
+    evita que un Negocio incremente/consulte el folio de otro adivinando su
+    emisor_rfc. Se valida que el emisor pertenezca al Negocio del caller
+    antes de tocar el contador.
 
     Atómico vía UPSERT (INSERT ... ON CONFLICT DO UPDATE ... RETURNING) en
     una sola sentencia: Postgres serializa las escrituras concurrentes sobre
@@ -494,6 +555,13 @@ async def siguiente_folio(serie: str, emisor_rfc: str, db: AsyncSession = Depend
     a diferencia de un "leer, sumar 1, guardar" hecho en dos pasos separados
     desde la aplicación, que sí tendría condición de carrera.
     """
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    emisor_existente = await db.execute(
+        select(Emisor).where(Emisor.rfc == emisor_rfc, Emisor.negocio_id == negocio_id)
+    )
+    if emisor_existente.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Emisor {emisor_rfc} no encontrado")
+
     stmt = pg_insert(SerieFolio).values(emisor_rfc=emisor_rfc, serie=serie, ultimo_folio=1)
     stmt = stmt.on_conflict_do_update(
         index_elements=["emisor_rfc", "serie"],

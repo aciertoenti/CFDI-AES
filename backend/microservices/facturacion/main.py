@@ -5,7 +5,7 @@ from decimal import Decimal
 from functools import lru_cache
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, Header, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -161,13 +161,19 @@ class ContadorVirtualISRResicoResponse(BaseModel):
 ADMINISTRACION_URL = os.environ.get("ADMINISTRACION_URL", "http://administracion:8002")
 
 
-async def obtener_datos_emisor(rfc: str) -> dict:
+async def obtener_datos_emisor(rfc: str, x_negocio_id: Optional[str] = None) -> dict:
     """Consulta administracion por regimen fiscal y CP del emisor. Si el
     emisor no esta registrado ahi, es un error real (no hay a que hacer
-    fallback) - no se puede timbrar a nombre de un emisor sin dar de alta."""
+    fallback) - no se puede timbrar a nombre de un emisor sin dar de alta.
+
+    x_negocio_id (#15) se reenvia tal cual llego a este servicio - viene del
+    Gateway (derivado del JWT ya verificado del usuario que llamo a este
+    endpoint) y administracion lo exige para no dejar que un Negocio consulte
+    (o firme a nombre de) el emisor de otro adivinando el RFC."""
+    headers = {"X-Negocio-Id": x_negocio_id} if x_negocio_id else {}
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            resp = await client.get(f"{ADMINISTRACION_URL}/admin/emisores/{rfc}")
+            resp = await client.get(f"{ADMINISTRACION_URL}/admin/emisores/{rfc}", headers=headers)
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"No se pudo conectar con administracion: {e}")
 
@@ -182,15 +188,20 @@ async def obtener_datos_emisor(rfc: str) -> dict:
     return resp.json()
 
 
-async def obtener_siguiente_folio(rfc: str, serie: str) -> str:
+async def obtener_siguiente_folio(rfc: str, serie: str, x_negocio_id: Optional[str] = None) -> str:
     """Pide a administracion el siguiente folio consecutivo real para este
     emisor+serie (#12) - el conteo atomico vive alla, no aqui. Reemplaza el
-    identificador pseudoaleatorio que se usaba antes."""
+    identificador pseudoaleatorio que se usaba antes.
+
+    x_negocio_id (#15) se reenvia igual que en obtener_datos_emisor - evita
+    que un Negocio incremente el folio de otro adivinando su emisor_rfc."""
+    headers = {"X-Negocio-Id": x_negocio_id} if x_negocio_id else {}
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
                 f"{ADMINISTRACION_URL}/admin/series/{serie}/siguiente-folio",
                 params={"emisor_rfc": rfc},
+                headers=headers,
             )
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"No se pudo conectar con administracion: {e}")
@@ -230,14 +241,14 @@ def get_signer() -> Signer:
         raise HTTPException(status_code=500, detail=f"No se pudo cargar el CSD: {e}")
 
 
-async def construir_comprobante(factura: FacturaCreate, signer: Signer) -> Comprobante:
+async def construir_comprobante(factura: FacturaCreate, signer: Signer, x_negocio_id: Optional[str] = None) -> Comprobante:
     if factura.emisor_rfc != str(signer.rfc):
         raise HTTPException(
             status_code=400,
             detail=f"emisor_rfc ({factura.emisor_rfc}) no coincide con el RFC del CSD cargado ({signer.rfc})",
         )
 
-    datos_emisor = await obtener_datos_emisor(factura.emisor_rfc)
+    datos_emisor = await obtener_datos_emisor(factura.emisor_rfc, x_negocio_id)
 
     emisor = Emisor(
         rfc=str(signer.rfc),
@@ -305,7 +316,10 @@ async def construir_comprobante(factura: FacturaCreate, signer: Signer) -> Compr
 
 
 @app.post("/facturas/generar-xml", response_class=PlainTextResponse)
-async def generar_xml_firmado(factura: FacturaCreate):
+async def generar_xml_firmado(
+    factura: FacturaCreate,
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
     """
     ENDPOINT TEMPORAL DE PRUEBA — genera y firma el XML CFDI 4.0 (cadena
     original + sello) con el CSD de prueba configurado, pero NO lo envia
@@ -313,7 +327,7 @@ async def generar_xml_firmado(factura: FacturaCreate):
     antes de conectar el PAC (paso 3).
     """
     signer = get_signer()
-    comprobante = await construir_comprobante(factura, signer)
+    comprobante = await construir_comprobante(factura, signer, x_negocio_id)
     xml_bytes = comprobante.xml_bytes(pretty_print=True)
     return PlainTextResponse(content=xml_bytes.decode("utf-8"), media_type="application/xml")
 
@@ -338,9 +352,13 @@ def _factura_to_response(f: Factura) -> FacturaResponse:
 
 
 @app.post("/facturas/timbrar", response_model=FacturaResponse, status_code=201)
-async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get_db)):
+async def timbrar_factura(
+    factura: FacturaCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
     signer = get_signer()
-    comprobante = await construir_comprobante(factura, signer)
+    comprobante = await construir_comprobante(factura, signer, x_negocio_id)
 
     cert_bytes, key_bytes, csd_password = get_csd_bytes()
     try:
@@ -353,7 +371,7 @@ async def timbrar_factura(factura: FacturaCreate, db: AsyncSession = Depends(get
     # Folio consecutivo real por emisor+serie, contado atomicamente en
     # administracion (#12). Se pide DESPUES de que Finkok ya confirmo el
     # timbrado, para no quemar folios en intentos que fallan en el PAC.
-    folio = await obtener_siguiente_folio(factura.emisor_rfc, factura.serie)
+    folio = await obtener_siguiente_folio(factura.emisor_rfc, factura.serie, x_negocio_id)
     subtotal = Decimal(str(comprobante["SubTotal"]))
     total_iva = Decimal(str(impuestos.get("TotalImpuestosTrasladados") or 0))
     total = Decimal(str(comprobante["Total"]))
@@ -492,6 +510,7 @@ async def contador_virtual_isr_resico(
     anio: int,
     mes: int = Query(ge=1, le=12),
     db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
     """
     Contador virtual (#40, Fase 1): estimador de ISR provisional mensual
@@ -506,7 +525,7 @@ async def contador_virtual_isr_resico(
     Los PPD se excluyen del calculo y se listan aparte - no hay complemento
     de pago en el sistema para saber cuando se cobraron de verdad.
     """
-    datos_emisor = await obtener_datos_emisor(emisor_rfc)
+    datos_emisor = await obtener_datos_emisor(emisor_rfc, x_negocio_id)
     periodo = f"{anio:04d}-{mes:02d}"
 
     es_resico_pf = (

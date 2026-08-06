@@ -136,22 +136,24 @@ function Login({ onLogin }) {
   };
 
   return (
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.surface}}>
-      <form onSubmit={submit} style={{background:C.card,padding:32,borderRadius:12,width:320,maxWidth:"90vw",boxShadow:"0 4px 24px rgba(0,0,0,.08)",border:`1px solid ${C.border}`}}>
-        <img src={logoAcierto} alt="Acierto" style={{width:140,maxWidth:"100%",borderRadius:8,display:"block",marginBottom:10}}/>
-        <div style={{fontSize:13,color:C.textSec,marginBottom:20}}>Inicia sesión para continuar</div>
-        <div style={{marginBottom:12}}>
-          <label htmlFor="login-email" style={{fontSize:12,color:C.textSec,display:"block",marginBottom:4}}>Email</label>
+    <div style={{minHeight:"100dvh",display:"flex",alignItems:"center",justifyContent:"center",background:C.surface,padding:20,boxSizing:"border-box"}}>
+      <form onSubmit={submit} style={{background:C.card,padding:"28px 22px",borderRadius:12,width:340,maxWidth:"100%",boxShadow:"0 4px 24px rgba(0,0,0,.08)",border:`1px solid ${C.border}`,display:"flex",flexDirection:"column",alignItems:"center",boxSizing:"border-box"}}>
+        <img src={logoAcierto} alt="Acierto" style={{width:120,maxWidth:"60%",borderRadius:8,display:"block",marginBottom:14}}/>
+        <div style={{fontSize:14,color:C.textSec,marginBottom:22,textAlign:"center"}}>Inicia sesión para continuar</div>
+        <div style={{marginBottom:14,width:"100%"}}>
+          <label htmlFor="login-email" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Email</label>
+          {/* fontSize:16 en los inputs a proposito - por debajo de eso, Safari
+              en iOS hace zoom automatico al enfocar el campo. */}
           <input id="login-email" type="email" required autoFocus value={email} onChange={e=>setEmail(e.target.value)}
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 12px",fontSize:13,color:C.text,boxSizing:"border-box"}}/>
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
-        <div style={{marginBottom:18}}>
-          <label htmlFor="login-password" style={{fontSize:12,color:C.textSec,display:"block",marginBottom:4}}>Contraseña</label>
+        <div style={{marginBottom:20,width:"100%"}}>
+          <label htmlFor="login-password" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Contraseña</label>
           <input id="login-password" type="password" required value={password} onChange={e=>setPassword(e.target.value)}
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 12px",fontSize:13,color:C.text,boxSizing:"border-box"}}/>
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
-        {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6}}>⚠ {error}</div>}
-        <Btn style={{width:"100%"}} disabled={loading}>{loading ? "Ingresando…" : "Iniciar sesión"}</Btn>
+        {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6,width:"100%",boxSizing:"border-box"}}>⚠ {error}</div>}
+        <Btn style={{width:"100%",padding:"12px 18px"}} disabled={loading}>{loading ? "Ingresando…" : "Iniciar sesión"}</Btn>
       </form>
     </div>
   );

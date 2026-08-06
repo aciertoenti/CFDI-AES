@@ -118,6 +118,27 @@ async def resolver_negocio_id(x_negocio_id: Optional[str], db: AsyncSession) -> 
     return negocio.id
 
 
+def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
+    """
+    Para LECTURAS multi-tenant, a diferencia de resolver_negocio_id() (usado
+    en escritura con fallback al Negocio por defecto para no romper pruebas
+    curl directas): aqui no hay fallback permisivo. Una lectura sin
+    X-Negocio-Id valido (llamada directa al servicio, bypass del Gateway,
+    header ausente por error) se rechaza en vez de asumir un Negocio -
+    un fallback abierto en lectura significaria que cualquiera podria ver
+    los datos de otro Negocio con solo omitir el header.
+    """
+    if not x_negocio_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Falta X-Negocio-Id - esta lectura requiere pasar por el Gateway con un token valido",
+        )
+    try:
+        return int(x_negocio_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="X-Negocio-Id invalido")
+
+
 class ClienteCreate(BaseModel):
     emisor_rfc: str
     nombre: str
@@ -256,13 +277,27 @@ async def obtener_negocio(negocio_id: int, db: AsyncSession = Depends(get_db)):
     return _negocio_to_response(negocio)
 
 @app.get("/admin/emisores", response_model=List[EmisorResponse])
-async def listar_emisores(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Emisor).order_by(Emisor.created_at.desc()))
+async def listar_emisores(
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(
+        select(Emisor).where(Emisor.negocio_id == negocio_id).order_by(Emisor.created_at.desc())
+    )
     return [_emisor_to_response(e) for e in result.scalars().all()]
 
 @app.get("/admin/emisores/{rfc}", response_model=EmisorResponse)
-async def obtener_emisor(rfc: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Emisor).where(Emisor.rfc == rfc))
+async def obtener_emisor(
+    rfc: str,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    # 404 en vez de 403 (#15) - si el RFC existe pero es de otro Negocio, se
+    # trata igual que si no existiera. Un 403 confirmaria que el recurso
+    # existe en algun lado, aunque sea ajeno - fuga de informacion menor.
+    result = await db.execute(select(Emisor).where(Emisor.rfc == rfc, Emisor.negocio_id == negocio_id))
     emisor = result.scalar_one_or_none()
     if emisor is None:
         raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
@@ -347,8 +382,14 @@ async def listar_clientes(
     page: int = 1,
     size: int = 50,
     db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
-    stmt = select(Cliente)
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    # Cliente no tiene negocio_id propio (solo emisor_rfc, referencia suave
+    # sin FK) - se filtra por los RFCs de los emisores que pertenecen a este
+    # Negocio, ya que Emisor y Cliente viven en la misma base de datos.
+    rfcs_del_negocio = select(Emisor.rfc).where(Emisor.negocio_id == negocio_id)
+    stmt = select(Cliente).where(Cliente.emisor_rfc.in_(rfcs_del_negocio))
     if emisor_rfc:
         stmt = stmt.where(Cliente.emisor_rfc == emisor_rfc)
     if busqueda:
@@ -359,8 +400,18 @@ async def listar_clientes(
     return [_cliente_to_response(c) for c in result.scalars().all()]
 
 @app.get("/admin/clientes/{rfc}", response_model=ClienteResponse)
-async def obtener_cliente(rfc: str, emisor_rfc: Optional[str] = None, db: AsyncSession = Depends(get_db)):
-    stmt = select(Cliente).where(Cliente.rfc == rfc)
+async def obtener_cliente(
+    rfc: str,
+    emisor_rfc: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    # Mismo criterio que listar_clientes: Cliente no tiene negocio_id propio,
+    # se valida via el emisor_rfc contra los emisores de este Negocio. 404 en
+    # vez de 403 (#15) - no revela que el RFC existe en otro Negocio.
+    rfcs_del_negocio = select(Emisor.rfc).where(Emisor.negocio_id == negocio_id)
+    stmt = select(Cliente).where(Cliente.rfc == rfc, Cliente.emisor_rfc.in_(rfcs_del_negocio))
     if emisor_rfc:
         stmt = stmt.where(Cliente.emisor_rfc == emisor_rfc)
     result = await db.execute(stmt)
@@ -412,8 +463,16 @@ async def crear_serie(serie: SerieCreate):
     return {**serie.dict(), "folio_actual": serie.folio_inicial}
 
 @app.get("/admin/series", response_model=List[SerieResponse])
-async def listar_series(emisor_rfc: Optional[str] = None, db: AsyncSession = Depends(get_db)):
-    stmt = select(SerieFolio)
+async def listar_series(
+    emisor_rfc: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    # SerieFolio no tiene negocio_id propio (solo emisor_rfc) - mismo
+    # criterio de filtrado via Emisor que ya usa clientes.
+    rfcs_del_negocio = select(Emisor.rfc).where(Emisor.negocio_id == negocio_id)
+    stmt = select(SerieFolio).where(SerieFolio.emisor_rfc.in_(rfcs_del_negocio))
     if emisor_rfc:
         stmt = stmt.where(SerieFolio.emisor_rfc == emisor_rfc)
     stmt = stmt.order_by(SerieFolio.emisor_rfc, SerieFolio.serie)

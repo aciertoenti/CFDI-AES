@@ -467,7 +467,6 @@ const FACTURAS = [
   {folio:"A-0039",receptor:"FEMSA",total:124750,fecha:"2025-03-14",estado:"Vencida",uuid:"ABC1-DEF2"},
   {folio:"A-0003",receptor:"Tiendas Chedraui",total:9800,fecha:"2025-05-14",estado:"Cancelada",uuid:"YZA9-BCD0"},
 ];
-const EMISOR = {razon:"Distribuidora Nacional SA de CV",rfc:"DNS010101AAA",regimen:"601 – General de Ley Personas Morales",cp:"06600",csd:"Activo"};
 const CUENTA_CTX = {iva_pendiente:38640,facturas_vigentes:4,facturas_vencidas:1,total_mayo:302450,cuentas_por_cobrar:246150,proximo_vencimiento_iva:"2025-06-17"};
 const NAV = [
   {id:"facturas",label:"Mis Facturas",icon:"📄",children:["nueva","generadas","recibidas","reporte","costos","contador"]},
@@ -860,6 +859,8 @@ function LectorDocumentos(){
 function ChatFiscal(){
   const {isMobile}=useBreakpoint();
   const {messages,send,streaming,reset,abort}=useFiscalChat();
+  const {emisores}=useEmisores();
+  const emisorActual=emisores[0];
   const [input,setInput]=useState("");
   const bottomRef=useRef();
   useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"});},[messages]);
@@ -867,7 +868,7 @@ function ChatFiscal(){
   return (
     <div style={{display:"flex",flexDirection:"column",height:isMobile?"calc(100dvh - 170px)":"calc(100vh - 155px)",gap:10}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
-        <div><SectionTitle>Chat fiscal IA</SectionTitle><p style={{fontSize:12,color:C.textSec,margin:0}}>Conectado · RFC {EMISOR.rfc}</p></div>
+        <div><SectionTitle>Chat fiscal IA</SectionTitle><p style={{fontSize:12,color:C.textSec,margin:0}}>Conectado · RFC {emisorActual?.rfc||"—"}</p></div>
         <div style={{display:"flex",gap:8}}>
           {streaming&&<Btn variant="secondary" onClick={abort} style={{fontSize:12,padding:"6px 12px"}}>Detener</Btn>}
           <Btn variant="secondary" onClick={reset} style={{fontSize:12,padding:"6px 12px"}}>Nueva conversación</Btn>
@@ -1439,6 +1440,18 @@ function AppShell({onLogout}){
   const toggle=id=>setExpanded(e=>({...e,[id]:!e[id]}));
   const navigate=id=>{setActive(id);setDrawerOpen(false);};
 
+  // Header conectado al Emisor real del Negocio del usuario logueado (#15) -
+  // antes mostraba el mock EMISOR fijo ("Distribuidora Nacional SA de CV")
+  // sin importar quien iniciara sesion. useEmisores() ya llega filtrado por
+  // negocio_id (ver aislamiento de lecturas, #15), asi que el primero de la
+  // lista es "el" emisor de esta cuenta - mismo criterio que ya usaba NuevaFactura.
+  const {emisores,loading:cargandoEmisor}=useEmisores();
+  const emisorActual=emisores[0];
+  const nombreEmisor=cargandoEmisor?"Cargando…":(emisorActual?.razon_social||"Sin emisor registrado");
+  const inicialesEmisor=emisorActual?.razon_social
+    ? emisorActual.razon_social.split(" ").filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join("")
+    : "—";
+
   const sidebarW = isMobile ? 0 : isTablet ? 52 : 232;
 
   return (
@@ -1471,16 +1484,16 @@ function AppShell({onLogout}){
             )}
             <div style={{minWidth:0}}>
               <div style={{fontSize:10,color:C.textMuted}}>Bienvenido de vuelta</div>
-              <div style={{fontSize:isMobile?13:14,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isMobile?"Dist. Nacional SA de CV":EMISOR.razon}</div>
+              <div style={{fontSize:isMobile?13:14,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nombreEmisor}</div>
             </div>
           </div>
           <div style={{display:"flex",gap:10,alignItems:"center",flexShrink:0}}>
-            {!isMobile&&<div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>RFC: {EMISOR.rfc}</div>}
+            {!isMobile&&<div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>RFC: {cargandoEmisor?"…":(emisorActual?.rfc||"—")}</div>}
             <div style={{position:"relative"}}>
               <div style={{width:7,height:7,borderRadius:"50%",background:C.danger,position:"absolute",top:-1,right:-1,border:"2px solid #fff"}}/>
               <span style={{fontSize:17,cursor:"pointer"}}>🔔</span>
             </div>
-            <div style={{width:30,height:30,borderRadius:"50%",background:C.primary,display:"flex",alignItems:"center",justifyContent:"center",color:C.accent,fontWeight:700,fontSize:11,flexShrink:0}}>DN</div>
+            <div style={{width:30,height:30,borderRadius:"50%",background:C.primary,display:"flex",alignItems:"center",justifyContent:"center",color:C.accent,fontWeight:700,fontSize:11,flexShrink:0}}>{inicialesEmisor}</div>
             <button onClick={onLogout} title="Cerrar sesión"
               style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 10px",fontSize:12,color:C.textSec,cursor:"pointer",flexShrink:0}}>Salir</button>
           </div>

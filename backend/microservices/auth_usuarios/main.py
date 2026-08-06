@@ -6,7 +6,7 @@ from typing import List, Optional
 import bcrypt
 import httpx
 import jwt
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -107,6 +107,24 @@ class RegistroResponse(BaseModel):
 # Mensaje deliberadamente genérico: no revela si falló el email o la
 # contraseña (evita que un atacante use el login para enumerar cuentas).
 CREDENCIALES_INVALIDAS = "Email o contraseña incorrectos"
+
+
+def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
+    """
+    Mismo criterio que administracion (#15): las LECTURAS multi-tenant no
+    tienen fallback permisivo. Un fallback a un Negocio por defecto aqui
+    significaria que una llamada sin X-Negocio-Id (bypass del Gateway,
+    header ausente por error) podria mostrar usuarios de un Negocio ajeno.
+    """
+    if not x_negocio_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Falta X-Negocio-Id - esta lectura requiere pasar por el Gateway con un token valido",
+        )
+    try:
+        return int(x_negocio_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="X-Negocio-Id invalido")
 
 # Rol fijo para todo registro via el endpoint publico. No confundir con
 # capacidad de administrar: promover a un usuario a "admin" requiere un
@@ -227,11 +245,18 @@ async def logout():
 
 
 @app.get("/auth/usuarios", response_model=List[UsuarioListItem])
-async def listar_usuarios(db: AsyncSession = Depends(get_db)):
+async def listar_usuarios(
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
     """Solo lectura. Gestion de roles, edicion y eliminacion quedan fuera
     a proposito - promover a un usuario a "admin" sigue siendo una
-    decision de diseno sin resolver (ver #10)."""
-    result = await db.execute(select(Usuario).order_by(Usuario.created_at.desc()))
+    decision de diseno sin resolver (ver #10). Filtrado por Negocio (#15) -
+    cada usuario ve solo los usuarios de su propio Negocio."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(
+        select(Usuario).where(Usuario.negocio_id == negocio_id).order_by(Usuario.created_at.desc())
+    )
     return [
         UsuarioListItem(
             id=u.id, email=u.email, nombre=u.nombre,

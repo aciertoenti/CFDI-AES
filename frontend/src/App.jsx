@@ -1,5 +1,6 @@
 // ─── App.jsx ── CFDI-AES · Responsive + Toast + Table fix ─────────────────────
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from "react";
+import logoAcierto from "./assets/logo-acierto.png";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BREAKPOINT
@@ -137,8 +138,8 @@ function Login({ onLogin }) {
   return (
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.surface}}>
       <form onSubmit={submit} style={{background:C.card,padding:32,borderRadius:12,width:320,maxWidth:"90vw",boxShadow:"0 4px 24px rgba(0,0,0,.08)",border:`1px solid ${C.border}`}}>
-        <div style={{fontSize:11,fontWeight:700,color:C.accent,letterSpacing:"0.1em",textTransform:"uppercase"}}>CFDI · AES</div>
-        <div style={{fontSize:13,color:C.textSec,marginBottom:20,marginTop:4}}>Inicia sesión para continuar</div>
+        <img src={logoAcierto} alt="Acierto" style={{width:140,maxWidth:"100%",borderRadius:8,display:"block",marginBottom:10}}/>
+        <div style={{fontSize:13,color:C.textSec,marginBottom:20}}>Inicia sesión para continuar</div>
         <div style={{marginBottom:12}}>
           <label htmlFor="login-email" style={{fontSize:12,color:C.textSec,display:"block",marginBottom:4}}>Email</label>
           <input id="login-email" type="email" required autoFocus value={email} onChange={e=>setEmail(e.target.value)}
@@ -1309,10 +1310,10 @@ function SidebarNav({active, navigate, expanded, toggle, compact=false}){
     <>
       <div style={{padding:compact?"14px 0 12px":"20px 18px 14px",borderBottom:"1px solid rgba(255,255,255,.08)",textAlign:compact?"center":"left"}}>
         {compact
-          ? <div style={{fontSize:15,fontWeight:700,color:C.accent}}>CF</div>
+          ? <img src={logoAcierto} alt="Acierto" style={{width:28,height:28,borderRadius:6,display:"inline-block"}}/>
           : <>
-              <div style={{fontSize:11,fontWeight:700,color:C.accent,letterSpacing:"0.1em",textTransform:"uppercase"}}>CFDI · AES</div>
-              <div style={{fontSize:13,fontWeight:600,color:"rgba(255,255,255,.9)",marginTop:2}}>Portal Inteligente</div>
+              <img src={logoAcierto} alt="Acierto" style={{width:110,maxWidth:"100%",borderRadius:6,display:"block"}}/>
+              <div style={{fontSize:13,fontWeight:600,color:"rgba(255,255,255,.9)",marginTop:6}}>Portal Inteligente</div>
             </>
         }
       </div>

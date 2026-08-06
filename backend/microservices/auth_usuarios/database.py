@@ -16,7 +16,7 @@ from typing import Optional
 from alembic import command
 from alembic.config import Config
 from dotenv import load_dotenv
-from sqlalchemy import DateTime, String, func, inspect
+from sqlalchemy import DateTime, Integer, String, func, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -50,6 +50,11 @@ class Usuario(Base):
     # Referencia suave, mismo patron que Cliente.emisor_rfc en administracion -
     # no hay modelo de tenants todavia (#15 en Backlog).
     rfc_emisor: Mapped[Optional[str]] = mapped_column(String(13), nullable=True)
+    # Referencia suave a Negocio (#15) - Negocio vive en administracion, otra
+    # base de datos (cfdi_admin vs cfdi_auth de este servicio), asi que no
+    # puede ser un FK real de Postgres. Backfill de datos existentes ya
+    # aplicado (scripts/backfill_negocio.py) - ahora endurecido a NOT NULL.
+    negocio_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     rol: Mapped[str] = mapped_column(String(20), nullable=False, default="usuario")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

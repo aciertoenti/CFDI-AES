@@ -24,7 +24,7 @@ from alembic import command
 from alembic.config import Config
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
-from sqlalchemy import DateTime, Integer, Numeric, String, Text, TypeDecorator, UniqueConstraint, func, inspect
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, TypeDecorator, UniqueConstraint, func, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -71,10 +71,36 @@ class Base(DeclarativeBase):
     pass
 
 
+class Negocio(Base):
+    """
+    El cliente de pago (#15) - un Negocio puede administrar varios
+    RFCs/emisores (caso principal: contadores/despachos con varios
+    negocios). Vive en administracion porque este servicio ya es el dueno
+    de los datos maestros de negocio (Emisor, Cliente, Series).
+
+    Usuario (en auth_usuarios, base de datos separada: cfdi_auth) referencia
+    este mismo negocio_id como referencia suave - mismo patron ya usado en
+    todo el proyecto para relaciones entre servicios (ej. Cliente.emisor_rfc
+    aqui mismo, Factura.emisor_rfc en facturacion) - no puede ser un FK real
+    de Postgres porque son bases de datos fisicamente distintas.
+    """
+    __tablename__ = "negocios"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    nombre: Mapped[str] = mapped_column(String(300), nullable=False)
+    plan: Mapped[str] = mapped_column(String(30), nullable=False, default="basico")
+    fecha_alta: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="Activo")
+
+
 class Emisor(Base):
     __tablename__ = "emisores"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # FK real - Negocio vive en esta misma base de datos (cfdi_admin).
+    # Backfill de datos existentes ya aplicado (scripts/backfill_negocio.py,
+    # #15) - ahora endurecido a NOT NULL.
+    negocio_id: Mapped[int] = mapped_column(ForeignKey("negocios.id"), nullable=False, index=True)
     rfc: Mapped[str] = mapped_column(String(13), unique=True, nullable=False, index=True)
     razon_social: Mapped[str] = mapped_column(String(300), nullable=False)
     regimen_fiscal: Mapped[str] = mapped_column(String(10), nullable=False)

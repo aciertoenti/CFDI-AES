@@ -121,7 +121,8 @@ services:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_auth@postgres_auth/cfdi_auth"
       JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
       REDIS_URL: "redis://redis:6379/1"
-    depends_on: [postgres_auth, redis]
+      ADMINISTRACION_URL: "http://administracion:8002"
+    depends_on: [postgres_auth, redis, administracion]
     command: uvicorn main:app --host 0.0.0.0 --port 8005 --reload
 
   # ── WhatsApp Bot ────────────────────────────────────────────────────────────

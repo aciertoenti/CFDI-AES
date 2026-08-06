@@ -117,11 +117,27 @@ function useAuth() {
       return { ok: false, error: e.message };
     }
   }, []);
+  const registro = useCallback(async (nombreNegocio, email, password, nombre) => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/registro`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, password, nombre: nombre || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, error: data.detail || `HTTP ${res.status}` };
+      // POST /auth/registro (#15) crea el Negocio + primer usuario admin pero
+      // no regresa token - se reusa login() con las mismas credenciales para
+      // entrar directo tras crear la cuenta.
+      return login(email, password);
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }, [login]);
   const logout = useCallback(() => { setStoredToken(null); setToken(null); }, []);
-  return { token, isAuthenticated: !!token, login, logout };
+  return { token, isAuthenticated: !!token, login, registro, logout };
 }
 
-function Login({ onLogin }) {
+function Login({ onLogin, onIrARegistro }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
@@ -154,6 +170,60 @@ function Login({ onLogin }) {
         </div>
         {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6,width:"100%",boxSizing:"border-box"}}>⚠ {error}</div>}
         <Btn style={{width:"100%",padding:"12px 18px"}} disabled={loading}>{loading ? "Ingresando…" : "Iniciar sesión"}</Btn>
+        <button type="button" onClick={onIrARegistro} style={{marginTop:14,background:"none",border:"none",color:C.textSec,fontSize:12,cursor:"pointer",textDecoration:"underline"}}>
+          ¿No tienes cuenta? Crear una
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function CrearCuenta({ onRegistro, onIrALogin }) {
+  const [nombreNegocio, setNombreNegocio] = useState("");
+  const [nombre, setNombre] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const submit = async e => {
+    e.preventDefault();
+    setLoading(true); setError(null);
+    const r = await onRegistro(nombreNegocio, email, password, nombre);
+    setLoading(false);
+    if (!r.ok) setError(r.error);
+  };
+
+  return (
+    <div style={{minHeight:"100dvh",display:"flex",alignItems:"center",justifyContent:"center",background:C.surface,padding:20,boxSizing:"border-box"}}>
+      <form onSubmit={submit} style={{background:C.card,padding:"28px 22px",borderRadius:12,width:340,maxWidth:"100%",boxShadow:"0 4px 24px rgba(0,0,0,.08)",border:`1px solid ${C.border}`,display:"flex",flexDirection:"column",alignItems:"center",boxSizing:"border-box"}}>
+        <img src={logoAcierto} alt="Acierto" style={{width:120,maxWidth:"60%",borderRadius:8,display:"block",marginBottom:14}}/>
+        <div style={{fontSize:14,color:C.textSec,marginBottom:22,textAlign:"center"}}>Crea tu cuenta</div>
+        <div style={{marginBottom:14,width:"100%"}}>
+          <label htmlFor="reg-negocio" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Nombre del negocio</label>
+          <input id="reg-negocio" type="text" required autoFocus value={nombreNegocio} onChange={e=>setNombreNegocio(e.target.value)}
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:14,width:"100%"}}>
+          <label htmlFor="reg-nombre" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Tu nombre (opcional)</label>
+          <input id="reg-nombre" type="text" value={nombre} onChange={e=>setNombre(e.target.value)}
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:14,width:"100%"}}>
+          <label htmlFor="reg-email" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Email</label>
+          <input id="reg-email" type="email" required value={email} onChange={e=>setEmail(e.target.value)}
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:20,width:"100%"}}>
+          <label htmlFor="reg-password" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Contraseña</label>
+          <input id="reg-password" type="password" required minLength={8} value={password} onChange={e=>setPassword(e.target.value)}
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
+        </div>
+        {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6,width:"100%",boxSizing:"border-box"}}>⚠ {error}</div>}
+        <Btn style={{width:"100%",padding:"12px 18px"}} disabled={loading}>{loading ? "Creando cuenta…" : "Crear cuenta"}</Btn>
+        <button type="button" onClick={onIrALogin} style={{marginTop:14,background:"none",border:"none",color:C.textSec,fontSize:12,cursor:"pointer",textDecoration:"underline"}}>
+          ¿Ya tienes cuenta? Inicia sesión
+        </button>
       </form>
     </div>
   );
@@ -1443,7 +1513,12 @@ function AppShell({onLogout}){
 // ═══════════════════════════════════════════════════════════════════════════════
 function AuthGate(){
   const auth = useAuth();
-  if (!auth.isAuthenticated) return <Login onLogin={auth.login}/>;
+  const [vista, setVista] = useState("login"); // "login" | "registro"
+  if (!auth.isAuthenticated) {
+    return vista === "registro"
+      ? <CrearCuenta onRegistro={auth.registro} onIrALogin={()=>setVista("login")}/>
+      : <Login onLogin={auth.login} onIrARegistro={()=>setVista("registro")}/>;
+  }
   return <AppShell onLogout={auth.logout}/>;
 }
 

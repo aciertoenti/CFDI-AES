@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException, Query, Depends, Security, status
+from fastapi import FastAPI, Header, HTTPException, Query, Depends, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
@@ -21,7 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Emisor, Cliente, SerieFolio, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import Emisor, Cliente, Negocio, SerieFolio, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 
 # ─── Autenticacion interna servicio-a-servicio ─────────────────────────────────
 # Mismo patron que whatsapp_bot/core/security.py (X-Internal-Key). Protege
@@ -64,6 +64,7 @@ class EmisorResponse(BaseModel):
     regimen_fiscal: str
     codigo_postal: str
     estado: str
+    negocio_id: int
     created_at: datetime
     # Deliberado: nunca se regresan csd_cert_base64/csd_key_base64/csd_password
     # en ninguna respuesta de la API, ni siquiera al crear.
@@ -76,6 +77,46 @@ class EmisorCSDDescifrado(BaseModel):
     csd_cert_base64: str
     csd_key_base64: str
     csd_password: str
+
+class NegocioCreate(BaseModel):
+    nombre: str
+    plan: str = "basico"
+
+class NegocioResponse(BaseModel):
+    id: int
+    nombre: str
+    plan: str
+    fecha_alta: datetime
+    estado: str
+
+# Mismo nombre usado por scripts/backfill_negocio.py (#15) - un solo lugar
+# de verdad para los emisores/usuarios que existian antes del modelo de
+# tenants.
+NOMBRE_NEGOCIO_DEFAULT = "Negocio por defecto (pre-tenants)"
+
+
+async def resolver_negocio_id(x_negocio_id: Optional[str], db: AsyncSession) -> int:
+    """
+    El Gateway inyecta X-Negocio-Id (tomado del JWT ya verificado) para las
+    llamadas que pasan por el (#15/#48). Si la llamada llega directo al
+    servicio sin ese header (pruebas locales, llamadas internas), se usa el
+    Negocio por defecto creado en el backfill - nunca se deja un Emisor sin
+    negocio_id valido.
+    """
+    if x_negocio_id:
+        try:
+            return int(x_negocio_id)
+        except ValueError:
+            pass
+    result = await db.execute(select(Negocio).where(Negocio.nombre == NOMBRE_NEGOCIO_DEFAULT))
+    negocio = result.scalar_one_or_none()
+    if negocio is None:
+        raise HTTPException(
+            status_code=500,
+            detail="No hay Negocio por defecto configurado - correr scripts/backfill_negocio.py",
+        )
+    return negocio.id
+
 
 class ClienteCreate(BaseModel):
     emisor_rfc: str
@@ -127,8 +168,13 @@ def _emisor_to_response(e: Emisor) -> EmisorResponse:
         regimen_fiscal=e.regimen_fiscal,
         codigo_postal=e.codigo_postal,
         estado=e.estado,
+        negocio_id=e.negocio_id,
         created_at=e.created_at,
     )
+
+
+def _negocio_to_response(n: Negocio) -> NegocioResponse:
+    return NegocioResponse(id=n.id, nombre=n.nombre, plan=n.plan, fecha_alta=n.fecha_alta, estado=n.estado)
 
 
 def _cliente_to_response(c: Cliente) -> ClienteResponse:
@@ -149,15 +195,27 @@ def _cliente_to_response(c: Cliente) -> ClienteResponse:
 # ─── Emisores ──────────────────────────────────────────────────────────────────
 
 @app.post("/admin/emisores", response_model=EmisorResponse, status_code=201)
-async def crear_emisor(emisor: EmisorCreate, db: AsyncSession = Depends(get_db)):
+async def crear_emisor(
+    emisor: EmisorCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
     """Registra un nuevo emisor real. El CSD se guarda tal cual se recibe
     (base64) - cifrado con KMS queda pendiente, es una decision de
-    seguridad aparte."""
+    seguridad aparte.
+
+    negocio_id (#15) se toma de X-Negocio-Id (inyectado por el Gateway a
+    partir del JWT ya verificado, ver #48) - nunca de un campo que el
+    cliente pudiera enviar en el body, para que un usuario no pueda crear
+    un emisor a nombre de un Negocio ajeno."""
     existente = await db.execute(select(Emisor).where(Emisor.rfc == emisor.rfc))
     if existente.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail=f"El emisor {emisor.rfc} ya existe")
 
+    negocio_id = await resolver_negocio_id(x_negocio_id, db)
+
     nuevo = Emisor(
+        negocio_id=negocio_id,
         rfc=emisor.rfc,
         razon_social=emisor.razon_social,
         regimen_fiscal=emisor.regimen_fiscal,
@@ -170,6 +228,32 @@ async def crear_emisor(emisor: EmisorCreate, db: AsyncSession = Depends(get_db))
     await db.commit()
     await db.refresh(nuevo)
     return _emisor_to_response(nuevo)
+
+
+# ─── Negocios (#15) ─────────────────────────────────────────────────────────────
+
+@app.post("/admin/negocios", response_model=NegocioResponse, status_code=201)
+async def crear_negocio(negocio: NegocioCreate, db: AsyncSession = Depends(get_db)):
+    """
+    Usado por el flujo de registro real (POST /auth/registro en
+    auth_usuarios, #15) - "crear cuenta" da de alta un Negocio nuevo antes
+    de crear su primer usuario admin, en vez de un usuario suelto sin
+    tenant. Tambien disponible para alta manual directa.
+    """
+    nuevo = Negocio(nombre=negocio.nombre, plan=negocio.plan)
+    db.add(nuevo)
+    await db.commit()
+    await db.refresh(nuevo)
+    return _negocio_to_response(nuevo)
+
+
+@app.get("/admin/negocios/{negocio_id}", response_model=NegocioResponse)
+async def obtener_negocio(negocio_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
+    negocio = result.scalar_one_or_none()
+    if negocio is None:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+    return _negocio_to_response(negocio)
 
 @app.get("/admin/emisores", response_model=List[EmisorResponse])
 async def listar_emisores(db: AsyncSession = Depends(get_db)):

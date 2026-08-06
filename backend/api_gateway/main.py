@@ -61,6 +61,26 @@ async def login_proxy(request: Request):
         raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
 
 
+@app.post("/auth/registro")
+async def registro_proxy(request: Request):
+    """
+    Publica a proposito (#15), mismo motivo que /auth/login: "crear cuenta"
+    es, como login, un paso previo a tener un token.
+    """
+    target = f"{SERVICES['auth']}/auth/registro"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(
+            method="POST",
+            url=target,
+            headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+            content=await request.body(),
+        )
+    try:
+        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
+
+
 @app.api_route("/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 @app.api_route("/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy(service: str, request: Request, path: str = "", token=Depends(verify_token)):
@@ -75,11 +95,23 @@ async def proxy(service: str, request: Request, path: str = "", token=Depends(ve
     # reenviaba a administracion:8002/emisores, que no existe).
     full_path = f"{service}/{path}" if path else service
     target = f"{SERVICES[service]}/{full_path}"
+
+    forward_headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+    # Inyectado tras verificar el JWT (#15) - el downstream nunca decodifica
+    # el token el mismo, confia en este header. negocio_id solo existe en
+    # tokens emitidos despues de #15; los anteriores no lo tienen, y el
+    # downstream cae a su Negocio por defecto (resolver_negocio_id en
+    # administracion).
+    if "negocio_id" in token and token["negocio_id"] is not None:
+        forward_headers["X-Negocio-Id"] = str(token["negocio_id"])
+    if "sub" in token and token["sub"] is not None:
+        forward_headers["X-Usuario-Email"] = str(token["sub"])
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.request(
             method=request.method,
             url=target,
-            headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+            headers=forward_headers,
             content=await request.body(),
             params=dict(request.query_params),
         )

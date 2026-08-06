@@ -33,9 +33,9 @@ from datetime import datetime, date
 from typing import Optional, List, AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -48,6 +48,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(httpx.HTTPStatusError)
+async def anthropic_error_handler(request: Request, exc: httpx.HTTPStatusError):
+    """
+    Sin esto, un error real de Anthropic (ej. 401 por falta de API key)
+    queda como excepcion no manejada -> Starlette responde 500 desde
+    ServerErrorMiddleware, que vive POR FUERA de CORSMiddleware, asi que
+    la respuesta nunca lleva Access-Control-Allow-Origin. Desde curl se ve
+    como un 500 normal; desde el navegador el fetch falla como ERR_FAILED,
+    indistinguible de un error de conexion real. Los exception_handler de
+    FastAPI si corren dentro del stack de CORSMiddleware, asi que esta
+    respuesta si lleva los headers correctos.
+    """
+    return JSONResponse(
+        status_code=502,
+        content={"detail": f"Error de Anthropic: {exc.response.status_code} {exc.response.reason_phrase}"},
+    )
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")

@@ -248,20 +248,48 @@ function useClientes() {
   return { clientes, loading, error };
 }
 
+function useResumenEjecutivo() {
+  const [resultado, setResultado] = useState(null);
+  const [loading,   setLoading]   = useState(false);
+  const [error,     setError]     = useState(null);
+  const generar = useCallback(async (payload) => {
+    setLoading(true); setError(null); setResultado(null);
+    try {
+      const res = await fetch(`${IA_BASE}/ia/resumen-ejecutivo`, {
+        method: "POST", headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.detail || `HTTP ${res.status}`);
+      }
+      setResultado(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  return { resultado, generar, loading, error };
+}
+
 function useAnomalias() {
   const [anomalias, setAnomalias] = useState([]);
   const [loading,   setLoading]   = useState(false);
+  const [error,     setError]     = useState(null);
   const detectar = useCallback(async (facturas, pagos=[]) => {
-    setLoading(true);
+    setLoading(true); setError(null);
     try {
       const res = await fetch(`${IA_BASE}/ia/anomalias`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ facturas, pagos_bancarios:pagos }),
       });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.detail || `HTTP ${res.status}`);
+      }
       const data = await res.json(); setAnomalias(data); return data;
-    } finally { setLoading(false); }
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
   }, []);
-  return { anomalias, detectar, loading };
+  return { anomalias, detectar, loading, error };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -728,7 +756,7 @@ function ChatFiscal(){
 // VISTA: ANOMALÍAS
 // ═══════════════════════════════════════════════════════════════════════════════
 function Anomalias(){
-  const {anomalias,detectar,loading}=useAnomalias();
+  const {anomalias,detectar,loading,error}=useAnomalias();
   const [ran,setRan]=useState(false);
   const correr=async()=>{await detectar(FACTURAS,[]);setRan(true);};
   const sevColor={alta:{bg:C.dangerSoft,c:C.danger},media:{bg:C.warnSoft,c:C.warn},baja:{bg:"#EBF8FF",c:C.info}};
@@ -738,9 +766,10 @@ function Anomalias(){
         <div><SectionTitle>Anomalías IA</SectionTitle><SectionSub>Análisis automático de facturas y pagos en busca de riesgos.</SectionSub></div>
         <Btn onClick={correr} disabled={loading}>{loading?"Analizando…":"Analizar ahora →"}</Btn>
       </div>
-      {!ran&&!loading&&<Card style={{textAlign:"center",padding:48}}><div style={{fontSize:36,marginBottom:10}}>🔍</div><div style={{fontSize:14,fontWeight:600,color:C.text}}>Sin análisis todavía</div></Card>}
+      {!ran&&!loading&&!error&&<Card style={{textAlign:"center",padding:48}}><div style={{fontSize:36,marginBottom:10}}>🔍</div><div style={{fontSize:14,fontWeight:600,color:C.text}}>Sin análisis todavía</div></Card>}
       {loading&&<Card style={{textAlign:"center",padding:40}}><div style={{fontSize:13,color:C.textSec}}>⚙️ La IA está revisando tus facturas…</div></Card>}
-      {ran&&!loading&&anomalias.length===0&&<Card style={{textAlign:"center",padding:48}}><div style={{fontSize:36,marginBottom:10}}>✅</div><div style={{fontSize:14,fontWeight:600,color:C.text}}>Sin anomalías detectadas</div></Card>}
+      {error&&!loading&&<Card style={{borderColor:C.danger,background:C.dangerSoft}}><div style={{fontSize:13,color:C.danger}}>⚠ {error}</div></Card>}
+      {ran&&!loading&&!error&&anomalias.length===0&&<Card style={{textAlign:"center",padding:48}}><div style={{fontSize:36,marginBottom:10}}>✅</div><div style={{fontSize:14,fontWeight:600,color:C.text}}>Sin anomalías detectadas</div></Card>}
       {anomalias.map((a,i)=>{
         const s=sevColor[a.severidad]||sevColor.baja;
         return (
@@ -916,8 +945,8 @@ function Usuarios(){
 const MESES_CORTOS=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 
 function ReporteMensual(){
-  const toast = useToast();
   const {facturas,loading,error} = useFacturas();
+  const resumen = useResumenEjecutivo();
 
   if (error) return <Placeholder title="Reporte mensual" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>;
   if (loading) return <Placeholder title="Reporte mensual" detail="Cargando datos reales…"/>;
@@ -956,7 +985,56 @@ function ReporteMensual(){
             <div key={l}><div style={{fontSize:10,color:C.textMuted,marginBottom:3,textTransform:"uppercase"}}>{l}</div><div style={{fontSize:16,fontWeight:700,color:C.text}}>{v}</div></div>
           ))}
         </div>
-        <Btn variant="secondary" style={{marginTop:12}} onClick={()=>toast(`GET ${API_BASE}/ia/resumen-ejecutivo`,"api")}>Descargar Excel →</Btn>
+        <Btn variant="secondary" style={{marginTop:12}} disabled={resumen.loading}
+          onClick={()=>resumen.generar({
+            periodo_inicio: `${meses[0]}-01`,
+            periodo_fin: new Date().toISOString().slice(0,10),
+            datos_facturacion: {
+              total_acumulado: totalAcumulado,
+              num_facturas: facturas.length,
+              promedio: totalAcumulado/facturas.length,
+              por_mes: porMes,
+            },
+            incluir_comparativo: meses.length>1,
+          })}>
+          {resumen.loading ? "Generando…" : "Generar resumen ejecutivo →"}
+        </Btn>
+
+        {resumen.error && (
+          <div style={{marginTop:12,padding:"10px 12px",borderRadius:8,background:C.dangerSoft,color:C.danger,fontSize:12}}>
+            ⚠ No se pudo generar el resumen: {resumen.error}. Revisa que ANTHROPIC_API_KEY esté configurada (ver #41).
+          </div>
+        )}
+
+        {resumen.resultado && !resumen.resultado.texto_raw && (
+          <div style={{marginTop:16,borderTop:`1px solid ${C.border}`,paddingTop:16}}>
+            <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:12}}>{resumen.resultado.titulo}</div>
+
+            <KPIGrid>
+              {(resumen.resultado.kpis_principales||[]).map((k,i)=>(
+                <KPI key={i} label={k.nombre} value={k.valor}
+                  sub={k.nota ? `${k.tendencia==="sube"?"↑":k.tendencia==="baja"?"↓":"→"} ${k.nota}` : undefined}/>
+              ))}
+            </KPIGrid>
+
+            {resumen.resultado.texto_ejecutivo && (
+              <p style={{fontSize:13,color:C.textSec,lineHeight:1.6,marginBottom:16}}>{resumen.resultado.texto_ejecutivo}</p>
+            )}
+
+            <TwoCol>
+              {[["Hallazgos",resumen.resultado.hallazgos],["Riesgos",resumen.resultado.riesgos],["Recomendaciones",resumen.resultado.recomendaciones]].map(([titulo,items])=>(
+                (items && items.length>0) && (
+                  <Card key={titulo}>
+                    <div style={{fontSize:11,color:C.textMuted,marginBottom:10,textTransform:"uppercase",letterSpacing:"0.06em"}}>{titulo}</div>
+                    <ul style={{margin:0,paddingLeft:18,fontSize:13,color:C.textSec,lineHeight:1.7}}>
+                      {items.map((it,i)=><li key={i}>{it}</li>)}
+                    </ul>
+                  </Card>
+                )
+              ))}
+            </TwoCol>
+          </div>
+        )}
       </Card>
     </div>
   );

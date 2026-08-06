@@ -65,13 +65,96 @@ const useToast = () => useContext(ToastCtx);
 // ═══════════════════════════════════════════════════════════════════════════════
 // HOOKS IA
 // ═══════════════════════════════════════════════════════════════════════════════
+// IA_BASE sigue directo al microservicio a proposito (#48 dejo el rewiring
+// de los 4 endpoints de IA para una tarjeta aparte — streaming SSE en
+// useFiscalChat necesita manejo distinto al resto). El resto del nucleo de
+// negocio (facturas/admin/auth) ya pasa por el Gateway via API_BASE.
 const IA_BASE  = "http://localhost:8007";
 const API_BASE = "http://localhost:8000";
-// Directo al microservicio (mismo patron que IA_BASE) — el Gateway exige JWT
-// en todas las rutas y el frontend todavia no tiene login implementado.
+// FACTURACION_BASE/ADMINISTRACION_BASE/AUTH_BASE ya no se usan para fetch
+// real (ver #48) - se dejan solo porque siguen apareciendo en textos de
+// error (ej. "No se pudo conectar con administracion (${ADMINISTRACION_BASE})").
 const FACTURACION_BASE = "http://localhost:8001";
 const ADMINISTRACION_BASE = "http://localhost:8002";
 const AUTH_BASE = "http://localhost:8005";
+
+// ─── Autenticacion (#48) ────────────────────────────────────────────────────
+const TOKEN_KEY = "cfdi_aes_token";
+const getToken = () => sessionStorage.getItem(TOKEN_KEY);
+const setStoredToken = t => t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY);
+
+async function fetchAuth(url, options = {}) {
+  const token = getToken();
+  const headers = { ...(options.headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401 || res.status === 403) {
+    setStoredToken(null);
+    window.dispatchEvent(new Event("cfdi-auth-expired"));
+  }
+  return res;
+}
+
+function useAuth() {
+  const [token, setToken] = useState(getToken);
+  useEffect(() => {
+    const onExpired = () => setToken(null);
+    window.addEventListener("cfdi-auth-expired", onExpired);
+    return () => window.removeEventListener("cfdi-auth-expired", onExpired);
+  }, []);
+  const login = useCallback(async (email, password) => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, error: data.detail || `HTTP ${res.status}` };
+      setStoredToken(data.access_token);
+      setToken(data.access_token);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }, []);
+  const logout = useCallback(() => { setStoredToken(null); setToken(null); }, []);
+  return { token, isAuthenticated: !!token, login, logout };
+}
+
+function Login({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const submit = async e => {
+    e.preventDefault();
+    setLoading(true); setError(null);
+    const r = await onLogin(email, password);
+    setLoading(false);
+    if (!r.ok) setError(r.error);
+  };
+
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.surface}}>
+      <form onSubmit={submit} style={{background:C.card,padding:32,borderRadius:12,width:320,maxWidth:"90vw",boxShadow:"0 4px 24px rgba(0,0,0,.08)",border:`1px solid ${C.border}`}}>
+        <div style={{fontSize:11,fontWeight:700,color:C.accent,letterSpacing:"0.1em",textTransform:"uppercase"}}>CFDI · AES</div>
+        <div style={{fontSize:13,color:C.textSec,marginBottom:20,marginTop:4}}>Inicia sesión para continuar</div>
+        <div style={{marginBottom:12}}>
+          <label htmlFor="login-email" style={{fontSize:12,color:C.textSec,display:"block",marginBottom:4}}>Email</label>
+          <input id="login-email" type="email" required autoFocus value={email} onChange={e=>setEmail(e.target.value)}
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 12px",fontSize:13,color:C.text,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:18}}>
+          <label htmlFor="login-password" style={{fontSize:12,color:C.textSec,display:"block",marginBottom:4}}>Contraseña</label>
+          <input id="login-password" type="password" required value={password} onChange={e=>setPassword(e.target.value)}
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 12px",fontSize:13,color:C.text,boxSizing:"border-box"}}/>
+        </div>
+        {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6}}>⚠ {error}</div>}
+        <Btn style={{width:"100%"}} disabled={loading}>{loading ? "Ingresando…" : "Iniciar sesión"}</Btn>
+      </form>
+    </div>
+  );
+}
 
 function useDocumentExtractor() {
   const [loading, setLoading] = useState(false);
@@ -131,7 +214,7 @@ function useFacturas() {
   const cargar = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`${FACTURACION_BASE}/facturas`);
+      const res = await fetchAuth(`${API_BASE}/facturas`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setFacturas(await res.json());
     } catch (e) { setError(e.message); }
@@ -148,7 +231,7 @@ function useCostosResumen() {
   const cargar = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`${FACTURACION_BASE}/facturas/costos-resumen`);
+      const res = await fetchAuth(`${API_BASE}/facturas/costos-resumen`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setDatos(await res.json());
     } catch (e) { setError(e.message); }
@@ -167,7 +250,7 @@ function useEmisores() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${ADMINISTRACION_BASE}/admin/emisores`);
+        const res = await fetchAuth(`${API_BASE}/admin/emisores`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         setEmisores(await res.json());
       } catch (e) { setError(e.message); }
@@ -187,7 +270,7 @@ function useContadorVirtualISRResico(emisorRfc, anio, mes) {
       setLoading(true); setError(null);
       try {
         const params = new URLSearchParams({ emisor_rfc: emisorRfc, anio: String(anio), mes: String(mes) });
-        const res = await fetch(`${FACTURACION_BASE}/facturas/contador-virtual/isr-resico?${params}`);
+        const res = await fetchAuth(`${API_BASE}/facturas/contador-virtual/isr-resico?${params}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         setDatos(await res.json());
       } catch (e) { setError(e.message); }
@@ -204,7 +287,7 @@ function useSeries() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${ADMINISTRACION_BASE}/admin/series`);
+        const res = await fetchAuth(`${API_BASE}/admin/series`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         setSeries(await res.json());
       } catch (e) { setError(e.message); }
@@ -221,7 +304,7 @@ function useUsuarios() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${AUTH_BASE}/auth/usuarios`);
+        const res = await fetchAuth(`${API_BASE}/auth/usuarios`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         setUsuarios(await res.json());
       } catch (e) { setError(e.message); }
@@ -238,7 +321,7 @@ function useClientes() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${ADMINISTRACION_BASE}/admin/clientes`);
+        const res = await fetchAuth(`${API_BASE}/admin/clientes`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         setClientes(await res.json());
       } catch (e) { setError(e.message); }
@@ -416,7 +499,7 @@ function NuevaFactura(){
       }],
     };
     try {
-      const res = await fetch(`${FACTURACION_BASE}/facturas/timbrar`, {
+      const res = await fetchAuth(`${API_BASE}/facturas/timbrar`, {
         method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload),
       });
       const data = await res.json().catch(()=>({}));
@@ -1275,7 +1358,7 @@ function SidebarNav({active, navigate, expanded, toggle, compact=false}){
 // ═══════════════════════════════════════════════════════════════════════════════
 // APP SHELL
 // ═══════════════════════════════════════════════════════════════════════════════
-function AppShell(){
+function AppShell({onLogout}){
   const {isMobile,isTablet}=useBreakpoint();
   const [active,setActive]=useState("generadas");
   const [expanded,setExpanded]=useState({facturas:true,ia:true,admin:false});
@@ -1325,6 +1408,8 @@ function AppShell(){
               <span style={{fontSize:17,cursor:"pointer"}}>🔔</span>
             </div>
             <div style={{width:30,height:30,borderRadius:"50%",background:C.primary,display:"flex",alignItems:"center",justifyContent:"center",color:C.accent,fontWeight:700,fontSize:11,flexShrink:0}}>DN</div>
+            <button onClick={onLogout} title="Cerrar sesión"
+              style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 10px",fontSize:12,color:C.textSec,cursor:"pointer",flexShrink:0}}>Salir</button>
           </div>
         </header>
 
@@ -1353,10 +1438,16 @@ function AppShell(){
 // ═══════════════════════════════════════════════════════════════════════════════
 // ROOT — wrap con ToastProvider
 // ═══════════════════════════════════════════════════════════════════════════════
+function AuthGate(){
+  const auth = useAuth();
+  if (!auth.isAuthenticated) return <Login onLogin={auth.login}/>;
+  return <AppShell onLogout={auth.logout}/>;
+}
+
 export default function App(){
   return (
     <ToastProvider>
-      <AppShell/>
+      <AuthGate/>
     </ToastProvider>
   );
 }

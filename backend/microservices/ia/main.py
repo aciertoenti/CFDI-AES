@@ -294,8 +294,22 @@ async def chat_fiscal_stream(req: ChatRequest):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
 
     async def event_generator():
-        async for token in stream_claude(messages, system, max_tokens=800):
-            yield f"data: {json.dumps({'token': token})}\n\n"
+        try:
+            async for token in stream_claude(messages, system, max_tokens=800):
+                yield f"data: {json.dumps({'token': token})}\n\n"
+        except httpx.HTTPStatusError as e:
+            # A diferencia de los endpoints no-streaming, aqui NO se puede
+            # dejar que la excepcion suba hasta el exception_handler global
+            # (anthropic_error_handler): StreamingResponse ya envio los
+            # headers HTTP en cuanto empezo a iterar este generador, y
+            # FastAPI no puede sustituir una respuesta que ya inicio -
+            # intentarlo produce "RuntimeError: Caught handled exception,
+            # but response already started" y corta la conexion de forma
+            # abrupta (ERR_INCOMPLETE_CHUNKED_ENCODING en el navegador).
+            # Se maneja aqui mismo, como un evento mas del stream, y se
+            # cierra limpio.
+            mensaje_error = f"⚠ Error de Anthropic: {e.response.status_code} {e.response.reason_phrase}"
+            yield f"data: {json.dumps({'token': mensaje_error})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

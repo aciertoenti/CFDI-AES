@@ -162,7 +162,7 @@ function Login({ onLogin, onIrARegistro }) {
           {/* fontSize:16 en los inputs a proposito - por debajo de eso, Safari
               en iOS hace zoom automatico al enfocar el campo. */}
           <input id="login-rfc" type="text" required autoFocus maxLength={13} value={rfcPersonal}
-            onChange={e=>setRfcPersonal(e.target.value.toUpperCase())}
+            onChange={e=>setRfcPersonal(e.target.value.toUpperCase())} placeholder="AAAA000101AAA"
             style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
         <div style={{marginBottom:20,width:"100%"}}>
@@ -220,7 +220,7 @@ function CrearCuenta({ onRegistro, onIrALogin }) {
         <div style={{marginBottom:14,width:"100%"}}>
           <label htmlFor="reg-rfc" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>RFC</label>
           <input id="reg-rfc" type="text" required maxLength={13} value={rfcPersonal}
-            onChange={e=>setRfcPersonal(e.target.value.toUpperCase())}
+            onChange={e=>setRfcPersonal(e.target.value.toUpperCase())} placeholder="AAAA000101AAA"
             style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
         <div style={{marginBottom:20,width:"100%"}}>

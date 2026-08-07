@@ -102,11 +102,11 @@ function useAuth() {
     window.addEventListener("cfdi-auth-expired", onExpired);
     return () => window.removeEventListener("cfdi-auth-expired", onExpired);
   }, []);
-  const login = useCallback(async (email, password) => {
+  const login = useCallback(async (rfcPersonal, password) => {
     try {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ rfc_personal: rfcPersonal, password }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return { ok: false, error: data.detail || `HTTP ${res.status}` };
@@ -117,18 +117,19 @@ function useAuth() {
       return { ok: false, error: e.message };
     }
   }, []);
-  const registro = useCallback(async (nombreNegocio, email, password, nombre) => {
+  const registro = useCallback(async (nombreNegocio, email, rfcPersonal, password, nombre) => {
     try {
       const res = await fetch(`${API_BASE}/auth/registro`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, password, nombre: nombre || undefined }),
+        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, rfc_personal: rfcPersonal, password, nombre: nombre || undefined }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return { ok: false, error: data.detail || `HTTP ${res.status}` };
       // POST /auth/registro (#15) crea el Negocio + primer usuario admin pero
       // no regresa token - se reusa login() con las mismas credenciales para
-      // entrar directo tras crear la cuenta.
-      return login(email, password);
+      // entrar directo tras crear la cuenta. login() ahora pide rfc_personal,
+      // no email (ver auth_usuarios, commit b82d8dd).
+      return login(rfcPersonal, password);
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -138,7 +139,7 @@ function useAuth() {
 }
 
 function Login({ onLogin, onIrARegistro }) {
-  const [email, setEmail] = useState("");
+  const [rfcPersonal, setRfcPersonal] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -146,7 +147,7 @@ function Login({ onLogin, onIrARegistro }) {
   const submit = async e => {
     e.preventDefault();
     setLoading(true); setError(null);
-    const r = await onLogin(email, password);
+    const r = await onLogin(rfcPersonal, password);
     setLoading(false);
     if (!r.ok) setError(r.error);
   };
@@ -157,10 +158,11 @@ function Login({ onLogin, onIrARegistro }) {
         <img src={logoAcierto} alt="Acierto" style={{width:120,maxWidth:"60%",borderRadius:8,display:"block",marginBottom:14}}/>
         <div style={{fontSize:14,color:C.textSec,marginBottom:22,textAlign:"center"}}>Inicia sesión para continuar</div>
         <div style={{marginBottom:14,width:"100%"}}>
-          <label htmlFor="login-email" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Email</label>
+          <label htmlFor="login-rfc" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>RFC</label>
           {/* fontSize:16 en los inputs a proposito - por debajo de eso, Safari
               en iOS hace zoom automatico al enfocar el campo. */}
-          <input id="login-email" type="email" required autoFocus value={email} onChange={e=>setEmail(e.target.value)}
+          <input id="login-rfc" type="text" required autoFocus maxLength={13} value={rfcPersonal}
+            onChange={e=>setRfcPersonal(e.target.value.toUpperCase())}
             style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
         <div style={{marginBottom:20,width:"100%"}}>
@@ -182,6 +184,7 @@ function CrearCuenta({ onRegistro, onIrALogin }) {
   const [nombreNegocio, setNombreNegocio] = useState("");
   const [nombre, setNombre] = useState("");
   const [email, setEmail] = useState("");
+  const [rfcPersonal, setRfcPersonal] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -189,7 +192,7 @@ function CrearCuenta({ onRegistro, onIrALogin }) {
   const submit = async e => {
     e.preventDefault();
     setLoading(true); setError(null);
-    const r = await onRegistro(nombreNegocio, email, password, nombre);
+    const r = await onRegistro(nombreNegocio, email, rfcPersonal, password, nombre);
     setLoading(false);
     if (!r.ok) setError(r.error);
   };
@@ -212,6 +215,12 @@ function CrearCuenta({ onRegistro, onIrALogin }) {
         <div style={{marginBottom:14,width:"100%"}}>
           <label htmlFor="reg-email" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Email</label>
           <input id="reg-email" type="email" required value={email} onChange={e=>setEmail(e.target.value)}
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:14,width:"100%"}}>
+          <label htmlFor="reg-rfc" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>RFC</label>
+          <input id="reg-rfc" type="text" required maxLength={13} value={rfcPersonal}
+            onChange={e=>setRfcPersonal(e.target.value.toUpperCase())}
             style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
         <div style={{marginBottom:20,width:"100%"}}>

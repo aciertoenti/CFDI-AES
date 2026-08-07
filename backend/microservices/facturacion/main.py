@@ -161,6 +161,26 @@ class ContadorVirtualISRResicoResponse(BaseModel):
 ADMINISTRACION_URL = os.environ.get("ADMINISTRACION_URL", "http://administracion:8002")
 
 
+def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
+    """
+    Mismo patron fail-closed que requerir_negocio_id() en administracion:
+    sin fallback a un Negocio por defecto. Una llamada sin X-Negocio-Id
+    valido (bypass del Gateway, header ausente por error) se rechaza en
+    vez de asumir un Negocio - usado tanto en lecturas como en escrituras
+    propias de facturacion (a diferencia de obtener_datos_emisor/
+    obtener_siguiente_folio, que solo reenvian el header a administracion).
+    """
+    if not x_negocio_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Falta X-Negocio-Id - esta operacion requiere pasar por el Gateway con un token valido",
+        )
+    try:
+        return int(x_negocio_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="X-Negocio-Id invalido")
+
+
 async def obtener_datos_emisor(rfc: str, x_negocio_id: Optional[str] = None) -> dict:
     """Consulta administracion por regimen fiscal y CP del emisor. Si el
     emisor no esta registrado ahi, es un error real (no hay a que hacer
@@ -357,6 +377,7 @@ async def timbrar_factura(
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
+    negocio_id = requerir_negocio_id(x_negocio_id)
     signer = get_signer()
     comprobante = await construir_comprobante(factura, signer, x_negocio_id)
 
@@ -386,6 +407,7 @@ async def timbrar_factura(
     try:
         db.add(Factura(
             uuid=resultado["uuid"],
+            negocio_id=negocio_id,
             folio=folio,
             fecha_timbrado=fecha_timbrado,
             emisor_rfc=factura.emisor_rfc,
@@ -447,8 +469,10 @@ async def listar_facturas(
     page: int = 1,
     size: int = 50,
     db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
-    stmt = select(Factura)
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    stmt = select(Factura).where(Factura.negocio_id == negocio_id)
     if estado:
         stmt = stmt.where(Factura.estado == estado)
     if fecha_desde:
@@ -598,20 +622,50 @@ async def contador_virtual_isr_resico(
         ],
     )
 
-@app.get("/facturas/{uuid}")
-async def obtener_factura(uuid: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Factura).where(Factura.uuid == uuid))
+async def obtener_factura_propia(uuid: str, negocio_id: int, db: AsyncSession) -> Factura:
+    """
+    Busca la Factura por uuid y valida pertenencia al negocio del caller
+    en la misma consulta - 404 (no 403) tanto si no existe como si es de
+    otro negocio, mismo patron que administracion, para no confirmarle a
+    un caller no autorizado que el uuid si existe.
+    """
+    result = await db.execute(
+        select(Factura).where(Factura.uuid == uuid, Factura.negocio_id == negocio_id)
+    )
     factura = result.scalar_one_or_none()
     if factura is None:
         raise HTTPException(status_code=404, detail=f"Factura {uuid} no encontrada")
+    return factura
+
+
+@app.get("/facturas/{uuid}")
+async def obtener_factura(
+    uuid: str,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    factura = await obtener_factura_propia(uuid, negocio_id, db)
     return _factura_to_response(factura)
 
 @app.get("/facturas/{uuid}/xml")
-async def descargar_xml(uuid: str):
+async def descargar_xml(
+    uuid: str,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    await obtener_factura_propia(uuid, negocio_id, db)
     return {"url": storage_client.url_xml(uuid)}
 
 @app.get("/facturas/{uuid}/pdf")
-async def descargar_pdf(uuid: str):
+async def descargar_pdf(
+    uuid: str,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    await obtener_factura_propia(uuid, negocio_id, db)
     return {"url": storage_client.url_pdf(uuid)}
 
 # Catalogo real del SAT c_MotivoCancelacion (#5). "01" exige folio de
@@ -620,7 +674,12 @@ MOTIVOS_CANCELACION_VALIDOS = {"01", "02", "03", "04"}
 
 
 @app.post("/facturas/{uuid}/cancelar")
-async def cancelar_factura(uuid: str, req: CancelacionRequest, db: AsyncSession = Depends(get_db)):
+async def cancelar_factura(
+    uuid: str,
+    req: CancelacionRequest,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
     if req.motivo not in MOTIVOS_CANCELACION_VALIDOS:
         raise HTTPException(
             status_code=400,
@@ -633,10 +692,13 @@ async def cancelar_factura(uuid: str, req: CancelacionRequest, db: AsyncSession 
                    "el SAT rechaza la cancelacion sin el folio del CFDI que reemplaza al cancelado.",
         )
 
-    result = await db.execute(select(Factura).where(Factura.uuid == uuid))
-    factura = result.scalar_one_or_none()
-    if factura is None:
-        raise HTTPException(status_code=404, detail=f"Factura {uuid} no encontrada")
+    # Verificacion de pertenencia ANTES de cualquier llamada real a Finkok
+    # (cancel.wsdl) - fix critico (PASO 9): antes, la unica "proteccion" era
+    # comparar factura.emisor_rfc contra el signer global del servicio, que
+    # no distingue negocio alguno. 404 si el uuid no existe O es de otro
+    # negocio, para no confirmarle a un caller no autorizado que existe.
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    factura = await obtener_factura_propia(uuid, negocio_id, db)
 
     signer = get_signer()
     if factura.emisor_rfc != str(signer.rfc):

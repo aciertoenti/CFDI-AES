@@ -18,7 +18,7 @@ from typing import Optional
 from alembic import command
 from alembic.config import Config
 from dotenv import load_dotenv
-from sqlalchemy import DateTime, Numeric, String, Text, func, inspect
+from sqlalchemy import DateTime, Integer, Numeric, String, Text, func, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -47,6 +47,17 @@ class Factura(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     uuid: Mapped[str] = mapped_column(String(36), unique=True, nullable=False, index=True)
+    # Denormalizado a proposito (fix de fuga de datos entre negocios,
+    # PASO 3): Negocio vive en administracion, otra base de datos
+    # (cfdi_admin vs cfdi_facturas de este servicio), asi que no puede ser
+    # un FK real de Postgres ni resolverse via join/subquery como en
+    # administracion (Emisor/Cliente si comparten BD ahi). Se captura del
+    # X-Negocio-Id del caller al timbrar (ya viene verificado desde el
+    # gateway) y se usa para filtrar todas las lecturas/escrituras propias
+    # de facturacion sin depender de una llamada cruzada a administracion.
+    # Backfill de filas previas ya aplicado (las 23 filas existentes eran
+    # todas de EKU9003173C9 / Negocio 1, confirmado antes de endurecer).
+    negocio_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     folio: Mapped[str] = mapped_column(String(50), nullable=False)
     fecha_timbrado: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     emisor_rfc: Mapped[str] = mapped_column(String(13), nullable=False, index=True)

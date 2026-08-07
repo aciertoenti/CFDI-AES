@@ -1,8 +1,10 @@
+import asyncio
+import base64
 import logging
 import os
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from decimal import Decimal
-from functools import lru_cache
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Depends, Query
@@ -34,6 +36,14 @@ import finkok_client
 import storage_client
 from database import Factura, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 
+# basicConfig es necesario para que los logger.info/error de este archivo Y
+# de finkok_client lleguen a algun lado - sin esto (confirmado hoy en vivo,
+# incluso con un timbrado/cancelacion real exitoso contra Finkok) los
+# loggers "facturacion"/"finkok_client" no tienen ningun handler efectivo
+# (uvicorn solo configura sus propios loggers "uvicorn"/"uvicorn.access") y
+# los mensajes INFO se descartan en silencio. Necesario de aqui en adelante
+# para poder auditar cuando se pide/cachea un CSD real (#42).
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("facturacion")
 
 RFC_PUBLICO_EN_GENERAL = "XAXX010101000"
@@ -159,6 +169,12 @@ class ContadorVirtualISRResicoResponse(BaseModel):
 # El regimen fiscal y el CP de expedicion ya NO son constantes de prueba -
 # se consultan a administracion, que persiste emisores reales desde #4.
 ADMINISTRACION_URL = os.environ.get("ADMINISTRACION_URL", "http://administracion:8002")
+# Clave servicio-a-servicio (#42) - mismo mecanismo que whatsapp_bot ya usa
+# contra facturacion (ver whatsapp_bot/core/security.py). Distinta de
+# X-Negocio-Id: esta protege endpoints que ningun negocio deberia poder
+# alcanzar directo (aqui, pedir el CSD descifrado de un emisor), no rutas
+# con contexto de tenant.
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
 
 
 def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
@@ -232,33 +248,125 @@ async def obtener_siguiente_folio(rfc: str, serie: str, x_negocio_id: Optional[s
     return resp.json()["folio_formateado"]
 
 
-@lru_cache
-def get_csd_bytes() -> tuple[bytes, bytes, str]:
-    cert_path = os.environ.get("CSD_CERT_PATH")
-    key_path = os.environ.get("CSD_KEY_PATH")
-    password = os.environ.get("CSD_PASSWORD")
-    if not (cert_path and key_path and password):
-        raise HTTPException(
-            status_code=500,
-            detail="CSD_CERT_PATH, CSD_KEY_PATH y CSD_PASSWORD deben estar configurados (ver .env)",
-        )
-    try:
-        with open(cert_path, "rb") as f:
-            cert_bytes = f.read()
-        with open(key_path, "rb") as f:
-            key_bytes = f.read()
-        return cert_bytes, key_bytes, password
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=500, detail=f"No se encontro el archivo del CSD: {e.filename}")
+@dataclass
+class _CSDCacheado:
+    signer: Signer
+    cert_bytes: bytes
+    key_bytes: bytes
+    password: str
 
 
-@lru_cache
-def get_signer() -> Signer:
-    cert_bytes, key_bytes, password = get_csd_bytes()
-    try:
-        return Signer.load(certificate=cert_bytes, key=key_bytes, password=password)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"No se pudo cargar el CSD: {e}")
+# Cache por rfc (#42) - reemplaza el @lru_cache global de antes, que solo
+# podia sostener un CSD para todo el proceso sin importar el emisor (por
+# eso hoy solo existe un archivo estatico de prueba). Un lock de asyncio
+# por rfc evita que dos requests simultaneas al mismo emisor (ej. dos
+# timbrados casi a la vez) disparen dos llamadas duplicadas a
+# administracion - "double-checked locking": se revisa el cache, si no
+# esta se adquiere el lock de ESE rfc, y se revisa el cache otra vez ya
+# adentro (por si otra corrutina ya lo lleno mientras se esperaba el lock).
+_csd_cache: dict[str, _CSDCacheado] = {}
+_csd_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_para_rfc(rfc: str) -> asyncio.Lock:
+    # Sin await en todo el cuerpo de esta funcion - en asyncio (un solo
+    # hilo, cooperativo) eso basta para que el check-then-create de abajo
+    # sea atomico frente a otras corrutinas, sin necesitar un lock aparte
+    # para proteger el propio diccionario de locks.
+    lock = _csd_locks.get(rfc)
+    if lock is None:
+        lock = asyncio.Lock()
+        _csd_locks[rfc] = lock
+    return lock
+
+
+async def obtener_csd_descifrado(rfc: str) -> dict:
+    """
+    Pide el CSD descifrado a administracion via el endpoint interno (#42),
+    protegido con X-Internal-Key (servicio-a-servicio, NO X-Negocio-Id) -
+    NO valida pertenencia al negocio del caller. Quien llama
+    (_obtener_csd_cacheado) es responsable de haber confirmado eso antes
+    con obtener_datos_emisor(). Nunca loguear el resultado de esta funcion.
+    """
+    if not INTERNAL_API_KEY:
+        raise HTTPException(status_code=500, detail="INTERNAL_API_KEY no esta configurado")
+    headers = {"X-Internal-Key": INTERNAL_API_KEY}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{ADMINISTRACION_URL}/admin/emisores/{rfc}/csd-descifrado", headers=headers
+            )
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo conectar con administracion: {e}")
+
+    if resp.status_code == 404:
+        raise HTTPException(status_code=502, detail=f"Emisor {rfc} no tiene CSD registrado en administracion")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"administracion respondio {resp.status_code}: {resp.text}")
+
+    return resp.json()
+
+
+async def _obtener_csd_cacheado(rfc: str, negocio_id: int) -> _CSDCacheado:
+    # Verificacion de pertenencia SIEMPRE, en cada llamada, ANTES de
+    # cualquier lookup de cache - reutiliza obtener_datos_emisor (ya da
+    # 404/400 si rfc no pertenece a negocio_id, #58). Esto NUNCA debe
+    # saltarse por un cache hit: rfc es unique en administracion (un rfc
+    # pertenece a un solo negocio), asi que lo unico que se cachea por rfc
+    # es el propio Signer/CSD ya descifrado - la confirmacion de pertenencia
+    # se repite en cada llamada, si no un negocio ajeno heredaria via cache
+    # el acceso que gano el primer negocio en pedir ese mismo rfc. Sin este
+    # orden, se reabre el hueco de cancelacion cross-tenant cerrado en
+    # 294fc52, ahora tambien en timbrado: con CSD reales por emisor, ya no
+    # existe la proteccion accidental de "solo hay un CSD para todo el
+    # proceso".
+    await obtener_datos_emisor(rfc, str(negocio_id))
+
+    cacheado = _csd_cache.get(rfc)
+    if cacheado is not None:
+        return cacheado
+
+    async with _lock_para_rfc(rfc):
+        cacheado = _csd_cache.get(rfc)
+        if cacheado is not None:
+            return cacheado
+
+        datos_csd = await obtener_csd_descifrado(rfc)
+        try:
+            cert_bytes = base64.b64decode(datos_csd["csd_cert_base64"])
+            key_bytes = base64.b64decode(datos_csd["csd_key_base64"])
+            password = datos_csd["csd_password"]
+            signer = Signer.load(certificate=cert_bytes, key=key_bytes, password=password)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"No se pudo cargar el CSD de {rfc}: {e}")
+
+        cacheado = _CSDCacheado(signer=signer, cert_bytes=cert_bytes, key_bytes=key_bytes, password=password)
+        _csd_cache[rfc] = cacheado
+        logger.info("CSD de %s cargado desde administracion y cacheado (negocio_id=%s)", rfc, negocio_id)
+        return cacheado
+
+
+async def get_signer_para_negocio(rfc: str, negocio_id: int) -> Signer:
+    """
+    Punto unico para obtener el Signer real de un emisor (#42). Verifica
+    propiedad ANTES de tocar su CSD real (ver _obtener_csd_cacheado) -
+    reutiliza obtener_datos_emisor(), no inventa una validacion nueva.
+    """
+    cacheado = await _obtener_csd_cacheado(rfc, negocio_id)
+    return cacheado.signer
+
+
+async def obtener_csd_bytes_para_negocio(rfc: str, negocio_id: int) -> tuple[bytes, bytes, str]:
+    """
+    Igual que get_signer_para_negocio pero regresa los bytes crudos
+    (cert, key, password) en vez del Signer ya cargado - los necesita
+    finkok_client.registrar_emisor(), que no acepta un Signer. Comparte el
+    mismo cache/lock por rfc: si get_signer_para_negocio ya se llamo antes
+    para este rfc en la misma request, esto no dispara una segunda
+    llamada a administracion.
+    """
+    cacheado = await _obtener_csd_cacheado(rfc, negocio_id)
+    return cacheado.cert_bytes, cacheado.key_bytes, cacheado.password
 
 
 async def construir_comprobante(factura: FacturaCreate, signer: Signer, x_negocio_id: Optional[str] = None) -> Comprobante:
@@ -342,11 +450,12 @@ async def generar_xml_firmado(
 ):
     """
     ENDPOINT TEMPORAL DE PRUEBA — genera y firma el XML CFDI 4.0 (cadena
-    original + sello) con el CSD de prueba configurado, pero NO lo envia
+    original + sello) con el CSD real del emisor (#42), pero NO lo envia
     a Finkok ni lo persiste. Es solo para inspeccionar el XML resultante
     antes de conectar el PAC (paso 3).
     """
-    signer = get_signer()
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    signer = await get_signer_para_negocio(factura.emisor_rfc, negocio_id)
     comprobante = await construir_comprobante(factura, signer, x_negocio_id)
     xml_bytes = comprobante.xml_bytes(pretty_print=True)
     return PlainTextResponse(content=xml_bytes.decode("utf-8"), media_type="application/xml")
@@ -378,10 +487,10 @@ async def timbrar_factura(
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
     negocio_id = requerir_negocio_id(x_negocio_id)
-    signer = get_signer()
+    signer = await get_signer_para_negocio(factura.emisor_rfc, negocio_id)
     comprobante = await construir_comprobante(factura, signer, x_negocio_id)
 
-    cert_bytes, key_bytes, csd_password = get_csd_bytes()
+    cert_bytes, key_bytes, csd_password = await obtener_csd_bytes_para_negocio(factura.emisor_rfc, negocio_id)
     try:
         finkok_client.registrar_emisor(factura.emisor_rfc, cert_bytes, key_bytes, csd_password)
         resultado = finkok_client.timbrar_factura(comprobante.xml_bytes())
@@ -693,14 +802,19 @@ async def cancelar_factura(
         )
 
     # Verificacion de pertenencia ANTES de cualquier llamada real a Finkok
-    # (cancel.wsdl) - fix critico (PASO 9): antes, la unica "proteccion" era
-    # comparar factura.emisor_rfc contra el signer global del servicio, que
-    # no distingue negocio alguno. 404 si el uuid no existe O es de otro
-    # negocio, para no confirmarle a un caller no autorizado que existe.
+    # (cancel.wsdl) - fix critico (PASO 9, commit 294fc52): 404 si el uuid
+    # no existe O es de otro negocio, para no confirmarle a un caller no
+    # autorizado que existe.
     negocio_id = requerir_negocio_id(x_negocio_id)
     factura = await obtener_factura_propia(uuid, negocio_id, db)
 
-    signer = get_signer()
+    # get_signer_para_negocio (#42) ya verifica pertenencia del rfc al
+    # negocio_id ANTES de tocar el CSD real (via obtener_datos_emisor,
+    # dentro de _obtener_csd_cacheado) - con CSD reales por emisor ya no
+    # existe la proteccion accidental que daba el CSD global unico de
+    # antes (un solo emisor de prueba cargado siempre). El chequeo de
+    # abajo queda como verificacion de sanidad, no como el control real.
+    signer = await get_signer_para_negocio(factura.emisor_rfc, negocio_id)
     if factura.emisor_rfc != str(signer.rfc):
         raise HTTPException(
             status_code=400,

@@ -61,8 +61,9 @@ services:
   facturacion:
     build: ./backend/microservices/facturacion
     ports: ["8001:8001"]
-    volumes:
-      - ./certs_test:/certs_test:ro
+    # ./certs_test ya no se monta (#42): el CSD ahora viene de
+    # administracion (GET /admin/emisores/{rfc}/csd-descifrado), no de un
+    # archivo estatico en disco. Ver INTERNAL_API_KEY abajo.
     environment:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_facturas@postgres_facturas/cfdi_facturas"
       REDIS_URL: "redis://redis:6379/0"
@@ -73,9 +74,17 @@ services:
       PAC_CANCEL_URL: "${PAC_CANCEL_URL}"
       PAC_USER: "${PAC_USER}"
       PAC_PASS: "${PAC_PASS}"
-      CSD_CERT_PATH: "/certs_test/CSD_EKU9003173C9_20230517223903/CSD_Sucursal_1_EKU9003173C9_20230517_223850.cer"
-      CSD_KEY_PATH: "/certs_test/CSD_EKU9003173C9_20230517223903/CSD_Sucursal_1_EKU9003173C9_20230517_223850.key"
-      CSD_PASSWORD: "${CSD_PASSWORD}"
+      # CSD_CERT_PATH/CSD_KEY_PATH/CSD_PASSWORD eliminadas (#42): facturacion
+      # ya no firma con un archivo estatico compartido para todo el proceso -
+      # pide el CSD real de cada emisor a administracion, cacheado por rfc
+      # (ver get_signer_para_negocio en main.py). Mismo patron de clave
+      # servicio-a-servicio que ya usan administracion y whatsapp_bot - pero
+      # SIN el default debil "cambia_esto_por_clave_segura" que esos dos ya
+      # tenian antes de hoy (hallazgo aparte, no corregido aqui): ese default
+      # es un secreto real y publico en este archivo, asi que si el .env real
+      # no define INTERNAL_API_KEY, cualquiera que lea este repo lo conoce.
+      # Aqui se falla el arranque en vez de aceptar ese default en silencio.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
     depends_on:
       postgres_facturas: {condition: service_healthy}
       redis: {condition: service_started}

@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import Usuario, create_tables, get_db, stamp_head_si_es_ambiente_nuevo
+from rfc_validation import es_rfc_persona_fisica_valido
 
 # Mismo patron que facturacion -> administracion (consulta de datos de
 # emisor): llamada directa al microservicio, sin pasar por el Gateway
@@ -39,7 +40,11 @@ JWT_ALGORITHM = "HS256"
 
 
 class LoginRequest(BaseModel):
-    email: str
+    # El RFC personal reemplaza al email como credencial de login - el
+    # email se queda como dato de contacto y para recuperacion de
+    # contrasena (todavia sin implementar, ver tarjeta de #48 sobre rate
+    # limiting + recuperacion), pero ya no autentica.
+    rfc_personal: str
     password: str
 
 
@@ -52,6 +57,11 @@ class TokenResponse(BaseModel):
 class UsuarioCreate(BaseModel):
     email: str
     password: str
+    # RFC personal (persona fisica) de quien inicia sesion - reemplaza al
+    # email como credencial de login. Obligatorio: Usuario.rfc_personal es
+    # NOT NULL en BD. Validado (formato + digito verificador) antes de
+    # guardar, no solo aceptado tal cual.
+    rfc_personal: str
     nombre: Optional[str] = None
     rfc_emisor: Optional[str] = None
     # A partir de #15 este endpoint ya no es el registro "de entrada"
@@ -69,6 +79,7 @@ class UsuarioCreate(BaseModel):
 class UsuarioResponse(BaseModel):
     id: int
     email: str
+    rfc_personal: str
     nombre: Optional[str]
     rfc_emisor: Optional[str]
     negocio_id: int
@@ -81,6 +92,7 @@ class UsuarioListItem(BaseModel):
     # siendo una decision de diseno sin resolver (ver nota en #10).
     id: int
     email: str
+    rfc_personal: str
     nombre: Optional[str]
     rfc_emisor: Optional[str]
     negocio_id: int
@@ -94,6 +106,10 @@ class RegistroRequest(BaseModel):
     nombre_negocio: str
     plan: str = "basico"
     email: str
+    # RFC personal (persona fisica) de quien registra la cuenta - se
+    # vuelve la credencial de login. email se queda como dato de contacto
+    # y para recuperacion de contrasena, no para autenticar.
+    rfc_personal: str
     password: str
     nombre: Optional[str] = None
 
@@ -104,9 +120,25 @@ class RegistroResponse(BaseModel):
     usuario: UsuarioResponse
 
 
-# Mensaje deliberadamente genérico: no revela si falló el email o la
+# Mensaje deliberadamente genérico: no revela si falló el RFC o la
 # contraseña (evita que un atacante use el login para enumerar cuentas).
-CREDENCIALES_INVALIDAS = "Email o contraseña incorrectos"
+CREDENCIALES_INVALIDAS = "RFC o contraseña incorrectos"
+
+
+def validar_rfc_personal(rfc_personal: str) -> str:
+    """
+    Formato + digito verificador real (rfc_validation.py, algoritmo de
+    satcfdi) - no solo longitud. 422 (no 400) porque es un error de
+    validacion del cuerpo de la peticion, mismo criterio que usaria
+    Pydantic para un campo mal formado.
+    """
+    rfc_personal = rfc_personal.upper()
+    if not es_rfc_persona_fisica_valido(rfc_personal):
+        raise HTTPException(
+            status_code=422,
+            detail=f"RFC personal invalido: {rfc_personal} (formato o digito verificador incorrecto)",
+        )
+    return rfc_personal
 
 
 def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
@@ -141,9 +173,11 @@ ROL_ADMIN_NEGOCIO = "admin"
 
 @app.post("/auth/usuarios", response_model=UsuarioResponse, status_code=201)
 async def crear_usuario(req: UsuarioCreate, db: AsyncSession = Depends(get_db)):
+    rfc_personal = validar_rfc_personal(req.rfc_personal)
     password_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     usuario = Usuario(
         email=req.email,
+        rfc_personal=rfc_personal,
         password_hash=password_hash,
         nombre=req.nombre,
         rfc_emisor=req.rfc_emisor,
@@ -155,9 +189,12 @@ async def crear_usuario(req: UsuarioCreate, db: AsyncSession = Depends(get_db)):
         await db.flush()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=409, detail=f"Ya existe un usuario con email {req.email}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ya existe un usuario con email {req.email} o RFC {rfc_personal}",
+        )
     return UsuarioResponse(
-        id=usuario.id, email=usuario.email, nombre=usuario.nombre,
+        id=usuario.id, email=usuario.email, rfc_personal=usuario.rfc_personal, nombre=usuario.nombre,
         rfc_emisor=usuario.rfc_emisor, negocio_id=usuario.negocio_id, rol=usuario.rol,
     )
 
@@ -173,9 +210,19 @@ async def registro(req: RegistroRequest, db: AsyncSession = Depends(get_db)):
     Publico a proposito (#48/#15): igual que login, este es un paso previo
     a tener un token, asi que el Gateway debe exponerlo sin exigir JWT.
     """
-    existente = await db.execute(select(Usuario).where(Usuario.email == req.email))
+    rfc_personal = validar_rfc_personal(req.rfc_personal)
+
+    # Se valida ANTES de llamar a administracion (que crea el Negocio) para
+    # no dejar un Negocio huerfano si el registro va a fallar de todos
+    # modos por un RFC o email ya usados.
+    existente = await db.execute(
+        select(Usuario).where((Usuario.email == req.email) | (Usuario.rfc_personal == rfc_personal))
+    )
     if existente.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=409, detail=f"Ya existe un usuario con email {req.email}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ya existe un usuario con email {req.email} o RFC {rfc_personal}",
+        )
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
@@ -194,6 +241,7 @@ async def registro(req: RegistroRequest, db: AsyncSession = Depends(get_db)):
     password_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     usuario = Usuario(
         email=req.email,
+        rfc_personal=rfc_personal,
         password_hash=password_hash,
         nombre=req.nombre,
         negocio_id=negocio["id"],
@@ -208,13 +256,16 @@ async def registro(req: RegistroRequest, db: AsyncSession = Depends(get_db)):
         # ahora - mismo nivel de garantia que el resto del proyecto en esta
         # etapa (ver nota de JWT sin verificar en microservicios).
         await db.rollback()
-        raise HTTPException(status_code=409, detail=f"Ya existe un usuario con email {req.email}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ya existe un usuario con email {req.email} o RFC {rfc_personal}",
+        )
 
     return RegistroResponse(
         negocio_id=negocio["id"],
         negocio_nombre=negocio["nombre"],
         usuario=UsuarioResponse(
-            id=usuario.id, email=usuario.email, nombre=usuario.nombre,
+            id=usuario.id, email=usuario.email, rfc_personal=usuario.rfc_personal, nombre=usuario.nombre,
             rfc_emisor=usuario.rfc_emisor, negocio_id=usuario.negocio_id, rol=usuario.rol,
         ),
     )
@@ -222,14 +273,21 @@ async def registro(req: RegistroRequest, db: AsyncSession = Depends(get_db)):
 
 @app.post("/auth/login", response_model=TokenResponse)
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Usuario).where(Usuario.email == req.email))
+    rfc_personal = req.rfc_personal.upper()
+    result = await db.execute(select(Usuario).where(Usuario.rfc_personal == rfc_personal))
     usuario = result.scalar_one_or_none()
 
     if usuario is None or not bcrypt.checkpw(req.password.encode("utf-8"), usuario.password_hash.encode("utf-8")):
         raise HTTPException(status_code=401, detail=CREDENCIALES_INVALIDAS)
 
+    # sub pasa a ser rfc_personal (no email): es la credencial real con la
+    # que se autentico esta sesion, "sub" debe identificar al principal
+    # autenticado. email se mantiene como claim aparte porque sigue siendo
+    # un dato real y util del usuario (ej. mostrarlo en el frontend), solo
+    # que ya no es lo que se verifico para dejarlo entrar.
     payload = {
-        "sub": usuario.email,
+        "sub": usuario.rfc_personal,
+        "email": usuario.email,
         "rfc_emisor": usuario.rfc_emisor,
         "negocio_id": usuario.negocio_id,
         "roles": [usuario.rol],
@@ -259,7 +317,7 @@ async def listar_usuarios(
     )
     return [
         UsuarioListItem(
-            id=u.id, email=u.email, nombre=u.nombre,
+            id=u.id, email=u.email, rfc_personal=u.rfc_personal, nombre=u.nombre,
             rfc_emisor=u.rfc_emisor, negocio_id=u.negocio_id, rol=u.rol, created_at=u.created_at,
         )
         for u in result.scalars().all()

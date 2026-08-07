@@ -45,6 +45,12 @@ class Usuario(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(254), unique=True, nullable=False, index=True)
+    # RFC PERSONAL de quien inicia sesion (persona fisica, 13 caracteres) -
+    # credencial real de login. No confundir con rfc_emisor (abajo), que es
+    # el RFC del NEGOCIO/emisor al que pertenece el usuario, un dato
+    # completamente distinto. email se queda como dato de contacto y para
+    # recuperacion de contrasena, pero ya no se usa para autenticar.
+    rfc_personal: Mapped[str] = mapped_column(String(13), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     nombre: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
     # Referencia suave, mismo patron que Cliente.emisor_rfc en administracion -

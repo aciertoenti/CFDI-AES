@@ -104,8 +104,11 @@ async def proxy(service: str, request: Request, path: str = "", token=Depends(ve
     # administracion).
     if "negocio_id" in token and token["negocio_id"] is not None:
         forward_headers["X-Negocio-Id"] = str(token["negocio_id"])
-    if "sub" in token and token["sub"] is not None:
-        forward_headers["X-Usuario-Email"] = str(token["sub"])
+    # "sub" dejo de ser el email (ahora es rfc_personal, ver auth_usuarios
+    # #15-login) - X-Usuario-Email debe leer el claim "email" explicito,
+    # no "sub", para que el header siga siendo fiel a su nombre.
+    if "email" in token and token["email"] is not None:
+        forward_headers["X-Usuario-Email"] = str(token["email"])
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.request(

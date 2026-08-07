@@ -1541,7 +1541,15 @@ function AuthGate(){
       ? <CrearCuenta onRegistro={auth.registro} onIrALogin={()=>setVista("login")}/>
       : <Login onLogin={auth.login} onIrARegistro={()=>setVista("registro")}/>;
   }
-  return <AppShell onLogout={auth.logout}/>;
+  // AuthGate nunca se desmonta entre login/logout (solo cambia que rama
+  // renderiza), asi que "vista" sobrevive el logout tal cual quedo antes
+  // de autenticarse - si el usuario paso por "Crear cuenta" antes de
+  // loguearse, el logout regresaba ahi en vez de a "Iniciar sesion". Se
+  // resetea aqui, no dentro de auth.logout() (useAuth no tiene ni debe
+  // tener conocimiento del concepto de "vista", que es puramente de
+  // AuthGate).
+  const onLogout = () => { auth.logout(); setVista("login"); };
+  return <AppShell onLogout={onLogout}/>;
 }
 
 export default function App(){

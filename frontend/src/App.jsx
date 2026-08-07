@@ -1084,6 +1084,7 @@ function Usuarios(){
           <thead>
             <tr style={{textAlign:"left",color:C.textMuted,fontSize:11,textTransform:"uppercase"}}>
               <th style={{padding:"6px 8px 10px 0"}}>Email</th>
+              <th style={{padding:"6px 8px 10px 0"}}>RFC</th>
               <th style={{padding:"6px 8px 10px 0"}}>Rol</th>
               <th style={{padding:"6px 8px 10px 0"}}>Creado</th>
             </tr>
@@ -1092,6 +1093,7 @@ function Usuarios(){
             {usuarios.map(u=>(
               <tr key={u.id} style={{borderTop:`1px solid ${C.border}`}}>
                 <td style={{padding:"8px 8px 8px 0",color:C.text}}>{u.email}</td>
+                <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{u.rfc_personal}</td>
                 <td style={{padding:"8px 8px 8px 0"}}>
                   <span style={{background:u.rol==="admin"?C.accentSoft:C.infoSoft,color:u.rol==="admin"?C.accentBorder:C.info,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20}}>{u.rol}</span>
                 </td>

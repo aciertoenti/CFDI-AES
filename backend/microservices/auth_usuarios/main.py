@@ -64,10 +64,13 @@ class UsuarioCreate(BaseModel):
     rfc_personal: str
     nombre: Optional[str] = None
     rfc_emisor: Optional[str] = None
-    # A partir de #15 este endpoint ya no es el registro "de entrada"
-    # (eso es POST /auth/registro, que crea el Negocio) - este queda para
-    # agregar un usuario adicional a un Negocio que ya existe, asi que
-    # negocio_id es obligatorio: Usuario.negocio_id es NOT NULL en BD.
+    # IGNORADO deliberadamente (fix de seguridad, ver crear_usuario): un
+    # caller podia mandar aqui el negocio_id de OTRO negocio y el usuario
+    # nuevo terminaba creado ahi, sin validacion alguna. El negocio_id real
+    # se toma siempre de X-Negocio-Id (header inyectado por el Gateway
+    # desde el JWT ya verificado del caller), nunca de este campo. Se deja
+    # en el schema solo por compatibilidad con clientes existentes que
+    # todavia lo mandan - no tiene efecto.
     negocio_id: int
     # Sin campo "rol" aqui a proposito: este endpoint es publico (sin JWT
     # previo) y no puede permitir que quien se registra se autoasigne un
@@ -172,7 +175,17 @@ ROL_ADMIN_NEGOCIO = "admin"
 
 
 @app.post("/auth/usuarios", response_model=UsuarioResponse, status_code=201)
-async def crear_usuario(req: UsuarioCreate, db: AsyncSession = Depends(get_db)):
+async def crear_usuario(
+    req: UsuarioCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    # Fix de seguridad: negocio_id SIEMPRE del caller autenticado
+    # (X-Negocio-Id, ver requerir_negocio_id), nunca de req.negocio_id -
+    # antes cualquier llamante autenticado podia crear un usuario en
+    # CUALQUIER negocio con solo mandar su id en el body (confirmado con
+    # una prueba real cross-tenant). req.negocio_id se ignora a proposito.
+    negocio_id = requerir_negocio_id(x_negocio_id)
     rfc_personal = validar_rfc_personal(req.rfc_personal)
     password_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     usuario = Usuario(
@@ -181,7 +194,7 @@ async def crear_usuario(req: UsuarioCreate, db: AsyncSession = Depends(get_db)):
         password_hash=password_hash,
         nombre=req.nombre,
         rfc_emisor=req.rfc_emisor,
-        negocio_id=req.negocio_id,
+        negocio_id=negocio_id,
         rol=ROL_DEFAULT_REGISTRO_PUBLICO,
     )
     db.add(usuario)

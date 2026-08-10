@@ -746,12 +746,13 @@ function FacturasGeneradas(){
                 {!isMobile&&<th style={TH}>Fecha timbrado</th>}
                 <th style={{...TH,textAlign:"right"}}>Total</th>
                 <th style={{...TH,textAlign:"center"}}>Estado</th>
+                {!isMobile&&<th style={TH}>Usuario</th>}
                 {!isMobile&&<th style={TH}></th>}
               </tr>
             </thead>
             <tbody>
               {!loading && items.length===0 && (
-                <tr><td colSpan={isMobile?4:6} style={{...TD,textAlign:"center",color:C.textMuted,padding:"24px 12px"}}>
+                <tr><td colSpan={isMobile?4:7} style={{...TD,textAlign:"center",color:C.textMuted,padding:"24px 12px"}}>
                   {facturas.length===0 ? "Todavía no hay facturas timbradas." : "Sin resultados para ese filtro/búsqueda."}
                 </td></tr>
               )}
@@ -763,6 +764,11 @@ function FacturasGeneradas(){
                   {!isMobile&&<td style={{...TD,color:C.textSec,fontSize:12,whiteSpace:"nowrap"}}>{new Date(f.fecha_timbrado).toLocaleString("es-MX")}</td>}
                   <td style={{...TD,textAlign:"right",fontWeight:600,fontSize:13,whiteSpace:"nowrap"}}>{fmt(f.total)}</td>
                   <td style={{...TD,textAlign:"center"}}><Badge estado={f.estado}/></td>
+                  {!isMobile&&(
+                    <td style={{...TD,color:C.textSec,fontSize:12,fontFamily:"monospace",whiteSpace:"nowrap"}}>
+                      {(f.estado==="Cancelada" ? f.cancelado_por_rfc : f.creado_por_rfc) || "—"}
+                    </td>
+                  )}
                   {!isMobile&&(
                     <td style={{...TD,whiteSpace:"nowrap"}} onClick={e=>e.stopPropagation()}>
                       <a href={f.xml_url} target="_blank" rel="noreferrer"
@@ -1143,7 +1149,8 @@ function Emisores(){
               <span style={{background:e.estado==="Activo"?C.accentSoft:C.dangerSoft,color:e.estado==="Activo"?C.accentBorder:C.danger,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,flexShrink:0}}>{e.estado}</span>
             </div>
             <div style={{fontSize:13,color:C.textSec,marginBottom:4}}>Régimen fiscal: <strong style={{color:C.text}}>{e.regimen_fiscal}</strong></div>
-            <div style={{fontSize:13,color:C.textSec}}>CP expedición: <strong style={{color:C.text}}>{e.codigo_postal}</strong></div>
+            <div style={{fontSize:13,color:C.textSec,marginBottom:4}}>CP expedición: <strong style={{color:C.text}}>{e.codigo_postal}</strong></div>
+            <div style={{fontSize:13,color:C.textSec}}>Dado de alta por: <strong style={{color:C.text}}>{e.creado_por_rfc||"—"}</strong></div>
           </Card>
         ))}
       </TwoCol>
@@ -1203,6 +1210,7 @@ function Usuarios(){
             <tr style={{textAlign:"left",color:C.textMuted,fontSize:11,textTransform:"uppercase"}}>
               <th style={{padding:"6px 8px 10px 0"}}>Email</th>
               <th style={{padding:"6px 8px 10px 0"}}>RFC</th>
+              <th style={{padding:"6px 8px 10px 0"}}>Nombre</th>
               <th style={{padding:"6px 8px 10px 0"}}>Rol</th>
               <th style={{padding:"6px 8px 10px 0"}}>Creado</th>
             </tr>
@@ -1212,6 +1220,7 @@ function Usuarios(){
               <tr key={u.id} style={{borderTop:`1px solid ${C.border}`}}>
                 <td style={{padding:"8px 8px 8px 0",color:C.text}}>{u.email}</td>
                 <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{u.rfc_personal}</td>
+                <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{u.nombre||"—"}</td>
                 <td style={{padding:"8px 8px 8px 0"}}>
                   <span style={{background:u.rol==="admin"?C.accentSoft:C.infoSoft,color:u.rol==="admin"?C.accentBorder:C.info,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20}}>{u.rol}</span>
                 </td>

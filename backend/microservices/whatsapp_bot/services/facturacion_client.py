@@ -124,6 +124,14 @@ class FacturacionClient:
             # emisor = un negocio, mismo supuesto que emisor_rfc_default
             # (ver comentario ahi para que cambiaria si esto deja de ser cierto).
             "X-Negocio-Id": str(settings.negocio_id_default),
+            # Sentinel fijo, NO un rfc_personal real - las acciones del bot no
+            # tienen un usuario humano autenticado detras (el "actor" real es
+            # quien escribio por WhatsApp, que nunca inicio sesion en la app).
+            # Deliberadamente con formato invalido para un RFC (guion, mas de
+            # 13 caracteres) para que nadie lo confunda con una persona real
+            # en un reporte de auditoria - se distingue a simple vista de
+            # cualquier creado_por_rfc/cancelado_por_rfc genuino.
+            "X-Usuario-Rfc": "BOT-WHATSAPP",
             "Content-Type": "application/json",
         }
 

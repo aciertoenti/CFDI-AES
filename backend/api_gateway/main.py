@@ -109,6 +109,11 @@ async def proxy(service: str, request: Request, path: str = "", token=Depends(ve
     # no "sub", para que el header siga siendo fiel a su nombre.
     if "email" in token and token["email"] is not None:
         forward_headers["X-Usuario-Email"] = str(token["email"])
+    # sub ya es rfc_personal desde el cambio de login (#15-login) - no hace
+    # falta descifrar nada nuevo, solo reenviarlo. Usado para auditoria
+    # (quien timbro/cancelo/dio de alta), no como control de seguridad.
+    if "sub" in token and token["sub"] is not None:
+        forward_headers["X-Usuario-Rfc"] = str(token["sub"])
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.request(

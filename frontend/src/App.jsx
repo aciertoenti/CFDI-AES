@@ -329,17 +329,17 @@ function useEmisores() {
   const [emisores, setEmisores] = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState(null);
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetchAuth(`${API_BASE}/admin/emisores`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        setEmisores(await res.json());
-      } catch (e) { setError(e.message); }
-      finally { setLoading(false); }
-    })();
+  const cargar = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetchAuth(`${API_BASE}/admin/emisores`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setEmisores(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
   }, []);
-  return { emisores, loading, error };
+  useEffect(() => { cargar(); }, [cargar]);
+  return { emisores, loading, error, recargar: cargar };
 }
 
 function useContadorVirtualISRResico(emisorRfc, anio, mes) {
@@ -468,6 +468,11 @@ const C = {
   info:"#2B6CB0", infoSoft:"#EBF8FF",
 };
 const fmt = n => new Intl.NumberFormat("es-MX",{style:"currency",currency:"MXN"}).format(n);
+// FastAPI/Pydantic manda detail como string (400/409) o como arreglo de
+// errores de validacion (422) - normaliza ambos a un mensaje legible.
+const detalleError = (data, res) => Array.isArray(data.detail)
+  ? data.detail.map(d => d.msg || JSON.stringify(d)).join(", ")
+  : (data.detail || `HTTP ${res.status}`);
 
 const FACTURAS = [
   {folio:"A-0127",receptor:"Coppel SA de CV",total:77600,fecha:"2025-05-19",estado:"Vigente",uuid:"WXY7-ZAB8"},
@@ -1003,17 +1008,130 @@ function Clientes(){
   );
 }
 
-function Emisores(){
-  const {emisores,loading,error} = useEmisores();
+function AltaEmisorForm({ onCreado }) {
+  const toast = useToast();
+  const [form, setForm] = useState({ razon_social:"", rfc:"", regimen_fiscal:"", codigo_postal:"", csd_password:"" });
+  const [cerFile, setCerFile] = useState(null);
+  const [keyFile, setKeyFile] = useState(null);
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState(null);
+  const cerInputRef = useRef();
+  const keyInputRef = useRef();
 
-  if (error) return <Placeholder title="Emisores" detail={`No se pudo conectar con administracion (${ADMINISTRACION_BASE}): ${error}`}/>;
-  if (loading) return <Placeholder title="Emisores" detail="Cargando datos reales…"/>;
-  if (emisores.length===0) return <Placeholder title="Emisores" detail="Todavía no hay emisores registrados."/>;
+  // Convierte el archivo a lo que EmisorCreate espera (base64 en JSON, no
+  // multipart/form-data) - a diferencia del Lector de Documentos IA, que si
+  // usa FormData porque su endpoint acepta multipart.
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(new Error("No se pudo leer el archivo"));
+    reader.readAsDataURL(file);
+  });
+
+  // El CSD y la contrasena nunca deben sobrevivir en memoria del componente
+  // mas de lo necesario - se limpian tanto en exito como en cualquier envio,
+  // los inputs de archivo se resetean via ref (value de un <input type="file">
+  // no se puede controlar por state).
+  const limpiarFormulario = () => {
+    setForm({ razon_social:"", rfc:"", regimen_fiscal:"", codigo_postal:"", csd_password:"" });
+    setCerFile(null); setKeyFile(null);
+    if (cerInputRef.current) cerInputRef.current.value = "";
+    if (keyInputRef.current) keyInputRef.current.value = "";
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    if (!form.razon_social || !form.rfc || !form.regimen_fiscal || !form.codigo_postal || !form.csd_password) {
+      setError("Completa todos los campos antes de continuar."); return;
+    }
+    if (!cerFile || !keyFile) {
+      setError("Sube los dos archivos del CSD (.cer y .key)."); return;
+    }
+    setEnviando(true);
+    try {
+      const [csd_cert_base64, csd_key_base64] = await Promise.all([fileToBase64(cerFile), fileToBase64(keyFile)]);
+      const res = await fetchAuth(`${API_BASE}/admin/emisores`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          razon_social: form.razon_social,
+          rfc: form.rfc,
+          regimen_fiscal: form.regimen_fiscal,
+          codigo_postal: form.codigo_postal,
+          csd_cert_base64, csd_key_base64,
+          csd_password: form.csd_password,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(detalleError(data, res));
+      toast(`Emisor ${data.rfc} registrado correctamente`, "success");
+      limpiarFormulario();
+      onCreado();
+    } catch (e) {
+      setError(e.message);
+      toast(`Error al registrar emisor: ${e.message}`, "error");
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  const inp = (lbl, k, opts = {}) => (
+    <div style={{marginBottom:12}}>
+      <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>{lbl}</label>
+      <input type={opts.type||"text"} value={form[k]} maxLength={opts.maxLength}
+        onChange={e=>setForm({...form,[k]: opts.upper ? e.target.value.toUpperCase() : e.target.value})}
+        placeholder={opts.placeholder||lbl}
+        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}/>
+    </div>
+  );
 
   return (
     <div>
       <SectionTitle>Emisores</SectionTitle>
-      <SectionSub>Solo lectura por ahora — dar de alta/editar requiere subir el CSD, fuera de alcance hoy.</SectionSub>
+      <SectionSub>Todavía no hay ningún emisor registrado — da de alta el primero para poder timbrar.</SectionSub>
+      <Card style={{maxWidth:480}}>
+        <form onSubmit={submit}>
+          {inp("Razón social","razon_social")}
+          {inp("RFC","rfc",{upper:true,maxLength:13,placeholder:"AAAA000101AAA"})}
+          {inp("Régimen fiscal (código SAT)","regimen_fiscal",{maxLength:3,placeholder:"601"})}
+          {inp("Código postal de expedición","codigo_postal",{maxLength:5,placeholder:"00000"})}
+
+          <div style={{marginBottom:12}}>
+            <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Certificado (.cer)</label>
+            <input ref={cerInputRef} type="file" accept=".cer" onChange={e=>setCerFile(e.target.files[0]||null)}
+              style={{width:"100%",fontSize:12,color:C.text}}/>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Llave privada (.key)</label>
+            <input ref={keyInputRef} type="file" accept=".key" onChange={e=>setKeyFile(e.target.files[0]||null)}
+              style={{width:"100%",fontSize:12,color:C.text}}/>
+          </div>
+          <div style={{marginBottom:16}}>
+            <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Contraseña del CSD</label>
+            <input type="password" value={form.csd_password} onChange={e=>setForm({...form,csd_password:e.target.value})}
+              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}/>
+          </div>
+
+          {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6}}>⚠ {error}</div>}
+
+          <Btn disabled={enviando} style={{width:"100%"}}>{enviando?"Registrando…":"Registrar emisor"}</Btn>
+        </form>
+      </Card>
+    </div>
+  );
+}
+
+function Emisores(){
+  const {emisores,loading,error,recargar} = useEmisores();
+
+  if (error) return <Placeholder title="Emisores" detail={`No se pudo conectar con administracion (${ADMINISTRACION_BASE}): ${error}`}/>;
+  if (loading) return <Placeholder title="Emisores" detail="Cargando datos reales…"/>;
+  if (emisores.length===0) return <AltaEmisorForm onCreado={recargar}/>;
+
+  return (
+    <div>
+      <SectionTitle>Emisores</SectionTitle>
+      <SectionSub>Solo lectura por ahora — agregar un segundo emisor y editar quedan fuera de alcance hoy.</SectionSub>
       <TwoCol>
         {emisores.map(e=>(
           <Card key={e.rfc}>

@@ -89,49 +89,21 @@ class NegocioResponse(BaseModel):
     fecha_alta: datetime
     estado: str
 
-# Mismo nombre usado por scripts/backfill_negocio.py (#15) - un solo lugar
-# de verdad para los emisores/usuarios que existian antes del modelo de
-# tenants.
-NOMBRE_NEGOCIO_DEFAULT = "Negocio por defecto (pre-tenants)"
-
-
-async def resolver_negocio_id(x_negocio_id: Optional[str], db: AsyncSession) -> int:
-    """
-    El Gateway inyecta X-Negocio-Id (tomado del JWT ya verificado) para las
-    llamadas que pasan por el (#15/#48). Si la llamada llega directo al
-    servicio sin ese header (pruebas locales, llamadas internas), se usa el
-    Negocio por defecto creado en el backfill - nunca se deja un Emisor sin
-    negocio_id valido.
-    """
-    if x_negocio_id:
-        try:
-            return int(x_negocio_id)
-        except ValueError:
-            pass
-    result = await db.execute(select(Negocio).where(Negocio.nombre == NOMBRE_NEGOCIO_DEFAULT))
-    negocio = result.scalar_one_or_none()
-    if negocio is None:
-        raise HTTPException(
-            status_code=500,
-            detail="No hay Negocio por defecto configurado - correr scripts/backfill_negocio.py",
-        )
-    return negocio.id
-
-
 def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
     """
-    Para LECTURAS multi-tenant, a diferencia de resolver_negocio_id() (usado
-    en escritura con fallback al Negocio por defecto para no romper pruebas
-    curl directas): aqui no hay fallback permisivo. Una lectura sin
-    X-Negocio-Id valido (llamada directa al servicio, bypass del Gateway,
-    header ausente por error) se rechaza en vez de asumir un Negocio -
-    un fallback abierto en lectura significaria que cualquiera podria ver
-    los datos de otro Negocio con solo omitir el header.
+    Fail-closed para todas las operaciones multi-tenant (lecturas y
+    escrituras por igual, incluido crear_emisor - fix de seguridad: antes
+    tenia un fallback permisivo al "Negocio por defecto (pre-tenants)" via
+    resolver_negocio_id(), ahora eliminada). Una llamada sin X-Negocio-Id
+    valido (llamada directa al servicio, bypass del Gateway, header ausente
+    por error) se rechaza en vez de asumir un Negocio - un fallback abierto
+    significaria que cualquiera podria crear/ver datos de otro Negocio con
+    solo omitir el header.
     """
     if not x_negocio_id:
         raise HTTPException(
             status_code=400,
-            detail="Falta X-Negocio-Id - esta lectura requiere pasar por el Gateway con un token valido",
+            detail="Falta X-Negocio-Id - esta operacion requiere pasar por el Gateway con un token valido",
         )
     try:
         return int(x_negocio_id)
@@ -233,7 +205,7 @@ async def crear_emisor(
     if existente.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail=f"El emisor {emisor.rfc} ya existe")
 
-    negocio_id = await resolver_negocio_id(x_negocio_id, db)
+    negocio_id = requerir_negocio_id(x_negocio_id)
 
     nuevo = Emisor(
         negocio_id=negocio_id,

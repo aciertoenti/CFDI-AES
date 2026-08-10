@@ -87,6 +87,14 @@ class Factura(Base):
     # rellenan con un backfill aparte (parseando el XML ya guardado), no
     # con create_all/Alembic (eso es transformacion de datos, no de esquema).
     metodo_pago: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
+    # Auditoria (no control de seguridad) - RFC personal (X-Usuario-Rfc, ver
+    # api_gateway) de quien timbro/cancelo. Nullable a proposito: dato de
+    # auditoria, no se rechaza la operacion si falta (a diferencia de
+    # X-Negocio-Id), y las facturas previas a este cambio no lo tienen -
+    # no se inventa retroactivamente. Pueden ser dos personas distintas del
+    # mismo negocio (o el bot, ver X-Usuario-Rfc="BOT-WHATSAPP").
+    creado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    cancelado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

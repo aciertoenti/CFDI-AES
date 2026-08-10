@@ -129,6 +129,8 @@ class FacturaResponse(BaseModel):
     xml_url: str
     pdf_url: str
     noCertificadoSAT: Optional[str] = None
+    creado_por_rfc: Optional[str] = None
+    cancelado_por_rfc: Optional[str] = None
 
 class CancelacionRequest(BaseModel):
     uuid: str
@@ -458,6 +460,8 @@ def _factura_to_response(f: Factura) -> FacturaResponse:
         xml_url=storage_client.url_xml(f.uuid),
         pdf_url=storage_client.url_pdf(f.uuid),
         noCertificadoSAT=f.no_certificado_sat,
+        creado_por_rfc=f.creado_por_rfc,
+        cancelado_por_rfc=f.cancelado_por_rfc,
     )
 
 
@@ -466,6 +470,7 @@ async def timbrar_factura(
     factura: FacturaCreate,
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
 ):
     negocio_id = requerir_negocio_id(x_negocio_id)
     signer = await get_signer_para_negocio(factura.emisor_rfc, negocio_id)
@@ -510,6 +515,7 @@ async def timbrar_factura(
             xml=resultado["xml_timbrado"],
             costo_timbre=COSTO_TIMBRE_CON_IVA,
             metodo_pago=factura.metodo_pago,
+            creado_por_rfc=x_usuario_rfc,
         ))
         await db.commit()
     except Exception:
@@ -547,6 +553,7 @@ async def timbrar_factura(
         xml_url=xml_url,
         pdf_url=pdf_url,
         noCertificadoSAT=resultado["no_certificado_sat"],
+        creado_por_rfc=x_usuario_rfc,
     )
 
 @app.get("/facturas", response_model=List[FacturaResponse])
@@ -769,6 +776,7 @@ async def cancelar_factura(
     req: CancelacionRequest,
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
 ):
     if req.motivo not in MOTIVOS_CANCELACION_VALIDOS:
         raise HTTPException(
@@ -827,6 +835,7 @@ async def cancelar_factura(
     # campo estable - "201" es el unico codigo de exito confirmado en
     # pruebas reales; cualquier otro codigo no se traduce a ciegas.
     factura.detalle_pac = resultado["estatus_cancelacion"]
+    factura.cancelado_por_rfc = x_usuario_rfc
     if resultado["estatus_uuid"] == "201":
         factura.estado = "Cancelada"
     else:

@@ -9,7 +9,6 @@ from decimal import Decimal
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import date, datetime
@@ -441,24 +440,6 @@ async def construir_comprobante(factura: FacturaCreate, signer: Signer, x_negoci
     )
     comprobante.sign(signer)
     return comprobante
-
-
-@app.post("/facturas/generar-xml", response_class=PlainTextResponse)
-async def generar_xml_firmado(
-    factura: FacturaCreate,
-    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
-):
-    """
-    ENDPOINT TEMPORAL DE PRUEBA — genera y firma el XML CFDI 4.0 (cadena
-    original + sello) con el CSD real del emisor (#42), pero NO lo envia
-    a Finkok ni lo persiste. Es solo para inspeccionar el XML resultante
-    antes de conectar el PAC (paso 3).
-    """
-    negocio_id = requerir_negocio_id(x_negocio_id)
-    signer = await get_signer_para_negocio(factura.emisor_rfc, negocio_id)
-    comprobante = await construir_comprobante(factura, signer, x_negocio_id)
-    xml_bytes = comprobante.xml_bytes(pretty_print=True)
-    return PlainTextResponse(content=xml_bytes.decode("utf-8"), media_type="application/xml")
 
 
 def _factura_to_response(f: Factura) -> FacturaResponse:

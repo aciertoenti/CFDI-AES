@@ -146,7 +146,12 @@ services:
       WHATSAPP_PHONE_NUMBER_ID: "${WHATSAPP_PHONE_NUMBER_ID}"
       WHATSAPP_VERIFY_TOKEN: "${WHATSAPP_VERIFY_TOKEN}"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
-      EMISOR_RFC_DEFAULT: "${EMISOR_RFC_DEFAULT:-DNS010101AAA}"
+      # DNS010101AAA (default anterior) nunca existio como Emisor real -
+      # EKU9003173C9 es el RFC de pruebas del SAT con CSD real. NEGOCIO_ID_DEFAULT
+      # es el negocio_id real dueño de ese emisor en administracion (ver
+      # comentario en core/config.py de whatsapp_bot).
+      EMISOR_RFC_DEFAULT: "${EMISOR_RFC_DEFAULT:-EKU9003173C9}"
+      NEGOCIO_ID_DEFAULT: "${NEGOCIO_ID_DEFAULT:-1}"
       JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
       PRIVACY_NOTICE_URL: "${PRIVACY_NOTICE_URL:-https://tudominio.mx/aviso-privacidad}"
       ENVIRONMENT: "${ENVIRONMENT:-development}"

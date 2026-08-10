@@ -61,9 +61,23 @@ class Settings(BaseSettings):
         alias="PAC_CANCEL_URL",
     )
 
-    # RFC del emisor por defecto (para el chatbot de autoservicio)
+    # RFC del emisor por defecto (para el chatbot de autoservicio). El default
+    # anterior (DNS010101AAA) era un placeholder que nunca se dio de alta como
+    # Emisor real - EKU9003173C9 es el RFC de pruebas del SAT con CSD real
+    # y verificado (ver certs_test/, administracion).
     emisor_rfc_default: str = Field(
-        default="DNS010101AAA", alias="EMISOR_RFC_DEFAULT"
+        default="EKU9003173C9", alias="EMISOR_RFC_DEFAULT"
+    )
+    # negocio_id (#15) al que pertenece emisor_rfc_default - necesario desde
+    # que /facturas/timbrar exige X-Negocio-Id (commit 294fc52). Fijo a
+    # proposito: la arquitectura actual asume un despliegue del bot = un
+    # emisor = un negocio (mismo supuesto que ya tenia emisor_rfc_default).
+    # Si algun dia un mismo bot debe servir a varios negocios, esto tendria
+    # que resolverse por conversacion (ej. atado al numero de WhatsApp
+    # Business que recibio el mensaje, o a datos capturados del cliente),
+    # no como un valor fijo de configuracion.
+    negocio_id_default: int = Field(
+        default=1, alias="NEGOCIO_ID_DEFAULT"
     )
 
     # ── Seguridad ─────────────────────────────────────────────────────────────

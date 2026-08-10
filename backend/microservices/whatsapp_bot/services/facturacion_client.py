@@ -117,6 +117,13 @@ class FacturacionClient:
         self._base_url = settings.facturacion_url
         self._headers = {
             "X-Internal-Key": settings.internal_api_key,
+            # facturacion exige X-Negocio-Id desde el fix de aislamiento por
+            # negocio (commit 294fc52) - sin esto, timbrar()/cancelar() son
+            # rechazados con 400 "Falta X-Negocio-Id". Fijo a
+            # settings.negocio_id_default: un despliegue del bot = un
+            # emisor = un negocio, mismo supuesto que emisor_rfc_default
+            # (ver comentario ahi para que cambiaria si esto deja de ser cierto).
+            "X-Negocio-Id": str(settings.negocio_id_default),
             "Content-Type": "application/json",
         }
 

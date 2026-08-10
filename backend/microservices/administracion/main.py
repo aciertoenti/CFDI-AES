@@ -66,6 +66,7 @@ class EmisorResponse(BaseModel):
     estado: str
     negocio_id: int
     created_at: datetime
+    creado_por_rfc: Optional[str] = None
     # Deliberado: nunca se regresan csd_cert_base64/csd_key_base64/csd_password
     # en ninguna respuesta de la API, ni siquiera al crear.
 
@@ -163,6 +164,7 @@ def _emisor_to_response(e: Emisor) -> EmisorResponse:
         estado=e.estado,
         negocio_id=e.negocio_id,
         created_at=e.created_at,
+        creado_por_rfc=e.creado_por_rfc,
     )
 
 
@@ -192,6 +194,7 @@ async def crear_emisor(
     emisor: EmisorCreate,
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
 ):
     """Registra un nuevo emisor real. El CSD se guarda tal cual se recibe
     (base64) - cifrado con KMS queda pendiente, es una decision de
@@ -216,6 +219,7 @@ async def crear_emisor(
         csd_cert_base64=emisor.csd_cert_base64,
         csd_key_base64=emisor.csd_key_base64,
         csd_password=emisor.csd_password,
+        creado_por_rfc=x_usuario_rfc,
     )
     db.add(nuevo)
     await db.commit()

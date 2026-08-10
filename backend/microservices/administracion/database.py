@@ -114,6 +114,11 @@ class Emisor(Base):
     # contrasena original.
     csd_password: Mapped[str] = mapped_column(CifradoFernet, nullable=False)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="Activo")
+    # Auditoria (no control de seguridad) - RFC personal (X-Usuario-Rfc, ver
+    # api_gateway) de quien dio de alta el emisor. Nullable a proposito: dato
+    # de auditoria, no se rechaza el alta si falta, y los emisores previos a
+    # este cambio (ej. EKU9003173C9) no lo tienen - no se inventa retroactivamente.
+    creado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

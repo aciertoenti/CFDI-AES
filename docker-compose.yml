@@ -97,7 +97,7 @@ services:
     environment:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin"
       CSD_MASTER_KEY: "${CSD_MASTER_KEY}"
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-cambia_esto_por_clave_segura}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
     depends_on: [postgres_admin]
     command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 
@@ -145,7 +145,7 @@ services:
       WHATSAPP_TOKEN: "${WHATSAPP_TOKEN}"
       WHATSAPP_PHONE_NUMBER_ID: "${WHATSAPP_PHONE_NUMBER_ID}"
       WHATSAPP_VERIFY_TOKEN: "${WHATSAPP_VERIFY_TOKEN}"
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-cambia_esto_por_clave_segura}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
       EMISOR_RFC_DEFAULT: "${EMISOR_RFC_DEFAULT:-DNS010101AAA}"
       JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
       PRIVACY_NOTICE_URL: "${PRIVACY_NOTICE_URL:-https://tudominio.mx/aviso-privacidad}"

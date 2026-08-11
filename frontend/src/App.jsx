@@ -102,14 +102,17 @@ function useAuth() {
     window.addEventListener("cfdi-auth-expired", onExpired);
     return () => window.removeEventListener("cfdi-auth-expired", onExpired);
   }, []);
-  const login = useCallback(async (rfcPersonal, password) => {
+  const login = useCallback(async (identificador, password) => {
     try {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rfc_personal: rfcPersonal, password }),
+        // identificador acepta RFC personal O usuario indistintamente (ver
+        // auth_usuarios: LoginRequest.identificador) - el backend decide
+        // cual es segun la longitud/formato, el frontend no distingue.
+        body: JSON.stringify({ identificador, password }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { ok: false, error: data.detail || `HTTP ${res.status}` };
+      if (!res.ok) return { ok: false, error: detalleError(data, res) };
       setStoredToken(data.access_token);
       setToken(data.access_token);
       return { ok: true };
@@ -117,18 +120,17 @@ function useAuth() {
       return { ok: false, error: e.message };
     }
   }, []);
-  const registro = useCallback(async (nombreNegocio, email, rfcPersonal, password, nombre) => {
+  const registro = useCallback(async (nombreNegocio, email, rfcPersonal, password, nombre, usuario) => {
     try {
       const res = await fetch(`${API_BASE}/auth/registro`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, rfc_personal: rfcPersonal, password, nombre: nombre || undefined }),
+        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, rfc_personal: rfcPersonal, password, nombre, usuario }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { ok: false, error: data.detail || `HTTP ${res.status}` };
+      if (!res.ok) return { ok: false, error: detalleError(data, res) };
       // POST /auth/registro (#15) crea el Negocio + primer usuario admin pero
       // no regresa token - se reusa login() con las mismas credenciales para
-      // entrar directo tras crear la cuenta. login() ahora pide rfc_personal,
-      // no email (ver auth_usuarios, commit b82d8dd).
+      // entrar directo tras crear la cuenta.
       return login(rfcPersonal, password);
     } catch (e) {
       return { ok: false, error: e.message };
@@ -139,7 +141,7 @@ function useAuth() {
 }
 
 function Login({ onLogin, onIrARegistro }) {
-  const [rfcPersonal, setRfcPersonal] = useState("");
+  const [identificador, setIdentificador] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -147,7 +149,7 @@ function Login({ onLogin, onIrARegistro }) {
   const submit = async e => {
     e.preventDefault();
     setLoading(true); setError(null);
-    const r = await onLogin(rfcPersonal, password);
+    const r = await onLogin(identificador, password);
     setLoading(false);
     if (!r.ok) setError(r.error);
   };
@@ -158,11 +160,14 @@ function Login({ onLogin, onIrARegistro }) {
         <img src={logoAcierto} alt="Acierto" style={{width:120,maxWidth:"60%",borderRadius:8,display:"block",marginBottom:14}}/>
         <div style={{fontSize:14,color:C.textSec,marginBottom:22,textAlign:"center"}}>Inicia sesión para continuar</div>
         <div style={{marginBottom:14,width:"100%"}}>
-          <label htmlFor="login-rfc" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>RFC</label>
+          <label htmlFor="login-rfc" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>RFC o USUARIO</label>
           {/* fontSize:16 en los inputs a proposito - por debajo de eso, Safari
-              en iOS hace zoom automatico al enfocar el campo. */}
-          <input id="login-rfc" type="text" required autoFocus maxLength={13} value={rfcPersonal}
-            onChange={e=>setRfcPersonal(e.target.value.toUpperCase())} placeholder="AAAA000101AAA"
+              en iOS hace zoom automatico al enfocar el campo. Acepta RFC
+              (13 caracteres) O el usuario alterno (6-10) - mismo campo,
+              backend decide cual es (ver useAuth.login). Cuentas viejas sin
+              usuario siguen entrando igual con su RFC, sin friccion. */}
+          <input id="login-rfc" type="text" required autoFocus maxLength={13} value={identificador}
+            onChange={e=>setIdentificador(e.target.value.toUpperCase())} placeholder="RFC o USUARIO"
             style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
         <div style={{marginBottom:20,width:"100%"}}>
@@ -185,6 +190,7 @@ function CrearCuenta({ onRegistro, onIrALogin }) {
   const [nombre, setNombre] = useState("");
   const [email, setEmail] = useState("");
   const [rfcPersonal, setRfcPersonal] = useState("");
+  const [usuario, setUsuario] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -192,7 +198,7 @@ function CrearCuenta({ onRegistro, onIrALogin }) {
   const submit = async e => {
     e.preventDefault();
     setLoading(true); setError(null);
-    const r = await onRegistro(nombreNegocio, email, rfcPersonal, password, nombre);
+    const r = await onRegistro(nombreNegocio, email, rfcPersonal, password, nombre, usuario);
     setLoading(false);
     if (!r.ok) setError(r.error);
   };
@@ -208,8 +214,8 @@ function CrearCuenta({ onRegistro, onIrALogin }) {
             style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
         <div style={{marginBottom:14,width:"100%"}}>
-          <label htmlFor="reg-nombre" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Tu nombre (opcional)</label>
-          <input id="reg-nombre" type="text" value={nombre} onChange={e=>setNombre(e.target.value)}
+          <label htmlFor="reg-nombre" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Tu nombre</label>
+          <input id="reg-nombre" type="text" required value={nombre} onChange={e=>setNombre(e.target.value)}
             style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
         <div style={{marginBottom:14,width:"100%"}}>
@@ -221,6 +227,15 @@ function CrearCuenta({ onRegistro, onIrALogin }) {
           <label htmlFor="reg-rfc" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>RFC</label>
           <input id="reg-rfc" type="text" required maxLength={13} value={rfcPersonal}
             onChange={e=>setRfcPersonal(e.target.value.toUpperCase())} placeholder="AAAA000101AAA"
+            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:14,width:"100%"}}>
+          <label htmlFor="reg-usuario" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Usuario</label>
+          {/* Credencial alterna al RFC para iniciar sesion despues (ver
+              Login) - mismo patron toUpperCase() que el campo RFC de arriba,
+              independiente de si el teclado esta en mayus/minus. */}
+          <input id="reg-usuario" type="text" required minLength={6} maxLength={10} value={usuario}
+            onChange={e=>setUsuario(e.target.value.toUpperCase())} placeholder="6-10 caracteres"
             style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
         </div>
         <div style={{marginBottom:20,width:"100%"}}>

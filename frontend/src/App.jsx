@@ -340,7 +340,9 @@ function useCostosResumen() {
 
 // Un solo emisor registrado hoy en administración (no hay multi-tenant/login
 // todavia) — se usa el primero de la lista como "el" emisor de la cuenta.
-function useEmisores() {
+const EmisoresContext = createContext(null);
+
+function EmisoresProvider({ children }) {
   const [emisores, setEmisores] = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState(null);
@@ -354,7 +356,24 @@ function useEmisores() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
-  return { emisores, loading, error, recargar: cargar };
+  return (
+    <EmisoresContext.Provider value={{ emisores, loading, error, recargar: cargar }}>
+      {children}
+    </EmisoresContext.Provider>
+  );
+}
+
+// Antes: cada componente que llamaba useEmisores() disparaba su propio
+// fetch a /admin/emisores (hasta 5 llamadas redundantes por carga de app,
+// una por NuevaFactura/ChatFiscal/Emisores/ContadorVirtual/AppShell) y el
+// header no se enteraba cuando Emisores() creaba un emisor nuevo, porque
+// cada uno tenia su propio estado aislado. Ahora useEmisores() consume un
+// solo EmisoresContext (provisto en AuthGate, ver mas abajo) - un fetch,
+// estado compartido, recargar() de cualquiera actualiza a todos.
+function useEmisores() {
+  const ctx = useContext(EmisoresContext);
+  if (!ctx) throw new Error("useEmisores() debe usarse dentro de <EmisoresProvider>");
+  return ctx;
 }
 
 function useContadorVirtualISRResico(emisorRfc, anio, mes) {
@@ -1702,7 +1721,7 @@ function AuthGate(){
   // tener conocimiento del concepto de "vista", que es puramente de
   // AuthGate).
   const onLogout = () => { auth.logout(); setVista("login"); };
-  return <AppShell onLogout={onLogout}/>;
+  return <EmisoresProvider><AppShell onLogout={onLogout}/></EmisoresProvider>;
 }
 
 export default function App(){

@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Depends, Query
+from fastapi import FastAPI, Header, HTTPException, Depends, Query, Security, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import date, datetime
@@ -176,6 +177,21 @@ ADMINISTRACION_URL = os.environ.get("ADMINISTRACION_URL", "http://administracion
 # alcanzar directo (aqui, pedir el CSD descifrado de un emisor), no rutas
 # con contexto de tenant.
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
+
+# Hallazgo (#42-cache): facturacion ya usaba INTERNAL_API_KEY como CLIENTE
+# saliente (arriba, headers hacia administracion), pero nunca validaba un
+# X-Internal-Key entrante en ninguno de sus propios endpoints - ni siquiera
+# en /facturas/timbrar, que whatsapp_bot ya llama con ese header (queda
+# anotado como hallazgo aparte, no se resuelve aqui). Mismo patron que
+# administracion (require_internal_key) para el endpoint interno nuevo de
+# invalidacion de cache.
+_internal_api_key_header = APIKeyHeader(name="X-Internal-Key", auto_error=False)
+
+
+def require_internal_key(api_key: Optional[str] = Security(_internal_api_key_header)) -> str:
+    if not INTERNAL_API_KEY or not api_key or api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clave interna inválida o ausente")
+    return api_key
 
 
 def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
@@ -368,6 +384,24 @@ async def obtener_csd_bytes_para_negocio(rfc: str, negocio_id: int) -> tuple[byt
     """
     cacheado = await _obtener_csd_cacheado(rfc, negocio_id)
     return cacheado.cert_bytes, cacheado.key_bytes, cacheado.password
+
+
+@app.post("/internal/csd-cache/invalidar/{rfc}", dependencies=[Depends(require_internal_key)])
+async def invalidar_csd_cache(rfc: str):
+    """
+    Uso exclusivo servicio-a-servicio (administracion, al rotar un CSD via
+    PUT /admin/emisores/{rfc}) - protegido con X-Internal-Key. _csd_cache no
+    tiene TTL (dict en memoria del proceso, ver _obtener_csd_cacheado): sin
+    esto, un CSD rotado en administracion se seguiria usando aqui hasta que
+    el proceso de facturacion se reiniciara solo. Limpia tambien el lock
+    (_csd_locks), no solo la entrada cacheada - dejar un Lock huerfano no
+    rompe nada (se recrea en _lock_para_rfc si hace falta), pero no hay
+    razon para no limpiarlo junto con su CSD.
+    """
+    estaba_cacheado = _csd_cache.pop(rfc, None) is not None
+    _csd_locks.pop(rfc, None)
+    logger.info("csd_cache.invalidado rfc=%s estaba_cacheado=%s", rfc, estaba_cacheado)
+    return {"rfc": rfc, "estaba_cacheado": estaba_cacheado}
 
 
 async def construir_comprobante(factura: FacturaCreate, signer: Signer, x_negocio_id: Optional[str] = None) -> Comprobante:

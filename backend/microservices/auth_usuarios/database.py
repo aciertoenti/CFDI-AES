@@ -51,6 +51,12 @@ class Usuario(Base):
     # completamente distinto. email se queda como dato de contacto y para
     # recuperacion de contrasena, pero ya no se usa para autenticar.
     rfc_personal: Mapped[str] = mapped_column(String(13), unique=True, nullable=False, index=True)
+    # Credencial de login alterna (junto al RFC, no lo reemplaza) - 6-10
+    # caracteres, formato validado en es_usuario_valido() (main.py). Nullable
+    # a nivel de BD a proposito: cuentas existentes (todas de prueba al
+    # momento de este cambio) no se migran ni se les inventa un valor - solo
+    # las cuentas nuevas a partir de hoy lo exigen (ver crear_usuario/registro).
+    usuario: Mapped[Optional[str]] = mapped_column(String(10), unique=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     nombre: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
     # Referencia suave, mismo patron que Cliente.emisor_rfc en administracion -

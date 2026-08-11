@@ -1099,7 +1099,7 @@ function AltaEmisorForm({ onCreado }) {
   const inp = (lbl, k, opts = {}) => (
     <div style={{marginBottom:12}}>
       <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>{lbl}</label>
-      <input type={opts.type||"text"} value={form[k]} maxLength={opts.maxLength}
+      <input type={opts.type||"text"} value={form[k]} maxLength={opts.maxLength} autoComplete="off"
         onChange={e=>setForm({...form,[k]: opts.upper ? e.target.value.toUpperCase() : e.target.value})}
         placeholder={opts.placeholder||lbl}
         style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}/>
@@ -1111,7 +1111,14 @@ function AltaEmisorForm({ onCreado }) {
       <SectionTitle>Emisores</SectionTitle>
       <SectionSub>Todavía no hay ningún emisor registrado — da de alta el primero para poder timbrar.</SectionSub>
       <Card style={{maxWidth:480}}>
-        <form onSubmit={submit}>
+        {/* autoComplete="off" en el <form> (algunos navegadores lo respetan a
+            nivel de formulario completo) + en cada input individual, porque
+            Chrome moderno frecuentemente lo ignora campo por campo. La
+            contrasena del CSD usa "new-password" en vez de "off" - es la
+            unica senal que Chrome respeta de forma confiable para no
+            ofrecer autocompletar ahi con una contrasena guardada de otro
+            sitio (ver hallazgo real de "RAHP7" autocompletado en CP). */}
+        <form onSubmit={submit} autoComplete="off">
           {inp("Razón social","razon_social")}
           {inp("RFC","rfc",{upper:true,maxLength:13,placeholder:"AAAA000101AAA"})}
           {inp("Régimen fiscal (código SAT)","regimen_fiscal",{maxLength:3,placeholder:"601"})}
@@ -1119,17 +1126,17 @@ function AltaEmisorForm({ onCreado }) {
 
           <div style={{marginBottom:12}}>
             <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Certificado (.cer)</label>
-            <input ref={cerInputRef} type="file" accept=".cer" onChange={e=>setCerFile(e.target.files[0]||null)}
+            <input ref={cerInputRef} type="file" accept=".cer" autoComplete="off" onChange={e=>setCerFile(e.target.files[0]||null)}
               style={{width:"100%",fontSize:12,color:C.text}}/>
           </div>
           <div style={{marginBottom:12}}>
             <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Llave privada (.key)</label>
-            <input ref={keyInputRef} type="file" accept=".key" onChange={e=>setKeyFile(e.target.files[0]||null)}
+            <input ref={keyInputRef} type="file" accept=".key" autoComplete="off" onChange={e=>setKeyFile(e.target.files[0]||null)}
               style={{width:"100%",fontSize:12,color:C.text}}/>
           </div>
           <div style={{marginBottom:16}}>
             <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Contraseña del CSD</label>
-            <input type="password" value={form.csd_password} onChange={e=>setForm({...form,csd_password:e.target.value})}
+            <input type="password" value={form.csd_password} autoComplete="new-password" onChange={e=>setForm({...form,csd_password:e.target.value})}
               style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}/>
           </div>
 
@@ -1226,6 +1233,7 @@ function Usuarios(){
               <th style={{padding:"6px 8px 10px 0"}}>Email</th>
               <th style={{padding:"6px 8px 10px 0"}}>RFC</th>
               <th style={{padding:"6px 8px 10px 0"}}>Nombre</th>
+              <th style={{padding:"6px 8px 10px 0"}}>Usuario</th>
               <th style={{padding:"6px 8px 10px 0"}}>Rol</th>
               <th style={{padding:"6px 8px 10px 0"}}>Creado</th>
             </tr>
@@ -1236,6 +1244,7 @@ function Usuarios(){
                 <td style={{padding:"8px 8px 8px 0",color:C.text}}>{u.email}</td>
                 <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{u.rfc_personal}</td>
                 <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{u.nombre||"—"}</td>
+                <td style={{padding:"8px 8px 8px 0",color:C.textSec}}>{u.usuario||"—"}</td>
                 <td style={{padding:"8px 8px 8px 0"}}>
                   <span style={{background:u.rol==="admin"?C.accentSoft:C.infoSoft,color:u.rol==="admin"?C.accentBorder:C.info,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20}}>{u.rol}</span>
                 </td>

@@ -109,6 +109,7 @@ class UsuarioListItem(BaseModel):
     email: str
     rfc_personal: str
     nombre: Optional[str]
+    usuario: Optional[str]
     rfc_emisor: Optional[str]
     negocio_id: int
     rol: str
@@ -382,7 +383,8 @@ async def listar_usuarios(
     return [
         UsuarioListItem(
             id=u.id, email=u.email, rfc_personal=u.rfc_personal, nombre=u.nombre,
-            rfc_emisor=u.rfc_emisor, negocio_id=u.negocio_id, rol=u.rol, created_at=u.created_at,
+            usuario=u.usuario, rfc_emisor=u.rfc_emisor, negocio_id=u.negocio_id, rol=u.rol,
+            created_at=u.created_at,
         )
         for u in result.scalars().all()
     ]

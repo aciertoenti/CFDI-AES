@@ -7,6 +7,7 @@
 # Series/folios consecutivos y Configuración: siguen mock, fuera de alcance
 # de esta tarea (folios consecutivos es #12, tarea aparte).
 # ──────────────────────────────────────────────────────────────────────────────
+import base64
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -22,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import Emisor, Cliente, Negocio, SerieFolio, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from csd_rfc import extraer_rfc_de_certificado
 
 # ─── Autenticacion interna servicio-a-servicio ─────────────────────────────────
 # Mismo patron que whatsapp_bot/core/security.py (X-Internal-Key). Protege
@@ -209,6 +211,29 @@ async def crear_emisor(
         raise HTTPException(status_code=409, detail=f"El emisor {emisor.rfc} ya existe")
 
     negocio_id = requerir_negocio_id(x_negocio_id)
+
+    # Validacion CSD<->RFC (ver investigacion en csd_rfc.py): el RFC
+    # declarado en el body debe coincidir con el RFC real embebido en el
+    # certificado subido - sin esto, un usuario podia declarar cualquier
+    # RFC y el backend nunca lo confirmaba contra el CSD real (a
+    # diferencia de facturacion, que ya rechaza esto al timbrar). 422 (no
+    # 500) tanto si no coincide como si el certificado no se puede leer.
+    try:
+        cert_bytes = base64.b64decode(emisor.csd_cert_base64)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"csd_cert_base64 invalido: {e}")
+    try:
+        rfc_del_certificado = extraer_rfc_de_certificado(cert_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if emisor.rfc.upper() != rfc_del_certificado:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"El RFC declarado ({emisor.rfc}) no coincide con el RFC "
+                f"del certificado CSD cargado ({rfc_del_certificado})"
+            ),
+        )
 
     nuevo = Emisor(
         negocio_id=negocio_id,

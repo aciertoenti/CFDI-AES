@@ -98,6 +98,11 @@ services:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin"
       CSD_MASTER_KEY: "${CSD_MASTER_KEY}"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
+      # Invalidar el cache de CSD en facturacion al rotar un CSD (PUT
+      # /admin/emisores/{rfc}) - sin depends_on a proposito: la llamada se
+      # tolera si facturacion esta caido (ver actualizar_emisor), no debe
+      # bloquear el arranque de administracion.
+      FACTURACION_URL: "http://facturacion:8001"
     depends_on: [postgres_admin]
     command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 

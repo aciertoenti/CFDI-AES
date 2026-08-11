@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, List
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Depends, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
@@ -37,6 +38,35 @@ def require_internal_key(api_key: Optional[str] = Security(_internal_api_key_hea
     if not INTERNAL_API_KEY or not api_key or api_key != INTERNAL_API_KEY:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clave interna inválida o ausente")
     return api_key
+
+
+# Invalidacion de cache (hallazgo #42-cache): facturacion cachea el CSD
+# descifrado en memoria del proceso, sin TTL - al rotar un CSD aqui via PUT
+# /admin/emisores/{rfc}, facturacion seguiria usando el CSD viejo hasta
+# reiniciarse solo, salvo que se le avise explicitamente. Sin depends_on en
+# docker-compose a proposito: esta llamada se tolera si facturacion esta
+# caido (ver actualizar_emisor), nunca debe bloquear una rotacion de CSD
+# valida solo porque facturacion no esta disponible en ese momento.
+FACTURACION_URL = os.environ.get("FACTURACION_URL", "http://facturacion:8001")
+
+
+async def _invalidar_csd_cache_en_facturacion(rfc: str) -> bool:
+    """
+    True si facturacion confirmo la invalidacion, False ante cualquier
+    falla (timeout, conexion rechazada, HTTP != 200) - nunca lanza, el CSD
+    ya se guardo en BD y eso no se revierte por esto.
+    """
+    if not INTERNAL_API_KEY:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{FACTURACION_URL}/internal/csd-cache/invalidar/{rfc}",
+                headers={"X-Internal-Key": INTERNAL_API_KEY},
+            )
+        return resp.status_code == 200
+    except httpx.RequestError:
+        return False
 
 
 @asynccontextmanager
@@ -69,6 +99,13 @@ class EmisorResponse(BaseModel):
     negocio_id: int
     created_at: datetime
     creado_por_rfc: Optional[str] = None
+    # None en crear_emisor/listar (no aplica); True/False solo en
+    # actualizar_emisor (PUT) - indica si facturacion confirmo haber
+    # invalidado su cache del CSD viejo. False no es un error del PUT en si
+    # (el CSD ya quedo guardado en BD), pero avisa explicitamente a quien
+    # rota el CSD que facturacion podria seguir usando el CSD anterior
+    # hasta que se reinicie o se reintente la invalidacion.
+    cache_invalidado: Optional[bool] = None
     # Deliberado: nunca se regresan csd_cert_base64/csd_key_base64/csd_password
     # en ninguna respuesta de la API, ni siquiera al crear.
 
@@ -157,7 +194,7 @@ class ConfiguracionUpdate(BaseModel):
     color_primario: Optional[str] = None
 
 
-def _emisor_to_response(e: Emisor) -> EmisorResponse:
+def _emisor_to_response(e: Emisor, cache_invalidado: Optional[bool] = None) -> EmisorResponse:
     return EmisorResponse(
         rfc=e.rfc,
         razon_social=e.razon_social,
@@ -167,6 +204,7 @@ def _emisor_to_response(e: Emisor) -> EmisorResponse:
         negocio_id=e.negocio_id,
         created_at=e.created_at,
         creado_por_rfc=e.creado_por_rfc,
+        cache_invalidado=cache_invalidado,
     )
 
 
@@ -361,6 +399,30 @@ async def actualizar_emisor(
     if existente is None:
         raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
 
+    # Misma validacion CSD<->RFC que crear_emisor() (ver csd_rfc.py) -
+    # hallazgo de ayer: el gap se cerro en el POST pero nunca se aplico
+    # aqui, con lo que rotar el CSD via PUT seguia aceptando cualquier
+    # certificado sin verificar que correspondiera al RFC de este emisor
+    # (rfc = el del path, inmutable en este endpoint - el campo emisor.rfc
+    # del body se ignora, igual que ya lo ignoraba el resto de esta
+    # funcion antes de este cambio).
+    try:
+        cert_bytes = base64.b64decode(emisor.csd_cert_base64)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"csd_cert_base64 invalido: {e}")
+    try:
+        rfc_del_certificado = extraer_rfc_de_certificado(cert_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if rfc.upper() != rfc_del_certificado:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"El RFC declarado ({rfc}) no coincide con el RFC "
+                f"del certificado CSD cargado ({rfc_del_certificado})"
+            ),
+        )
+
     existente.razon_social = emisor.razon_social
     existente.regimen_fiscal = emisor.regimen_fiscal
     existente.codigo_postal = emisor.codigo_postal
@@ -369,7 +431,14 @@ async def actualizar_emisor(
     existente.csd_password = emisor.csd_password
     await db.commit()
     await db.refresh(existente)
-    return _emisor_to_response(existente)
+
+    # El CSD ya quedo guardado en BD (lo de arriba no se revierte por lo
+    # que pase aqui abajo) - si facturacion no confirma la invalidacion,
+    # cache_invalidado=False avisa explicitamente a quien roto el CSD que
+    # facturacion podria seguir timbrando con el CSD anterior hasta que se
+    # reinicie o se reintente. Nunca fallar en silencio.
+    cache_invalidado = await _invalidar_csd_cache_en_facturacion(rfc)
+    return _emisor_to_response(existente, cache_invalidado=cache_invalidado)
 
 # ─── Clientes ──────────────────────────────────────────────────────────────────
 

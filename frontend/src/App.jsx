@@ -304,19 +304,26 @@ function useFiscalChat() {
   return { messages, send, streaming, reset:()=>setMessages([]), abort:()=>{ abortRef.current?.abort(); setStreaming(false); } };
 }
 
-function useFacturas() {
+function useFacturas(emisorRfc) {
   const [facturas, setFacturas] = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState(null);
   const cargar = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const res = await fetchAuth(`${API_BASE}/facturas`);
+      // emisorRfc opcional (#soporte multi-emisor) - sin el, comportamiento
+      // identico al de siempre (todas las facturas del negocio). Se agrega
+      // a las dependencias del useCallback a proposito: si cambia (ej. el
+      // usuario cambia de emisor activo en el header/Emisores), cargar()
+      // cambia de identidad y el useEffect de abajo vuelve a disparar el
+      // fetch con el nuevo filtro.
+      const url = emisorRfc ? `${API_BASE}/facturas?emisor_rfc=${encodeURIComponent(emisorRfc)}` : `${API_BASE}/facturas`;
+      const res = await fetchAuth(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setFacturas(await res.json());
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
-  }, []);
+  }, [emisorRfc]);
   useEffect(() => { cargar(); }, [cargar]);
   return { facturas, loading, error, recargar: cargar };
 }
@@ -346,18 +353,32 @@ function EmisoresProvider({ children }) {
   const [emisores, setEmisores] = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState(null);
+  // Soporte multi-emisor (aun sin UI para cambiarlo a mano, ver tarjeta de
+  // seguimiento) - "cual emisor esta activo" en la cuenta. Auto-seleccion
+  // via setEmisorActivoRfc(prev => ...) (forma funcional, no lee
+  // emisorActivoRfc por closure) a proposito: mantiene cargar() con
+  // identidad estable entre renders, sin agregar emisorActivoRfc a sus
+  // dependencias - si no, cada cambio de emisorActivoRfc recrearia cargar
+  // y el useEffect de abajo volveria a disparar el fetch, un loop inutil.
+  const [emisorActivoRfc, setEmisorActivoRfc] = useState(null);
   const cargar = useCallback(async () => {
     setLoading(true); setError(null);
     try {
       const res = await fetchAuth(`${API_BASE}/admin/emisores`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setEmisores(await res.json());
+      const data = await res.json();
+      setEmisores(data);
+      // Si ya habia un activo y sigue en la lista nueva, se respeta -
+      // si no (primera carga, o ese emisor ya no existe), cae al primero.
+      // Con un solo emisor (caso de hoy) esto siempre resuelve al mismo
+      // rfc, sin cambio de comportamiento visible.
+      setEmisorActivoRfc(prev => (prev && data.some(e => e.rfc === prev)) ? prev : (data[0]?.rfc ?? null));
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
   return (
-    <EmisoresContext.Provider value={{ emisores, loading, error, recargar: cargar }}>
+    <EmisoresContext.Provider value={{ emisores, loading, error, recargar: cargar, emisorActivoRfc, setEmisorActivoRfc }}>
       {children}
     </EmisoresContext.Provider>
   );
@@ -541,13 +562,13 @@ function Badge({estado}){
   const s=map[estado]||map.Pendiente;
   return <span style={{background:s.bg,color:s.c,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,whiteSpace:"nowrap"}}>{estado}</span>;
 }
-function Card({children,style={}}){
-  return <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:16,minWidth:0,maxWidth:"100%",boxSizing:"border-box",...style}}>{children}</div>;
+function Card({children,style={},onClick}){
+  return <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:16,minWidth:0,maxWidth:"100%",boxSizing:"border-box",...style}} onClick={onClick}>{children}</div>;
 }
-function Btn({children,variant="primary",onClick,style={},disabled}){
+function Btn({children,variant="primary",onClick,style={},disabled,type="submit"}){
   const base={borderRadius:8,padding:"10px 18px",fontSize:13,fontWeight:600,cursor:disabled?"not-allowed":"pointer",border:"none",opacity:disabled?.5:1,...style};
   const s={primary:{...base,background:C.primary,color:C.accent},secondary:{...base,background:"transparent",color:C.textSec,border:`1px solid ${C.border}`},accent:{...base,background:C.accent,color:"#fff"}};
-  return <button style={s[variant]||s.primary} onClick={disabled?undefined:onClick}>{children}</button>;
+  return <button type={type} style={s[variant]||s.primary} onClick={disabled?undefined:onClick}>{children}</button>;
 }
 function SectionTitle({children}){return <h2 style={{fontSize:20,fontWeight:700,color:C.text,marginBottom:4}}>{children}</h2>;}
 function SectionSub({children}){return <p style={{color:C.textSec,fontSize:13,marginBottom:18,marginTop:2}}>{children}</p>;}
@@ -568,9 +589,12 @@ function KPI({label,value,sub,dark}){
 // ═══════════════════════════════════════════════════════════════════════════════
 function NuevaFactura(){
   const toast = useToast();
-  const { emisores, loading:loadingEmisores, error:errorEmisores } = useEmisores();
+  const { emisores, loading:loadingEmisores, error:errorEmisores, emisorActivoRfc } = useEmisores();
   const { clientes, loading:loadingClientes, error:errorClientes } = useClientes();
-  const emisor = emisores[0];
+  // emisorActivoRfc puede ser null (negocio sin ningun emisor) - find()
+  // sobre [] o sin match devuelve undefined igual que emisores[0] en ese
+  // caso, mismo placeholder/mensaje de "sin emisor" que ya existia.
+  const emisor = emisores.find(e=>e.rfc===emisorActivoRfc);
 
   const [form,setForm]=useState({clienteRfc:"",receptor:"",rfc:"",usoCfdi:"G03",domicilioFiscal:"",regimenFiscal:"",concepto:"",cantidad:"",precio:"",iva:"16"});
   const [enviando,setEnviando]=useState(false);
@@ -732,7 +756,8 @@ function NuevaFactura(){
 function FacturasGeneradas(){
   const {isMobile} = useBreakpoint();
   const toast = useToast();
-  const {facturas,loading,error,recargar} = useFacturas();
+  const { emisorActivoRfc } = useEmisores();
+  const {facturas,loading,error,recargar} = useFacturas(emisorActivoRfc);
   const [q,setQ]=useState("");
   const [filtro,setFiltro]=useState("Todas");
   const items=facturas.filter(f=>(filtro==="Todas"||f.estado===filtro)&&
@@ -913,8 +938,8 @@ function LectorDocumentos(){
 function ChatFiscal(){
   const {isMobile}=useBreakpoint();
   const {messages,send,streaming,reset,abort}=useFiscalChat();
-  const {emisores}=useEmisores();
-  const emisorActual=emisores[0];
+  const {emisores,emisorActivoRfc}=useEmisores();
+  const emisorActual=emisores.find(e=>e.rfc===emisorActivoRfc);
   const [input,setInput]=useState("");
   const bottomRef=useRef();
   useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"});},[messages]);
@@ -1048,7 +1073,7 @@ function Clientes(){
   );
 }
 
-function AltaEmisorForm({ onCreado }) {
+function AltaEmisorForm({ onCreado, onCancelar }) {
   const toast = useToast();
   const [form, setForm] = useState({ razon_social:"", rfc:"", regimen_fiscal:"", codigo_postal:"", csd_password:"" });
   const [cerFile, setCerFile] = useState(null);
@@ -1128,7 +1153,7 @@ function AltaEmisorForm({ onCreado }) {
   return (
     <div>
       <SectionTitle>Emisores</SectionTitle>
-      <SectionSub>Todavía no hay ningún emisor registrado — da de alta el primero para poder timbrar.</SectionSub>
+      <SectionSub>{onCancelar ? "Registra los datos y el CSD del nuevo emisor." : "Todavía no hay ningún emisor registrado — da de alta el primero para poder timbrar."}</SectionSub>
       <Card style={{maxWidth:480}}>
         {/* autoComplete="off" en el <form> (algunos navegadores lo respetan a
             nivel de formulario completo) + en cada input individual, porque
@@ -1161,7 +1186,14 @@ function AltaEmisorForm({ onCreado }) {
 
           {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6}}>⚠ {error}</div>}
 
-          <Btn disabled={enviando} style={{width:"100%"}}>{enviando?"Registrando…":"Registrar emisor"}</Btn>
+          <div style={{display:"flex",gap:8}}>
+            <Btn disabled={enviando} style={{flex:1}}>{enviando?"Registrando…":"Registrar emisor"}</Btn>
+            {/* Solo si NO es el primer emisor de todos - sin onCancelar (alta
+                inicial obligatoria) no hay a donde volver. type="button" a
+                proposito (ver Btn) - sin esto, este boton dispararia el
+                submit del form en vez de solo cancelar. */}
+            {onCancelar && <Btn type="button" variant="secondary" onClick={onCancelar} disabled={enviando}>Cancelar</Btn>}
+          </div>
         </form>
       </Card>
     </div>
@@ -1169,31 +1201,68 @@ function AltaEmisorForm({ onCreado }) {
 }
 
 function Emisores(){
-  const {emisores,loading,error,recargar} = useEmisores();
+  const {emisores,loading,error,recargar,emisorActivoRfc,setEmisorActivoRfc} = useEmisores();
+  // null = "todavia no decidido" - se resuelve una sola vez, la primera vez
+  // que loading pasa a false (ver useEffect de abajo). No se puede derivar
+  // esto directo como valor inicial de useState(emisores.length===0):
+  // useState solo lee su argumento en el PRIMER render, que ocurre mientras
+  // loading todavia es true y emisores=[] (estado inicial del Provider) -
+  // aunque la cuenta real tenga emisores, ese primer render vería length
+  // 0 y decidiria mal, de forma permanente, antes de que el fetch real
+  // resolviera. Mismo comportamiento inicial que existia hoy (mostrar
+  // AltaEmisorForm solo cuando de verdad no hay ningun emisor), solo que
+  // ahora es un estado explicito en vez de un gate directo sobre length,
+  // para poder volver a el con "+ Agregar otro emisor".
+  const [mostrandoFormulario, setMostrandoFormulario] = useState(null);
+  useEffect(() => {
+    if (!loading && mostrandoFormulario === null) {
+      setMostrandoFormulario(emisores.length === 0);
+    }
+  }, [loading, emisores, mostrandoFormulario]);
 
   if (error) return <Placeholder title="Emisores" detail={`No se pudo conectar con administracion (${ADMINISTRACION_BASE}): ${error}`}/>;
-  if (loading) return <Placeholder title="Emisores" detail="Cargando datos reales…"/>;
-  if (emisores.length===0) return <AltaEmisorForm onCreado={recargar}/>;
+  if (loading || mostrandoFormulario === null) return <Placeholder title="Emisores" detail="Cargando datos reales…"/>;
+
+  const haySalidaDeVuelta = emisores.length > 0; // false solo en el alta del primer emisor de todos
+  if (mostrandoFormulario) {
+    return (
+      <AltaEmisorForm
+        onCreado={() => { recargar(); setMostrandoFormulario(false); }}
+        onCancelar={haySalidaDeVuelta ? () => setMostrandoFormulario(false) : undefined}
+      />
+    );
+  }
 
   return (
     <div>
-      <SectionTitle>Emisores</SectionTitle>
-      <SectionSub>Solo lectura por ahora — agregar un segundo emisor y editar quedan fuera de alcance hoy.</SectionSub>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
+        <div>
+          <SectionTitle>Emisores</SectionTitle>
+          <SectionSub>Solo lectura por ahora — editar queda fuera de alcance hoy. Clic en una tarjeta para cambiar el emisor activo.</SectionSub>
+        </div>
+        <Btn type="button" variant="secondary" onClick={()=>setMostrandoFormulario(true)}>+ Agregar otro emisor</Btn>
+      </div>
       <TwoCol>
-        {emisores.map(e=>(
-          <Card key={e.rfc}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,gap:8}}>
-              <div style={{minWidth:0}}>
-                <div style={{fontSize:14,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.razon_social}</div>
-                <div style={{fontSize:12,color:C.textMuted,fontFamily:"monospace",marginTop:2}}>{e.rfc}</div>
+        {emisores.map(e=>{
+          const esActivo = e.rfc === emisorActivoRfc;
+          return (
+            <Card key={e.rfc} style={{cursor:"pointer",border:`1px solid ${esActivo?C.accent:C.border}`}} onClick={()=>setEmisorActivoRfc(e.rfc)}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,gap:8}}>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:14,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.razon_social}</div>
+                  <div style={{fontSize:12,color:C.textMuted,fontFamily:"monospace",marginTop:2}}>{e.rfc}</div>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end",flexShrink:0}}>
+                  {esActivo && <span style={{background:C.accentSoft,color:C.accentBorder,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,whiteSpace:"nowrap"}}>✓ Seleccionado</span>}
+                  <span style={{background:e.estado==="Activo"?C.accentSoft:C.dangerSoft,color:e.estado==="Activo"?C.accentBorder:C.danger,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,whiteSpace:"nowrap"}}>{e.estado}</span>
+                </div>
               </div>
-              <span style={{background:e.estado==="Activo"?C.accentSoft:C.dangerSoft,color:e.estado==="Activo"?C.accentBorder:C.danger,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,flexShrink:0}}>{e.estado}</span>
-            </div>
-            <div style={{fontSize:13,color:C.textSec,marginBottom:4}}>Régimen fiscal: <strong style={{color:C.text}}>{e.regimen_fiscal}</strong></div>
-            <div style={{fontSize:13,color:C.textSec,marginBottom:4}}>CP expedición: <strong style={{color:C.text}}>{e.codigo_postal}</strong></div>
-            <div style={{fontSize:13,color:C.textSec}}>Dado de alta por: <strong style={{color:C.text}}>{e.creado_por_rfc||"—"}</strong></div>
-          </Card>
-        ))}
+              <div style={{fontSize:13,color:C.textSec,marginBottom:4}}>Régimen fiscal: <strong style={{color:C.text}}>{e.regimen_fiscal}</strong></div>
+              <div style={{fontSize:13,color:C.textSec,marginBottom:4}}>CP expedición: <strong style={{color:C.text}}>{e.codigo_postal}</strong></div>
+              <div style={{fontSize:13,color:C.textSec}}>Dado de alta por: <strong style={{color:C.text}}>{e.creado_por_rfc||"—"}</strong></div>
+            </Card>
+          );
+        })}
       </TwoCol>
     </div>
   );
@@ -1437,8 +1506,8 @@ function DashboardCostos(){
 }
 
 function ContadorVirtual(){
-  const {emisores,loading:loadingEmisores,error:errorEmisores} = useEmisores();
-  const emisor = emisores[0];
+  const {emisores,loading:loadingEmisores,error:errorEmisores,emisorActivoRfc} = useEmisores();
+  const emisor = emisores.find(e=>e.rfc===emisorActivoRfc);
   const hoy = new Date();
   const [periodo,setPeriodo] = useState(`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,"0")}`);
   const [anio,mes] = periodo.split("-").map(Number);
@@ -1626,8 +1695,12 @@ function AppShell({onLogout}){
   // sin importar quien iniciara sesion. useEmisores() ya llega filtrado por
   // negocio_id (ver aislamiento de lecturas, #15), asi que el primero de la
   // lista es "el" emisor de esta cuenta - mismo criterio que ya usaba NuevaFactura.
-  const {emisores,loading:cargandoEmisor}=useEmisores();
-  const emisorActual=emisores[0];
+  const {emisores,loading:cargandoEmisor,emisorActivoRfc,setEmisorActivoRfc}=useEmisores();
+  // find() en vez de emisores[0] directo - con 1 solo emisor (caso de hoy)
+  // emisorActivoRfc ya fue auto-seleccionado a ese mismo rfc en
+  // EmisoresProvider, asi que esto resuelve exactamente igual que antes.
+  // Con 2+ emisores, sigue al selector de abajo.
+  const emisorActual=emisores.find(e=>e.rfc===emisorActivoRfc)??emisores[0];
   const nombreEmisor=cargandoEmisor?"Cargando…":(emisorActual?.razon_social||"Sin emisor registrado");
   const inicialesEmisor=emisorActual?.razon_social
     ? emisorActual.razon_social.split(" ").filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join("")
@@ -1669,7 +1742,15 @@ function AppShell({onLogout}){
             </div>
           </div>
           <div style={{display:"flex",gap:10,alignItems:"center",flexShrink:0}}>
-            {!isMobile&&<div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>RFC: {cargandoEmisor?"…":(emisorActual?.rfc||"—")}</div>}
+            {!isMobile&&(emisores.length>1
+              ? (
+                <select value={emisorActivoRfc||""} onChange={e=>setEmisorActivoRfc(e.target.value)}
+                  style={{fontSize:11,color:C.textMuted,background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 6px",maxWidth:220,cursor:"pointer"}}>
+                  {emisores.map(e=>(<option key={e.rfc} value={e.rfc}>{e.razon_social} — {e.rfc}</option>))}
+                </select>
+              )
+              : <div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>RFC: {cargandoEmisor?"…":(emisorActual?.rfc||"—")}</div>
+            )}
             <div style={{position:"relative"}}>
               <div style={{width:7,height:7,borderRadius:"50%",background:C.danger,position:"absolute",top:-1,right:-1,border:"2px solid #fff"}}/>
               <span style={{fontSize:17,cursor:"pointer"}}>🔔</span>

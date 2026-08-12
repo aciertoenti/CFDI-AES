@@ -597,13 +597,26 @@ async def listar_facturas(
     fecha_desde: Optional[date] = None,
     fecha_hasta: Optional[date] = None,
     rfc_receptor: Optional[str] = None,
+    emisor_rfc: Optional[str] = Query(None),
     page: int = 1,
     size: int = 50,
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
     negocio_id = requerir_negocio_id(x_negocio_id)
+    # emisor_rfc opcional (#soporte multi-emisor, aun sin UI): si viene, se
+    # valida ANTES de tocar la lista que ese emisor pertenezca al negocio
+    # del caller - mismo mecanismo que ya usa timbrar_factura/cancelar
+    # (obtener_datos_emisor -> 400 si el emisor es de otro negocio o no
+    # existe, fail-closed). Sin esto, un negocio podria enumerar RFCs de
+    # otro negocio y ver si le devuelve facturas. Si NO viene, comportamiento
+    # identico al de siempre (todas las facturas del negocio) - compatible
+    # con llamadores que no conocen este concepto todavia (ej. el bot).
+    if emisor_rfc:
+        await obtener_datos_emisor(emisor_rfc, x_negocio_id)
     stmt = select(Factura).where(Factura.negocio_id == negocio_id)
+    if emisor_rfc:
+        stmt = stmt.where(Factura.emisor_rfc == emisor_rfc)
     if estado:
         stmt = stmt.where(Factura.estado == estado)
     if fecha_desde:

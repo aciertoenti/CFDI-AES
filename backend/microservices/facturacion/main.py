@@ -631,7 +631,11 @@ async def listar_facturas(
     return [_factura_to_response(f) for f in result.scalars().all()]
 
 @app.get("/facturas/costos-resumen", response_model=List[CostoResumenItem])
-async def costos_resumen(emisor_rfc: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+async def costos_resumen(
+    emisor_rfc: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
     """
     Agrega el costo real de Finkok por timbre (#6), por mes y por emisor -
     parte "costos" de #11 (margen y costo de WhatsApp quedan fuera, sin
@@ -644,7 +648,20 @@ async def costos_resumen(emisor_rfc: Optional[str] = None, db: AsyncSession = De
     cancelar despues no lo devuelve (ver comentario en Factura.costo_timbre).
     Excluye timbrados sin costo_timbre (nunca deberia pasar en timbrados
     exitosos, pero por si existe algun dato viejo de antes de #6).
+
+    Fix critico (12 ago 2026): este endpoint nunca filtraba por negocio_id -
+    agregaba el costo de TODOS los negocios de la BD sin distincion, y
+    devolvia eso a cualquier caller autenticado, sin importar a que negocio
+    perteneciera. Confirmado en vivo: una cuenta sin ningun emisor propio
+    veia el costo real de EKU9003173C9 (negocio ajeno). Mismo patron
+    fail-closed que el resto del archivo (requerir_negocio_id) y mismo
+    mecanismo de validacion de emisor_rfc que ya usa
+    contador_virtual_isr_resico (obtener_datos_emisor).
     """
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    if emisor_rfc:
+        await obtener_datos_emisor(emisor_rfc, x_negocio_id)
+
     periodo = func.to_char(Factura.fecha_timbrado, "YYYY-MM")
     stmt = (
         select(
@@ -654,6 +671,7 @@ async def costos_resumen(emisor_rfc: Optional[str] = None, db: AsyncSession = De
             func.sum(Factura.costo_timbre).label("costo_total"),
         )
         .where(Factura.costo_timbre.is_not(None))
+        .where(Factura.negocio_id == negocio_id)
         .group_by(periodo, Factura.emisor_rfc)
         .order_by(periodo.desc(), Factura.emisor_rfc)
     )

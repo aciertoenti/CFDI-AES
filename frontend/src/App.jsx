@@ -328,19 +328,24 @@ function useFacturas(emisorRfc) {
   return { facturas, loading, error, recargar: cargar };
 }
 
-function useCostosResumen() {
+function useCostosResumen(emisorRfc) {
   const [datos,   setDatos]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
   const cargar = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const res = await fetchAuth(`${API_BASE}/facturas/costos-resumen`);
+      // emisorRfc opcional (#soporte multi-emisor, mismo patron que
+      // useFacturas) - el backend ya filtra por negocio de todos modos
+      // (fix critico de aislamiento), esto es solo para el desglose del
+      // emisor activo especifico cuando el negocio tiene varios.
+      const url = emisorRfc ? `${API_BASE}/facturas/costos-resumen?emisor_rfc=${encodeURIComponent(emisorRfc)}` : `${API_BASE}/facturas/costos-resumen`;
+      const res = await fetchAuth(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setDatos(await res.json());
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
-  }, []);
+  }, [emisorRfc]);
   useEffect(() => { cargar(); }, [cargar]);
   return { datos, loading, error, recargar: cargar };
 }
@@ -1448,7 +1453,8 @@ function ReporteMensual(){
 }
 
 function DashboardCostos(){
-  const {datos,loading,error} = useCostosResumen();
+  const { emisorActivoRfc } = useEmisores();
+  const {datos,loading,error} = useCostosResumen(emisorActivoRfc);
 
   if (error) return <Placeholder title="Dashboard de costos" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>;
   if (loading) return <Placeholder title="Dashboard de costos" detail="Cargando datos reales…"/>;

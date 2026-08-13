@@ -33,9 +33,10 @@ from datetime import datetime, date
 from typing import Optional, List, AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 load_dotenv()
@@ -48,6 +49,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── Autenticacion interna servicio-a-servicio (rewiring al Gateway) ───────────
+# Hallazgo (13 ago 2026): ia:8007 no validaba absolutamente nada - los 6
+# endpoints de este archivo estaban completamente abiertos a cualquiera que
+# alcanzara el puerto, sin JWT ni ningun otro mecanismo. No es una fuga
+# cross-tenant en el sentido de #58 (ia nunca toca la BD, es enteramente
+# stateless - solo reenvia a Claude lo que el caller mande en el body), pero
+# si permitia gasto no autorizado del credito real de Anthropic. Mismo
+# patron exacto que ya usan administracion/facturacion (require_internal_key,
+# X-Internal-Key) - el Gateway es el unico llamante legitimo: exige el JWT
+# del usuario primero, y solo entonces agrega este header antes de reenviar.
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
+_internal_api_key_header = APIKeyHeader(name="X-Internal-Key", auto_error=False)
+
+
+def require_internal_key(api_key: Optional[str] = Security(_internal_api_key_header)) -> str:
+    if not INTERNAL_API_KEY or not api_key or api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clave interna inválida o ausente")
+    return api_key
 
 
 @app.exception_handler(httpx.HTTPStatusError)
@@ -183,7 +203,7 @@ class ExtractionResult(BaseModel):
     procesado_en_ms: int
 
 @app.post("/ia/extraer-documento", response_model=ExtractionResult)
-async def extraer_documento(file: UploadFile = File(...)):
+async def extraer_documento(file: UploadFile = File(...), _: str = Depends(require_internal_key)):
     """
     Recibe un PDF o imagen de una orden de compra / cotización.
     Devuelve los campos fiscales listos para generar el CFDI.
@@ -263,7 +283,7 @@ class ChatResponse(BaseModel):
     acciones_sugeridas: List[str]
 
 @app.post("/ia/chat", response_model=ChatResponse)
-async def chat_fiscal(req: ChatRequest):
+async def chat_fiscal(req: ChatRequest, _: str = Depends(require_internal_key)):
     """Chat fiscal no-streaming. Para UI simple o integraciones."""
     ctx = req.contexto_cuenta or {}
     context_str = json.dumps(ctx, ensure_ascii=False, indent=2) if ctx else "No disponible"
@@ -283,7 +303,7 @@ async def chat_fiscal(req: ChatRequest):
 
 
 @app.post("/ia/chat/stream")
-async def chat_fiscal_stream(req: ChatRequest):
+async def chat_fiscal_stream(req: ChatRequest, _: str = Depends(require_internal_key)):
     """
     Chat fiscal con streaming Server-Sent Events.
     El frontend recibe tokens en tiempo real.
@@ -359,7 +379,7 @@ class Anomaly(BaseModel):
     fecha_deteccion: str
 
 @app.post("/ia/anomalias", response_model=List[Anomaly])
-async def detectar_anomalias(req: AnomalyRequest):
+async def detectar_anomalias(req: AnomalyRequest, _: str = Depends(require_internal_key)):
     """
     Analiza el conjunto de facturas y pagos en busca de anomalías.
     Se ejecuta en background cada hora vía tarea Celery.
@@ -419,7 +439,7 @@ class ConciliationRequest(BaseModel):
     tolerancia_porcentaje: float = 5.0
 
 @app.post("/ia/conciliar")
-async def conciliar_banco(req: ConciliationRequest):
+async def conciliar_banco(req: ConciliationRequest, _: str = Depends(require_internal_key)):
     """
     Cruza facturas emitidas con depósitos bancarios.
     Devuelve pares conciliados, discrepancias y pendientes.
@@ -466,7 +486,7 @@ class SummaryRequest(BaseModel):
     incluir_comparativo: bool = True
 
 @app.post("/ia/resumen-ejecutivo")
-async def generar_resumen(req: SummaryRequest):
+async def generar_resumen(req: SummaryRequest, _: str = Depends(require_internal_key)):
     """Genera un reporte ejecutivo del período solicitado."""
     data_str = json.dumps(req.dict(), ensure_ascii=False, default=str)
     messages = [

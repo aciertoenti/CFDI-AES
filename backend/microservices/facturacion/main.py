@@ -480,7 +480,7 @@ def _factura_to_response(f: Factura) -> FacturaResponse:
     )
 
 
-@app.post("/facturas/timbrar", response_model=FacturaResponse, status_code=201)
+@app.post("/facturas/timbrar", response_model=FacturaResponse, status_code=201, dependencies=[Depends(require_internal_key)])
 async def timbrar_factura(
     factura: FacturaCreate,
     db: AsyncSession = Depends(get_db),
@@ -571,7 +571,7 @@ async def timbrar_factura(
         creado_por_rfc=x_usuario_rfc,
     )
 
-@app.get("/facturas", response_model=List[FacturaResponse])
+@app.get("/facturas", response_model=List[FacturaResponse], dependencies=[Depends(require_internal_key)])
 async def listar_facturas(
     tipo: str = Query("generadas", enum=["generadas", "recibidas"]),
     estado: Optional[str] = None,
@@ -611,7 +611,7 @@ async def listar_facturas(
     result = await db.execute(stmt)
     return [_factura_to_response(f) for f in result.scalars().all()]
 
-@app.get("/facturas/costos-resumen", response_model=List[CostoResumenItem])
+@app.get("/facturas/costos-resumen", response_model=List[CostoResumenItem], dependencies=[Depends(require_internal_key)])
 async def costos_resumen(
     emisor_rfc: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
@@ -671,7 +671,7 @@ async def costos_resumen(
         for r in result.all()
     ]
 
-@app.get("/facturas/contador-virtual/isr-resico", response_model=ContadorVirtualISRResicoResponse)
+@app.get("/facturas/contador-virtual/isr-resico", response_model=ContadorVirtualISRResicoResponse, dependencies=[Depends(require_internal_key)])
 async def contador_virtual_isr_resico(
     emisor_rfc: str,
     anio: int,
@@ -781,7 +781,7 @@ async def obtener_factura_propia(uuid: str, negocio_id: int, db: AsyncSession) -
     return factura
 
 
-@app.get("/facturas/{uuid}")
+@app.get("/facturas/{uuid}", dependencies=[Depends(require_internal_key)])
 async def obtener_factura(
     uuid: str,
     db: AsyncSession = Depends(get_db),
@@ -791,7 +791,7 @@ async def obtener_factura(
     factura = await obtener_factura_propia(uuid, negocio_id, db)
     return _factura_to_response(factura)
 
-@app.get("/facturas/{uuid}/xml")
+@app.get("/facturas/{uuid}/xml", dependencies=[Depends(require_internal_key)])
 async def descargar_xml(
     uuid: str,
     db: AsyncSession = Depends(get_db),
@@ -801,7 +801,7 @@ async def descargar_xml(
     await obtener_factura_propia(uuid, negocio_id, db)
     return {"url": storage_client.url_xml(uuid)}
 
-@app.get("/facturas/{uuid}/pdf")
+@app.get("/facturas/{uuid}/pdf", dependencies=[Depends(require_internal_key)])
 async def descargar_pdf(
     uuid: str,
     db: AsyncSession = Depends(get_db),
@@ -816,7 +816,7 @@ async def descargar_pdf(
 MOTIVOS_CANCELACION_VALIDOS = {"01", "02", "03", "04"}
 
 
-@app.post("/facturas/{uuid}/cancelar")
+@app.post("/facturas/{uuid}/cancelar", dependencies=[Depends(require_internal_key)])
 async def cancelar_factura(
     uuid: str,
     req: CancelacionRequest,
@@ -902,7 +902,7 @@ async def cancelar_factura(
         "cod_estatus": resultado["cod_estatus"],
     }
 
-@app.get("/facturas/reporte/mensual")
+@app.get("/facturas/reporte/mensual", dependencies=[Depends(require_internal_key)])
 async def reporte_mensual(anio: int = 2025, mes: int = Query(ge=1, le=12)):
     return {
         "anio": anio,

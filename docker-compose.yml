@@ -59,7 +59,14 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   facturacion:
-    build: ./backend/microservices/facturacion
+    # Mismo patron ya probado con administracion y auth (12 ago 2026,
+    # refactor/shared-negocio-id) - contexto ampliado a ./backend para poder
+    # COPY backend/shared/ dentro de la imagen. Ver Dockerfile: COPY
+    # selectivo, NO todo backend/ - el RUN apt-get de libpango (weasyprint/PDF)
+    # se queda intacto, solo cambia la parte de COPY.
+    build:
+      context: ./backend
+      dockerfile: microservices/facturacion/Dockerfile
     ports: ["8001:8001"]
     # ./certs_test ya no se monta (#42): el CSD ahora viene de
     # administracion (GET /admin/emisores/{rfc}/csd-descifrado), no de un
@@ -92,7 +99,14 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 
   administracion:
-    build: ./backend/microservices/administracion
+    # Contexto ampliado a ./backend (12 ago 2026, refactor/shared-negocio-id)
+    # para poder COPY backend/shared/ dentro de la imagen - antes el contexto
+    # era solo esta subcarpeta, asi que Docker no podia ver nada fuera de
+    # ella. Ver Dockerfile: el COPY sigue siendo selectivo (solo shared/ +
+    # microservices/administracion/), NO todo backend/.
+    build:
+      context: ./backend
+      dockerfile: microservices/administracion/Dockerfile
     ports: ["8002:8002"]
     environment:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin"
@@ -129,7 +143,13 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8007 --reload
 
   auth:
-    build: ./backend/microservices/auth_usuarios
+    # Mismo patron ya probado con administracion (12 ago 2026,
+    # refactor/shared-negocio-id) - contexto ampliado a ./backend para poder
+    # COPY backend/shared/ dentro de la imagen. Ver Dockerfile: COPY
+    # selectivo, NO todo backend/.
+    build:
+      context: ./backend
+      dockerfile: microservices/auth_usuarios/Dockerfile
     ports: ["8005:8005"]
     environment:
       DATABASE_URL: "postgresql+asyncpg://cfdi:secret_auth@postgres_auth/cfdi_auth"

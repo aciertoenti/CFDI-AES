@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import Usuario, create_tables, get_db, stamp_head_si_es_ambiente_nuevo
 from rfc_validation import es_rfc_persona_fisica_valido
 from usuario_validation import es_usuario_valido
+from shared.negocio_id import requerir_negocio_id
 
 # Mismo patron que facturacion -> administracion (consulta de datos de
 # emisor): llamada directa al microservicio, sin pasar por el Gateway
@@ -178,23 +179,6 @@ def validar_usuario(usuario: str) -> str:
         )
     return usuario
 
-
-def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
-    """
-    Mismo criterio que administracion (#15): las LECTURAS multi-tenant no
-    tienen fallback permisivo. Un fallback a un Negocio por defecto aqui
-    significaria que una llamada sin X-Negocio-Id (bypass del Gateway,
-    header ausente por error) podria mostrar usuarios de un Negocio ajeno.
-    """
-    if not x_negocio_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Falta X-Negocio-Id - esta lectura requiere pasar por el Gateway con un token valido",
-        )
-    try:
-        return int(x_negocio_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="X-Negocio-Id invalido")
 
 # Rol fijo para todo registro via el endpoint publico. No confundir con
 # capacidad de administrar: promover a un usuario a "admin" requiere un

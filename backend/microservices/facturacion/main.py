@@ -35,6 +35,7 @@ from satcfdi.create.cfd.cfdi40 import (
 import finkok_client
 import storage_client
 from database import Factura, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from shared.negocio_id import requerir_negocio_id
 
 # basicConfig es necesario para que los logger.info/error de este archivo Y
 # de finkok_client lleguen a algun lado - sin esto (confirmado hoy en vivo,
@@ -192,26 +193,6 @@ def require_internal_key(api_key: Optional[str] = Security(_internal_api_key_hea
     if not INTERNAL_API_KEY or not api_key or api_key != INTERNAL_API_KEY:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clave interna inválida o ausente")
     return api_key
-
-
-def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
-    """
-    Mismo patron fail-closed que requerir_negocio_id() en administracion:
-    sin fallback a un Negocio por defecto. Una llamada sin X-Negocio-Id
-    valido (bypass del Gateway, header ausente por error) se rechaza en
-    vez de asumir un Negocio - usado tanto en lecturas como en escrituras
-    propias de facturacion (a diferencia de obtener_datos_emisor/
-    obtener_siguiente_folio, que solo reenvian el header a administracion).
-    """
-    if not x_negocio_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Falta X-Negocio-Id - esta operacion requiere pasar por el Gateway con un token valido",
-        )
-    try:
-        return int(x_negocio_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="X-Negocio-Id invalido")
 
 
 async def obtener_datos_emisor(rfc: str, x_negocio_id: Optional[str] = None) -> dict:

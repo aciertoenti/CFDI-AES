@@ -8,7 +8,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . /app
+
+# Contexto de build ahora es ./backend (docker-compose.yml,
+# refactor/shared-negocio-id, 12 ago 2026) - mismo patron ya probado en
+# administracion y auth_usuarios. COPY selectivo a proposito: NO copiar
+# todo el contexto (COPY . /app traeria administracion/auth_usuarios/
+# whatsapp_bot dentro de esta imagen).
+COPY shared /app/shared
+COPY microservices/facturacion /app
 
 RUN pip install --no-cache-dir -r requirements.txt
 

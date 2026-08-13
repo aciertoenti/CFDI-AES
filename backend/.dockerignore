@@ -1,0 +1,41 @@
+# Consolidado 12 ago 2026 (refactor/shared-negocio-id) - antes cada
+# microservicio tenia su propio .dockerignore dentro de su carpeta, lo cual
+# funcionaba mientras el build context de cada uno era esa misma carpeta.
+# Al mover el context de administracion/auth_usuarios/facturacion a ./backend
+# (para poder COPY backend/shared/ dentro de las imagenes), esos 3
+# .dockerignore quedaron sin efecto en silencio - Docker solo lee
+# .dockerignore en la RAIZ del build context, nunca en subcarpetas. Hallazgo
+# real: el .env local de facturacion (ADMINISTRACION_URL=http://localhost:8002,
+# para pruebas fuera de Docker) se colo en la imagen y rompio la conexion
+# real hacia administracion dentro de la red de Docker. Este archivo unico
+# reemplaza a los 3 anteriores (ya eliminados) y aplica a cualquier
+# microservicio que use ./backend como context.
+
+# IMPORTANTE: a diferencia de .gitignore, un patron sin "**/" en .dockerignore
+# SOLO aplica en la raiz del build context - no a cualquier profundidad. Como
+# nuestros microservicios viven en subcarpetas (microservices/<servicio>/),
+# cada patron necesita el prefijo **/ para alcanzarlos (confirmado con
+# evidencia real: sin el prefijo, .env/.venv seguian colandose).
+
+# Secretos y configuracion local - nunca deben entrar a ninguna imagen
+**/.env
+**/.env.*
+!**/.env.example
+
+# Certificados y llaves privadas (CSD)
+**/*.cer
+**/*.key
+**/*.sdg
+
+# Entornos virtuales y cachés de Python - se reinstalan con requirements.txt
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Control de versiones
+**/.git/
+**/.gitignore

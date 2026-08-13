@@ -66,11 +66,10 @@ const useToast = () => useContext(ToastCtx);
 // ═══════════════════════════════════════════════════════════════════════════════
 // HOOKS IA
 // ═══════════════════════════════════════════════════════════════════════════════
-// IA_BASE sigue directo al microservicio a proposito (#48 dejo el rewiring
-// de los 4 endpoints de IA para una tarjeta aparte — streaming SSE en
-// useFiscalChat necesita manejo distinto al resto). El resto del nucleo de
-// negocio (facturas/admin/auth) ya pasa por el Gateway via API_BASE.
-const IA_BASE  = "http://localhost:8007";
+// Los 4 endpoints de IA ya pasan por el Gateway via API_BASE (13 ago 2026,
+// rewiring de IA) - antes usaban IA_BASE directo al microservicio, sin JWT
+// (ver #48/#65). useFiscalChat usa una ruta dedicada del Gateway
+// (/ia/chat/stream) en vez del proxy generico, por el streaming SSE.
 const API_BASE = "http://localhost:8000";
 // FACTURACION_BASE/ADMINISTRACION_BASE/AUTH_BASE ya no se usan para fetch
 // real (ver #48) - se dejan solo porque siguen apareciendo en textos de
@@ -264,7 +263,7 @@ function useDocumentExtractor() {
     labels.forEach((l, i) => setTimeout(() => setSteps(p => [...p, l]), i * 900));
     try {
       const fd = new FormData(); fd.append("file", file);
-      const res = await fetch(`${IA_BASE}/ia/extraer-documento`, { method:"POST", body:fd });
+      const res = await fetchAuth(`${API_BASE}/ia/extraer-documento`, { method:"POST", body:fd });
       if (!res.ok) throw new Error((await res.json()).detail || "Error");
       const data = await res.json(); setResult(data); return data;
     } catch(e) { setError(e.message); } finally { setLoading(false); }
@@ -282,7 +281,12 @@ function useFiscalChat() {
     setStreaming(true);
     abortRef.current = new AbortController();
     try {
-      const res = await fetch(`${IA_BASE}/ia/chat/stream`, {
+      // Ruta dedicada del Gateway (13 ago 2026, rewiring de IA) - no pasa por
+      // el proxy() generico (StreamingResponse no funciona con resp.json()).
+      // fetchAuth() sigue sirviendo tal cual: solo agrega el header
+      // Authorization, la respuesta que devuelve es el mismo objeto Response
+      // que fetch() normal, asi que res.body.getReader() de abajo no cambia.
+      const res = await fetchAuth(`${API_BASE}/ia/chat/stream`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         signal:abortRef.current.signal,
         body: JSON.stringify({ messages:history, contexto_cuenta:ctx }),
@@ -480,7 +484,7 @@ function useResumenEjecutivo() {
   const generar = useCallback(async (payload) => {
     setLoading(true); setError(null); setResultado(null);
     try {
-      const res = await fetch(`${IA_BASE}/ia/resumen-ejecutivo`, {
+      const res = await fetchAuth(`${API_BASE}/ia/resumen-ejecutivo`, {
         method: "POST", headers: {"Content-Type":"application/json"},
         body: JSON.stringify(payload),
       });
@@ -502,7 +506,7 @@ function useAnomalias() {
   const detectar = useCallback(async (facturas, pagos=[]) => {
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`${IA_BASE}/ia/anomalias`, {
+      const res = await fetchAuth(`${API_BASE}/ia/anomalias`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ facturas, pagos_bancarios:pagos }),
       });

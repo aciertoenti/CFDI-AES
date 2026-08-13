@@ -4,6 +4,36 @@ Documentación de diseño únicamente — nada de esto crea infraestructura nuev
 Describe los 3 ambientes que el proyecto necesita, cuál existe hoy, y qué
 falta para pasar de uno al siguiente.
 
+## Cómo se usa cada archivo .env (#20, 13 ago 2026)
+
+`docker-compose.yml` ya no tiene ninguna credencial de Postgres hardcodeada
+— todas se leen de variables de entorno, con default = los valores de
+siempre de Dev local (ver `.env.example`). Esto permite tener un archivo de
+variables por ambiente, sin tocar `docker-compose.yml` para cambiar de uno a
+otro:
+
+```bash
+# Dev local (de siempre) - .env sin sufijo, Docker Compose lo lee
+# automaticamente, sin necesidad de --env-file:
+docker compose up -d
+
+# Staging - variables de .env.staging (copiado desde .env.staging.example):
+docker compose --env-file .env.staging up -d
+
+# Produccion - variables de .env.production (copiado desde
+# .env.production.example):
+docker compose --env-file .env.production up -d
+```
+
+Los 3 archivos reales (`.env`, `.env.staging`, `.env.production`) están
+gitignorados — nunca se commitean con secretos reales. Solo sus plantillas
+(`.env.example`, `.env.staging.example`, `.env.production.example`) están
+en el repo, siempre con placeholders.
+
+**Ojo:** esto separa las *credenciales* por ambiente (#20) — no crea el
+Postgres físico separado, el dominio/TLS de Staging (#36), ni el pipeline de
+CI/CD (#21). Son piezas distintas del mismo checklist de abajo.
+
 ## 1. Local/Dev — existe hoy
 
 Lo que ya está corriendo en esta máquina vía `docker compose up`:

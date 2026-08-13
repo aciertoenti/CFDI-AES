@@ -8,29 +8,33 @@ services:
   postgres_facturas:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: cfdi_facturas
-      POSTGRES_USER: cfdi
-      POSTGRES_PASSWORD: secret_facturas
+      # Separacion Dev/Staging/Produccion (13 ago 2026) - antes hardcodeado,
+      # sin pasar por variable de entorno en absoluto (a diferencia de
+      # JWT_SECRET/INTERNAL_API_KEY). Default = el mismo valor que ya usaba
+      # el .env local de hoy, para no romper nada al aplicar este cambio.
+      POSTGRES_DB: "${POSTGRES_DB_FACTURAS:-cfdi_facturas}"
+      POSTGRES_USER: "${POSTGRES_USER_FACTURAS:-cfdi}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD_FACTURAS:-secret_facturas}"
     volumes: [postgres_facturas:/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD-SHELL","pg_isready -U cfdi -d cfdi_facturas"]
+      test: ["CMD-SHELL","pg_isready -U ${POSTGRES_USER_FACTURAS:-cfdi} -d ${POSTGRES_DB_FACTURAS:-cfdi_facturas}"]
       interval: 5s
       retries: 5
 
   postgres_admin:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: cfdi_admin
-      POSTGRES_USER: cfdi
-      POSTGRES_PASSWORD: secret_admin
+      POSTGRES_DB: "${POSTGRES_DB_ADMIN:-cfdi_admin}"
+      POSTGRES_USER: "${POSTGRES_USER_ADMIN:-cfdi}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD_ADMIN:-secret_admin}"
     volumes: [postgres_admin:/var/lib/postgresql/data]
 
   postgres_auth:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: cfdi_auth
-      POSTGRES_USER: cfdi
-      POSTGRES_PASSWORD: secret_auth
+      POSTGRES_DB: "${POSTGRES_DB_AUTH:-cfdi_auth}"
+      POSTGRES_USER: "${POSTGRES_USER_AUTH:-cfdi}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD_AUTH:-secret_auth}"
     volumes: [postgres_auth:/var/lib/postgresql/data]
 
   redis:
@@ -78,7 +82,7 @@ services:
     # administracion (GET /admin/emisores/{rfc}/csd-descifrado), no de un
     # archivo estatico en disco. Ver INTERNAL_API_KEY abajo.
     environment:
-      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_facturas@postgres_facturas/cfdi_facturas"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_FACTURAS:-cfdi}:${POSTGRES_PASSWORD_FACTURAS:-secret_facturas}@postgres_facturas/${POSTGRES_DB_FACTURAS:-cfdi_facturas}"
       REDIS_URL: "redis://redis:6379/0"
       MINIO_URL: "http://minio:9000"
       MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-minio_admin}"
@@ -115,7 +119,7 @@ services:
       dockerfile: microservices/administracion/Dockerfile
     ports: ["8002:8002"]
     environment:
-      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_ADMIN:-cfdi}:${POSTGRES_PASSWORD_ADMIN:-secret_admin}@postgres_admin/${POSTGRES_DB_ADMIN:-cfdi_admin}"
       CSD_MASTER_KEY: "${CSD_MASTER_KEY}"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
       # Invalidar el cache de CSD en facturacion al rotar un CSD (PUT
@@ -130,7 +134,7 @@ services:
     build: ./backend/microservices/addenda_aes
     ports: ["8003:8003"]
     environment:
-      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_ADMIN:-cfdi}:${POSTGRES_PASSWORD_ADMIN:-secret_admin}@postgres_admin/${POSTGRES_DB_ADMIN:-cfdi_admin}"
       MINIO_URL: "http://minio:9000"
     command: uvicorn main:app --host 0.0.0.0 --port 8003 --reload
 
@@ -138,7 +142,7 @@ services:
     build: ./backend/microservices/reportes
     ports: ["8004:8004"]
     environment:
-      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_facturas@postgres_facturas/cfdi_facturas"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_FACTURAS:-cfdi}:${POSTGRES_PASSWORD_FACTURAS:-secret_facturas}@postgres_facturas/${POSTGRES_DB_FACTURAS:-cfdi_facturas}"
     command: uvicorn main:app --host 0.0.0.0 --port 8004 --reload
 
   ia:
@@ -164,7 +168,7 @@ services:
       dockerfile: microservices/auth_usuarios/Dockerfile
     ports: ["8005:8005"]
     environment:
-      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_auth@postgres_auth/cfdi_auth"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_AUTH:-cfdi}:${POSTGRES_PASSWORD_AUTH:-secret_auth}@postgres_auth/${POSTGRES_DB_AUTH:-cfdi_auth}"
       JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
       REDIS_URL: "redis://redis:6379/1"
       ADMINISTRACION_URL: "http://administracion:8002"
@@ -176,7 +180,7 @@ services:
     build: ./backend/microservices/whatsapp_bot
     ports: ["8006:8006"]
     environment:
-      DATABASE_URL: "postgresql+asyncpg://cfdi:secret_bot@postgres_bot/cfdi_bot"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_BOT:-cfdi}:${POSTGRES_PASSWORD_BOT:-secret_bot}@postgres_bot/${POSTGRES_DB_BOT:-cfdi_bot}"
       REDIS_URL: "redis://redis:6379/2"
       FACTURACION_URL: "http://facturacion:8001"
       WHATSAPP_TOKEN: "${WHATSAPP_TOKEN}"
@@ -201,12 +205,12 @@ services:
   postgres_bot:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: cfdi_bot
-      POSTGRES_USER: cfdi
-      POSTGRES_PASSWORD: secret_bot
+      POSTGRES_DB: "${POSTGRES_DB_BOT:-cfdi_bot}"
+      POSTGRES_USER: "${POSTGRES_USER_BOT:-cfdi}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD_BOT:-secret_bot}"
     volumes: [postgres_bot:/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD-SHELL","pg_isready -U cfdi -d cfdi_bot"]
+      test: ["CMD-SHELL","pg_isready -U ${POSTGRES_USER_BOT:-cfdi} -d ${POSTGRES_DB_BOT:-cfdi_bot}"]
       interval: 5s
       retries: 5
 

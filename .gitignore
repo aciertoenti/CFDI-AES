@@ -11,6 +11,10 @@ venv/
 .env
 .env.*
 !.env.example
+# Plantillas de Staging/Produccion (13 ago 2026) - mismo criterio que
+# .env.example: nunca secretos reales, solo placeholders documentados.
+!.env.staging.example
+!.env.production.example
  
 # Python test / cache
 .pytest_cache/

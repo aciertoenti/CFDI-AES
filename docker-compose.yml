@@ -55,6 +55,12 @@ services:
     ports: ["8000:8000"]
     environment:
       JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
+      # Rewiring de IA al Gateway (13 ago 2026) - ia:8007 ahora exige
+      # X-Internal-Key en sus 6 endpoints (antes completamente abierto). El
+      # Gateway es quien agrega este header al reenviar, solo despues de
+      # verificar el JWT del usuario - mismo patron fail-fast que ya usan
+      # facturacion/administracion/whatsapp_bot, sin default debil.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
     depends_on: [auth, facturacion, administracion, addenda_aes, reportes]
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
@@ -140,6 +146,12 @@ services:
     ports: ["8007:8007"]
     environment:
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      # Cierre de acceso directo sin auth (13 ago 2026, rewiring al Gateway) -
+      # ia:8007 no validaba nada antes: cualquiera que alcanzara el puerto
+      # podia gastar credito real de Anthropic sin JWT ni ningun otro
+      # mecanismo. Mismo patron fail-fast que facturacion/administracion/
+      # whatsapp_bot, sin default debil.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
     command: uvicorn main:app --host 0.0.0.0 --port 8007 --reload
 
   auth:

@@ -2,7 +2,7 @@ import os
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import httpx
 import jwt
@@ -16,6 +16,16 @@ JWT_SECRET = os.environ.get("JWT_SECRET")
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET no está definido. Configúralo como variable de entorno.")
 JWT_ALGORITHM = "HS256"
+
+# Rewiring de IA al Gateway (13 ago 2026) - ia:8007 ahora exige X-Internal-Key
+# en sus 6 endpoints (antes completamente abierto, sin JWT ni ningun otro
+# mecanismo - cualquiera que alcanzara el puerto podia gastar credito real de
+# Anthropic). El Gateway es el unico llamante legitimo: ya exige el JWT del
+# usuario (verify_token) antes de agregar este header, asi que una clave
+# interna robada sin JWT valido no basta para llegar hasta aqui.
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
+if not INTERNAL_API_KEY:
+    raise RuntimeError("INTERNAL_API_KEY no está definido. Configúralo como variable de entorno.")
 
 SERVICES = {
     "facturas": "http://facturacion:8001",
@@ -81,6 +91,37 @@ async def registro_proxy(request: Request):
         raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
 
 
+@app.post("/ia/chat/stream")
+async def ia_chat_stream_proxy(request: Request, token=Depends(verify_token)):
+    """
+    Ruta dedicada (13 ago 2026, rewiring de IA) - el proxy() generico de
+    abajo espera la respuesta completa del downstream (resp.json()) antes de
+    devolver nada, lo que no sirve para Server-Sent Events: el navegador
+    necesita los tokens de Chat Fiscal a medida que Claude los genera, no
+    todos de golpe al final. Debe registrarse ANTES de proxy() - Starlette
+    empata por orden de registro (mismo motivo que /auth/login y
+    /auth/registro van antes que la ruta generica).
+    """
+    target = f"{SERVICES['ia']}/ia/chat/stream"
+    body = await request.body()
+
+    forward_headers = {"Content-Type": "application/json", "X-Internal-Key": INTERNAL_API_KEY}
+    if "negocio_id" in token and token["negocio_id"] is not None:
+        forward_headers["X-Negocio-Id"] = str(token["negocio_id"])
+    if "email" in token and token["email"] is not None:
+        forward_headers["X-Usuario-Email"] = str(token["email"])
+    if "sub" in token and token["sub"] is not None:
+        forward_headers["X-Usuario-Rfc"] = str(token["sub"])
+
+    async def event_generator():
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", target, content=body, headers=forward_headers) as resp:
+                async for chunk in resp.aiter_raw():
+                    yield chunk
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.api_route("/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 @app.api_route("/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy(service: str, request: Request, path: str = "", token=Depends(verify_token)):
@@ -114,6 +155,11 @@ async def proxy(service: str, request: Request, path: str = "", token=Depends(ve
     # (quien timbro/cancelo/dio de alta), no como control de seguridad.
     if "sub" in token and token["sub"] is not None:
         forward_headers["X-Usuario-Rfc"] = str(token["sub"])
+    # Rewiring de IA (13 ago 2026): agregado aqui, en el proxy generico, para
+    # que cubra tambien /ia/* sin necesitar una rama especial por servicio -
+    # los demas microservicios simplemente no lo validan todavia (ver #58,
+    # hallazgo aparte, fuera de alcance aqui).
+    forward_headers["X-Internal-Key"] = INTERNAL_API_KEY
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.request(

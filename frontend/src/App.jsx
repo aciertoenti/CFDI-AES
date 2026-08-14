@@ -1,5 +1,5 @@
 // ─── App.jsx ── CFDI-AES · Responsive + Toast + Table fix ─────────────────────
-import { useState, useEffect, useCallback, useRef, createContext, useContext } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } from "react";
 import logoAcierto from "./assets/logo-acierto.png";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -82,6 +82,19 @@ const AUTH_BASE = "http://localhost:8005";
 const TOKEN_KEY = "cfdi_aes_token";
 const getToken = () => sessionStorage.getItem(TOKEN_KEY);
 const setStoredToken = t => t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY);
+
+// Solo lectura de claims (nombre/rfc_emisor/etc) para mostrar identidad en
+// UI - la firma ya fue verificada por el backend en cada request via
+// fetchAuth/Authorization header, esto nunca se usa para autenticar nada.
+function decodeJwtClaims(token) {
+  if (!token) return null;
+  try {
+    const [, payloadB64] = token.split(".");
+    return JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    return null;
+  }
+}
 
 async function fetchAuth(url, options = {}) {
   const token = getToken();
@@ -166,7 +179,12 @@ function useAuth() {
       return { ok: false, error: e.message };
     }
   }, []);
-  return { token, isAuthenticated: !!token, login, registro, logout, solicitarReset, confirmarReset };
+  // Identidad del principal autenticado (#1vWBI) - antes el header solo
+  // mostraba datos del Emisor conectado (useEmisores), nunca quien inicio
+  // sesion. usuarioActual se recalcula solo cuando cambia el token, no en
+  // cada render.
+  const usuarioActual = useMemo(() => decodeJwtClaims(token), [token]);
+  return { token, isAuthenticated: !!token, usuarioActual, login, registro, logout, solicitarReset, confirmarReset };
 }
 
 function Login({ onLogin, onIrARegistro, onIrAOlvide }) {
@@ -1826,7 +1844,7 @@ function SidebarNav({active, navigate, expanded, toggle, compact=false}){
 // ═══════════════════════════════════════════════════════════════════════════════
 // APP SHELL
 // ═══════════════════════════════════════════════════════════════════════════════
-function AppShell({onLogout}){
+function AppShell({onLogout,usuarioActual}){
   const {isMobile,isTablet}=useBreakpoint();
   const [active,setActive]=useState("generadas");
   const [expanded,setExpanded]=useState({facturas:true,ia:true,admin:false});
@@ -1881,7 +1899,12 @@ function AppShell({onLogout}){
                 style={{background:"transparent",border:"none",cursor:"pointer",fontSize:20,color:C.text,padding:0,lineHeight:1,flexShrink:0}}>☰</button>
             )}
             <div style={{minWidth:0}}>
-              <div style={{fontSize:10,color:C.textMuted}}>Bienvenido de vuelta</div>
+              {/* Conectado como <identidad personal> - antes decia siempre
+                  "Bienvenido de vuelta" sin distinguir quien inicio sesion
+                  del Emisor conectado abajo (#1vWBI). nombre viene del JWT
+                  (claim agregado en auth_usuarios), con rfc_personal (sub)
+                  como respaldo por si un token viejo aun no lo trae. */}
+              <div style={{fontSize:10,color:C.textMuted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Conectado como {usuarioActual?.nombre||usuarioActual?.sub||"—"}</div>
               <div style={{fontSize:isMobile?13:14,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nombreEmisor}</div>
             </div>
           </div>
@@ -1893,7 +1916,7 @@ function AppShell({onLogout}){
                   {emisores.map(e=>(<option key={e.rfc} value={e.rfc}>{e.razon_social} — {e.rfc}</option>))}
                 </select>
               )
-              : <div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>RFC: {cargandoEmisor?"…":(emisorActual?.rfc||"—")}</div>
+              : <div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>Emisor: {cargandoEmisor?"…":(emisorActual?.rfc||"—")}</div>
             )}
             <div style={{position:"relative"}}>
               <div style={{width:7,height:7,borderRadius:"50%",background:C.danger,position:"absolute",top:-1,right:-1,border:"2px solid #fff"}}/>
@@ -1955,7 +1978,7 @@ function AuthGate(){
   // tener conocimiento del concepto de "vista", que es puramente de
   // AuthGate).
   const onLogout = () => { auth.logout(); setVista("login"); };
-  return <EmisoresProvider><AppShell onLogout={onLogout}/></EmisoresProvider>;
+  return <EmisoresProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual}/></EmisoresProvider>;
 }
 
 export default function App(){

@@ -420,6 +420,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     # en facturacion/administracion/whatsapp_bot/api_gateway.
     payload = {
         "sub": usuario.rfc_personal,
+        "nombre": usuario.nombre,
         "email": usuario.email,
         "rfc_emisor": usuario.rfc_emisor,
         "negocio_id": usuario.negocio_id,

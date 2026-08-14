@@ -203,7 +203,12 @@ def _cliente_to_response(c: Cliente) -> ClienteResponse:
 
 # ─── Emisores ──────────────────────────────────────────────────────────────────
 
-@app.post("/admin/emisores", response_model=EmisorResponse, status_code=201)
+@app.post(
+    "/admin/emisores",
+    response_model=EmisorResponse,
+    status_code=201,
+    dependencies=[Depends(require_internal_key)],
+)
 async def crear_emisor(
     emisor: EmisorCreate,
     db: AsyncSession = Depends(get_db),
@@ -281,7 +286,11 @@ async def crear_negocio(negocio: NegocioCreate, db: AsyncSession = Depends(get_d
     return _negocio_to_response(nuevo)
 
 
-@app.get("/admin/negocios/{negocio_id}", response_model=NegocioResponse)
+@app.get(
+    "/admin/negocios/{negocio_id}",
+    response_model=NegocioResponse,
+    dependencies=[Depends(require_internal_key)],
+)
 async def obtener_negocio(
     negocio_id: int,
     db: AsyncSession = Depends(get_db),
@@ -302,7 +311,11 @@ async def obtener_negocio(
         raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
     return _negocio_to_response(negocio)
 
-@app.get("/admin/emisores", response_model=List[EmisorResponse])
+@app.get(
+    "/admin/emisores",
+    response_model=List[EmisorResponse],
+    dependencies=[Depends(require_internal_key)],
+)
 async def listar_emisores(
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
@@ -313,7 +326,11 @@ async def listar_emisores(
     )
     return [_emisor_to_response(e) for e in result.scalars().all()]
 
-@app.get("/admin/emisores/{rfc}", response_model=EmisorResponse)
+@app.get(
+    "/admin/emisores/{rfc}",
+    response_model=EmisorResponse,
+    dependencies=[Depends(require_internal_key)],
+)
 async def obtener_emisor(
     rfc: str,
     db: AsyncSession = Depends(get_db),
@@ -357,7 +374,11 @@ async def obtener_csd_descifrado(rfc: str, db: AsyncSession = Depends(get_db)):
         csd_password=emisor.csd_password,
     )
 
-@app.put("/admin/emisores/{rfc}", response_model=EmisorResponse)
+@app.put(
+    "/admin/emisores/{rfc}",
+    response_model=EmisorResponse,
+    dependencies=[Depends(require_internal_key)],
+)
 async def actualizar_emisor(
     rfc: str,
     emisor: EmisorCreate,
@@ -460,7 +481,11 @@ async def crear_cliente(
     await db.refresh(nuevo)
     return _cliente_to_response(nuevo)
 
-@app.get("/admin/clientes", response_model=List[ClienteResponse])
+@app.get(
+    "/admin/clientes",
+    response_model=List[ClienteResponse],
+    dependencies=[Depends(require_internal_key)],
+)
 async def listar_clientes(
     emisor_rfc: Optional[str] = None,
     busqueda: Optional[str] = None,
@@ -484,7 +509,11 @@ async def listar_clientes(
     result = await db.execute(stmt)
     return [_cliente_to_response(c) for c in result.scalars().all()]
 
-@app.get("/admin/clientes/{rfc}", response_model=ClienteResponse)
+@app.get(
+    "/admin/clientes/{rfc}",
+    response_model=ClienteResponse,
+    dependencies=[Depends(require_internal_key)],
+)
 async def obtener_cliente(
     rfc: str,
     emisor_rfc: Optional[str] = None,
@@ -505,7 +534,11 @@ async def obtener_cliente(
         raise HTTPException(status_code=404, detail=f"Cliente {rfc} no encontrado")
     return _cliente_to_response(cliente)
 
-@app.put("/admin/clientes/{rfc}", response_model=ClienteResponse)
+@app.put(
+    "/admin/clientes/{rfc}",
+    response_model=ClienteResponse,
+    dependencies=[Depends(require_internal_key)],
+)
 async def actualizar_cliente(
     rfc: str,
     cliente: ClienteCreate,
@@ -538,7 +571,10 @@ async def actualizar_cliente(
     await db.refresh(existente)
     return _cliente_to_response(existente)
 
-@app.delete("/admin/clientes/{rfc}")
+@app.delete(
+    "/admin/clientes/{rfc}",
+    dependencies=[Depends(require_internal_key)],
+)
 async def eliminar_cliente(
     rfc: str,
     emisor_rfc: str,
@@ -571,7 +607,11 @@ async def eliminar_cliente(
 async def crear_serie(serie: SerieCreate):
     return {**serie.dict(), "folio_actual": serie.folio_inicial}
 
-@app.get("/admin/series", response_model=List[SerieResponse])
+@app.get(
+    "/admin/series",
+    response_model=List[SerieResponse],
+    dependencies=[Depends(require_internal_key)],
+)
 async def listar_series(
     emisor_rfc: Optional[str] = None,
     db: AsyncSession = Depends(get_db),

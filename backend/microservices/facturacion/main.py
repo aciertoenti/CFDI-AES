@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Depends, Query, Security, status
+from fastapi import FastAPI, Header, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import date, datetime
@@ -36,6 +35,7 @@ import finkok_client
 import storage_client
 from database import Factura, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from shared.negocio_id import requerir_negocio_id
+from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 
 # basicConfig es necesario para que los logger.info/error de este archivo Y
 # de finkok_client lleguen a algun lado - sin esto (confirmado hoy en vivo,
@@ -172,27 +172,11 @@ class ContadorVirtualISRResicoResponse(BaseModel):
 # El regimen fiscal y el CP de expedicion ya NO son constantes de prueba -
 # se consultan a administracion, que persiste emisores reales desde #4.
 ADMINISTRACION_URL = os.environ.get("ADMINISTRACION_URL", "http://administracion:8002")
-# Clave servicio-a-servicio (#42) - mismo mecanismo que whatsapp_bot ya usa
-# contra facturacion (ver whatsapp_bot/core/security.py). Distinta de
-# X-Negocio-Id: esta protege endpoints que ningun negocio deberia poder
-# alcanzar directo (aqui, pedir el CSD descifrado de un emisor), no rutas
-# con contexto de tenant.
-INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
-
-# Hallazgo (#42-cache): facturacion ya usaba INTERNAL_API_KEY como CLIENTE
-# saliente (arriba, headers hacia administracion), pero nunca validaba un
-# X-Internal-Key entrante en ninguno de sus propios endpoints - ni siquiera
-# en /facturas/timbrar, que whatsapp_bot ya llama con ese header (queda
-# anotado como hallazgo aparte, no se resuelve aqui). Mismo patron que
-# administracion (require_internal_key) para el endpoint interno nuevo de
-# invalidacion de cache.
-_internal_api_key_header = APIKeyHeader(name="X-Internal-Key", auto_error=False)
-
-
-def require_internal_key(api_key: Optional[str] = Security(_internal_api_key_header)) -> str:
-    if not INTERNAL_API_KEY or not api_key or api_key != INTERNAL_API_KEY:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clave interna inválida o ausente")
-    return api_key
+# Clave servicio-a-servicio (#42), extraida a backend/shared/internal_key.py
+# (14 ago 2026, refactor/shared-internal-key, ver import arriba) - antes
+# vivia copiada aqui, identica a la de administracion/ia. La misma
+# INTERNAL_API_KEY compartida se reusa como cliente saliente abajo (llamada
+# a administracion), en vez de leer la variable una segunda vez por separado.
 
 
 async def obtener_datos_emisor(rfc: str, x_negocio_id: Optional[str] = None) -> dict:

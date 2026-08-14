@@ -146,7 +146,12 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8004 --reload
 
   ia:
-    build: ./backend/microservices/ia
+    # Contexto ampliado a ./backend (14 ago 2026, refactor/shared-internal-key)
+    # para poder COPY backend/shared/ dentro de la imagen - mismo patron ya
+    # probado en facturacion/administracion/auth_usuarios (12-13 ago 2026).
+    build:
+      context: ./backend
+      dockerfile: microservices/ia/Dockerfile
     ports: ["8007:8007"]
     environment:
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
@@ -172,6 +177,10 @@ services:
       JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
       REDIS_URL: "redis://redis:6379/1"
       ADMINISTRACION_URL: "http://administracion:8002"
+      # X-Internal-Key en crear_usuario/listar_usuarios (14 ago 2026,
+      # refactor/shared-internal-key, tarjeta 228937665) - mismo patron
+      # fail-fast que facturacion/administracion/ia, sin default debil.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
       # Login rate limiting + recuperacion de contrasena (14 ago 2026) -
       # rate limiting usa el mismo REDIS_URL de arriba (ya estaba en el
       # stack, sin usar). SendGrid/FRONTEND_URL solo para el correo de

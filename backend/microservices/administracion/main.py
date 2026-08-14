@@ -14,9 +14,8 @@ from datetime import datetime
 from typing import Optional, List
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Query, Depends, Security, status
+from fastapi import FastAPI, Header, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -26,19 +25,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import Emisor, Cliente, Negocio, SerieFolio, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from csd_rfc import extraer_rfc_de_certificado
 from shared.negocio_id import requerir_negocio_id
+from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 
 # ─── Autenticacion interna servicio-a-servicio ─────────────────────────────────
 # Mismo patron que whatsapp_bot/core/security.py (X-Internal-Key). Protege
 # especificamente el endpoint que devuelve el CSD ya descifrado (#42) - el
 # dato mas sensible del sistema. NUNCA loguear el resultado de este endpoint.
-INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
-_internal_api_key_header = APIKeyHeader(name="X-Internal-Key", auto_error=False)
-
-
-def require_internal_key(api_key: Optional[str] = Security(_internal_api_key_header)) -> str:
-    if not INTERNAL_API_KEY or not api_key or api_key != INTERNAL_API_KEY:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clave interna inválida o ausente")
-    return api_key
+# require_internal_key() extraida a backend/shared/internal_key.py (14 ago
+# 2026, refactor/shared-internal-key, ver import arriba) - antes vivia
+# copiada aqui, identica a la de facturacion/ia.
 
 
 # Invalidacion de cache (hallazgo #42-cache): facturacion cachea el CSD

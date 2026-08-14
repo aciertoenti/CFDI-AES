@@ -33,11 +33,12 @@ from datetime import datetime, date
 from typing import Optional, List, AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends, Security, status
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
+
+from shared.internal_key import require_internal_key
 
 load_dotenv()
 
@@ -57,17 +58,13 @@ app.add_middleware(
 # cross-tenant en el sentido de #58 (ia nunca toca la BD, es enteramente
 # stateless - solo reenvia a Claude lo que el caller mande en el body), pero
 # si permitia gasto no autorizado del credito real de Anthropic. Mismo
-# patron exacto que ya usan administracion/facturacion (require_internal_key,
-# X-Internal-Key) - el Gateway es el unico llamante legitimo: exige el JWT
-# del usuario primero, y solo entonces agrega este header antes de reenviar.
-INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
-_internal_api_key_header = APIKeyHeader(name="X-Internal-Key", auto_error=False)
-
-
-def require_internal_key(api_key: Optional[str] = Security(_internal_api_key_header)) -> str:
-    if not INTERNAL_API_KEY or not api_key or api_key != INTERNAL_API_KEY:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clave interna inválida o ausente")
-    return api_key
+# patron exacto que ya usan administracion/facturacion - el Gateway es el
+# unico llamante legitimo: exige el JWT del usuario primero, y solo entonces
+# agrega este header antes de reenviar.
+#
+# require_internal_key() extraida a backend/shared/internal_key.py (14 ago
+# 2026, refactor/shared-internal-key, ver import arriba) - antes vivia
+# copiada aqui, identica a la de facturacion/administracion.
 
 
 @app.exception_handler(httpx.HTTPStatusError)

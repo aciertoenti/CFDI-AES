@@ -18,6 +18,7 @@ from database import Usuario, create_tables, get_db, stamp_head_si_es_ambiente_n
 from rfc_validation import es_rfc_persona_fisica_valido
 from usuario_validation import es_usuario_valido
 from shared.negocio_id import requerir_negocio_id
+from shared.internal_key import require_internal_key
 from email_sender import enviar_correo_reset
 from redis_client import (
     MAX_INTENTOS_LOGIN,
@@ -246,7 +247,7 @@ ROL_DEFAULT_REGISTRO_PUBLICO = "usuario"
 ROL_ADMIN_NEGOCIO = "admin"
 
 
-@app.post("/auth/usuarios", response_model=UsuarioResponse, status_code=201)
+@app.post("/auth/usuarios", response_model=UsuarioResponse, status_code=201, dependencies=[Depends(require_internal_key)])
 async def crear_usuario(
     req: UsuarioCreate,
     db: AsyncSession = Depends(get_db),
@@ -535,7 +536,7 @@ async def password_reset_confirm(req: PasswordResetConfirmRequest, db: AsyncSess
     return {"mensaje": "Contraseña actualizada correctamente."}
 
 
-@app.get("/auth/usuarios", response_model=List[UsuarioListItem])
+@app.get("/auth/usuarios", response_model=List[UsuarioListItem], dependencies=[Depends(require_internal_key)])
 async def listar_usuarios(
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),

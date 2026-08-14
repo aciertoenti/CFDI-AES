@@ -417,7 +417,26 @@ async def actualizar_emisor(
 # ─── Clientes ──────────────────────────────────────────────────────────────────
 
 @app.post("/admin/clientes", response_model=ClienteResponse, status_code=201)
-async def crear_cliente(cliente: ClienteCreate, db: AsyncSession = Depends(get_db)):
+async def crear_cliente(
+    cliente: ClienteCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    # Hallazgo (14 ago 2026, tarjeta 2mUvo): este era el unico endpoint de
+    # clientes sin validar el Negocio del caller - IDOR real, permitia crear
+    # un cliente atado a un emisor_rfc ajeno. Mismo criterio que
+    # obtener_cliente/actualizar_cliente: Cliente no tiene negocio_id propio,
+    # se valida via el emisor_rfc contra los emisores de este Negocio. 404
+    # (no 403) si el emisor no pertenece al caller - no revela que el RFC
+    # existe en otro Negocio, mismo criterio anti-fuga que el resto (#15).
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    rfcs_del_negocio = select(Emisor.rfc).where(Emisor.negocio_id == negocio_id)
+    emisor_valido = await db.execute(
+        select(Emisor.rfc).where(Emisor.rfc.in_(rfcs_del_negocio), Emisor.rfc == cliente.emisor_rfc)
+    )
+    if emisor_valido.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Emisor {cliente.emisor_rfc} no encontrado")
+
     nuevo = Cliente(
         emisor_rfc=cliente.emisor_rfc,
         rfc=cliente.rfc,

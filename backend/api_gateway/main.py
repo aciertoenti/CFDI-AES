@@ -65,8 +65,15 @@ async def login_proxy(request: Request):
             headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
             content=await request.body(),
         )
+    # Rate limiting de login (13 ago 2026, #48-ratelimit): un 429 de
+    # auth_usuarios trae Retry-After - sin este forward explicito se
+    # perderia (JSONResponse de abajo solo lleva status_code, nunca copia
+    # headers del downstream).
+    headers_extra = {}
+    if "Retry-After" in resp.headers:
+        headers_extra["Retry-After"] = resp.headers["Retry-After"]
     try:
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        return JSONResponse(content=resp.json(), status_code=resp.status_code, headers=headers_extra)
     except ValueError:
         raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
 
@@ -78,6 +85,59 @@ async def registro_proxy(request: Request):
     es, como login, un paso previo a tener un token.
     """
     target = f"{SERVICES['auth']}/auth/registro"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(
+            method="POST",
+            url=target,
+            headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+            content=await request.body(),
+        )
+    try:
+        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
+
+
+@app.post("/auth/password-reset/request")
+async def password_reset_request_proxy(request: Request):
+    """
+    Publica a proposito (#48-reset), mismo motivo que /auth/login: quien
+    pide un reset todavia no tiene sesion. Inyecta X-Forwarded-For con la
+    IP real del cliente que llego al Gateway (request.client.host) - el
+    rate limit de auth_usuarios (10 solicitudes/hora) es por IP, y sin este
+    header ese servicio solo veria la IP del propio Gateway en el header
+    Host recibido (la conexion httpx sale del contenedor gateway), lo que
+    contaria a TODOS los usuarios reales como una sola IP compartida.
+    """
+    target = f"{SERVICES['auth']}/auth/password-reset/request"
+    forward_headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+    client_ip = request.client.host if request.client else "desconocida"
+    # Si ya trae X-Forwarded-For (proxy/balanceador delante del Gateway en
+    # produccion), se antepone el salto conocido en vez de reemplazarlo -
+    # mismo patron estandar de cadena XFF.
+    xff_previo = forward_headers.get("x-forwarded-for") or forward_headers.get("X-Forwarded-For")
+    forward_headers["X-Forwarded-For"] = f"{xff_previo}, {client_ip}" if xff_previo else client_ip
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(
+            method="POST",
+            url=target,
+            headers=forward_headers,
+            content=await request.body(),
+        )
+    try:
+        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
+
+
+@app.post("/auth/password-reset/confirm")
+async def password_reset_confirm_proxy(request: Request):
+    """Publica, mismo motivo que password_reset_request_proxy - no aplica
+    rate limit por IP aqui (el token de un solo uso ya es la proteccion
+    real: cada uno solo sirve una vez, sin importar cuantas veces se
+    intente)."""
+    target = f"{SERVICES['auth']}/auth/password-reset/confirm"
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.request(
             method="POST",

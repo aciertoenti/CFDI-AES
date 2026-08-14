@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -6,7 +7,7 @@ from typing import List, Optional
 import bcrypt
 import httpx
 import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -17,6 +18,24 @@ from database import Usuario, create_tables, get_db, stamp_head_si_es_ambiente_n
 from rfc_validation import es_rfc_persona_fisica_valido
 from usuario_validation import es_usuario_valido
 from shared.negocio_id import requerir_negocio_id
+from email_sender import enviar_correo_reset
+from redis_client import (
+    MAX_INTENTOS_LOGIN,
+    consumir_token_reset,
+    crear_token_reset,
+    permitir_solicitud_reset,
+    registrar_intento_fallido,
+    resetear_intentos,
+    segundos_bloqueado,
+)
+
+# Sin esto, logger.info() no aparece en ningun lado - el root logger de
+# Python arranca sin handlers y en nivel WARNING por default, asi que los
+# logs de auditoria de password-reset (nunca antes existian en este
+# servicio) se descartaban en silencio. Confirmado el bug corriendo la
+# prueba real antes de este fix - los INFO simplemente no salian.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger("auth_usuarios")
 
 # Mismo patron que facturacion -> administracion (consulta de datos de
 # emisor): llamada directa al microservicio, sin pasar por el Gateway
@@ -140,6 +159,20 @@ class RegistroResponse(BaseModel):
     usuario: UsuarioResponse
 
 
+class PasswordResetRequestRequest(BaseModel):
+    # Solo correo a proposito (#48-reset) - nunca RFC/usuario, para que este
+    # endpoint no sirva como oraculo de "que identificadores de login
+    # existen" (ya evitado en /auth/login con CREDENCIALES_INVALIDAS
+    # generico; aqui el mismo principio, pero antes de llegar siquiera a
+    # ese endpoint).
+    email: str
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str
+    nueva_password: str
+
+
 # Mensaje deliberadamente genérico: no revela si falló el identificador
 # (RFC o usuario) o la contraseña (evita que un atacante use el login para
 # enumerar cuentas).
@@ -178,6 +211,26 @@ def validar_usuario(usuario: str) -> str:
             ),
         )
     return usuario
+
+
+# Hallazgo (13 ago 2026, al construir password-reset/confirm): no existia
+# NINGUNA validacion de complejidad de contrasena en el backend - ni en
+# crear_usuario ni en registro, password: str se acepta y se hashea tal
+# cual. Lo unico parecido en todo el proyecto es minLength={8} en el
+# formulario de registro del frontend (App.jsx, campo reg-password) - nunca
+# aplicado del lado servidor. Se replica ese mismo minimo aqui (8
+# caracteres), el unico precedente real que existe, en vez de inventar un
+# criterio de complejidad nuevo sin pedirlo.
+MIN_PASSWORD_LENGTH = 8
+
+
+def validar_password_nueva(password: str) -> str:
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"La contraseña debe medir al menos {MIN_PASSWORD_LENGTH} caracteres",
+        )
+    return password
 
 
 # Rol fijo para todo registro via el endpoint publico. No confundir con
@@ -314,6 +367,26 @@ async def registro(req: RegistroRequest, db: AsyncSession = Depends(get_db)):
 @app.post("/auth/login", response_model=TokenResponse)
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     identificador = req.identificador.upper()
+
+    # Rate limiting (13 ago 2026, #48-ratelimit) - por identificador de
+    # login (RFC/usuario), NO por IP: la IP real del cliente no llega
+    # confiable a este servicio hoy (login_proxy en el Gateway reenvia
+    # headers tal cual, sin inyectar X-Forwarded-For), y ademas contar por
+    # identificador es lo que realmente protege UNA cuenta contra fuerza
+    # bruta sin importar desde cuantas IPs distintas ataquen. Se revisa
+    # ANTES de tocar la BD/bcrypt - un identificador bloqueado no debe
+    # gastar ni un ciclo de verificacion.
+    bloqueo = await segundos_bloqueado(identificador)
+    if bloqueo is not None:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Demasiados intentos fallidos. Intenta de nuevo en "
+                f"{bloqueo // 60 + 1} minutos."
+            ),
+            headers={"Retry-After": str(bloqueo)},
+        )
+
     # Acepta RFC personal O usuario en el mismo campo, sin ambiguedad: un
     # RFC valido siempre mide 13 caracteres, un usuario siempre mide 6-10
     # (es_usuario_valido) - los rangos de longitud nunca se solapan, asi
@@ -326,7 +399,17 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     usuario = result.scalar_one_or_none()
 
     if usuario is None or not bcrypt.checkpw(req.password.encode("utf-8"), usuario.password_hash.encode("utf-8")):
+        # MAX_INTENTOS_LOGIN intentos consecutivos -> bloqueo de 15 min
+        # (ver redis_client.registrar_intento_fallido). Este intento (el
+        # que sea que dispare el bloqueo, incluido el 5to) sigue
+        # respondiendo 401 normal - es el SIGUIENTE el que encuentra el
+        # bloqueo ya activo arriba y recibe 429.
+        await registrar_intento_fallido(identificador)
         raise HTTPException(status_code=401, detail=CREDENCIALES_INVALIDAS)
+
+    # Login exitoso - limpia cualquier contador/bloqueo previo de este
+    # identificador (ver resetear_intentos).
+    await resetear_intentos(identificador)
 
     # sub SIEMPRE es rfc_personal, sin importar si el login fue por RFC o
     # por usuario - "usuario" es solo una credencial alterna de entrada,
@@ -349,6 +432,107 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 @app.post("/auth/logout")
 async def logout():
     return {"mensaje": "Sesión cerrada"}
+
+
+# Mensaje IDENTICO exista o no la cuenta - literal compartido para que no
+# haya forma de que un caller distinga las 2 ramas por el texto exacto.
+RESET_MENSAJE_GENERICO = "Si el correo está registrado, se envió un enlace de recuperación."
+
+
+@app.post("/auth/password-reset/request", status_code=202)
+async def password_reset_request(
+    req: PasswordResetRequestRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    x_forwarded_for: Optional[str] = Header(None, alias="X-Forwarded-For"),
+):
+    """
+    Publico a proposito (#48-reset), mismo motivo que /auth/login: quien
+    llama todavia no tiene sesion. NO exige X-Internal-Key ni X-Negocio-Id -
+    consistente con como esta montado hoy este servicio (auth_usuarios no
+    valida X-Internal-Key en NINGUN endpoint, ni siquiera los que ya
+    existian - ver hallazgo aparte, fuera de alcance aqui). El Gateway
+    necesita una ruta dedicada para esto (proxy() generico exige JWT via
+    verify_token, que rompe endpoints publicos).
+
+    Respuesta IDENTICA exista o no la cuenta (mismo status, mismo body) -
+    el envio real del correo (si la cuenta existe) se dispara con
+    BackgroundTasks, DESPUES de que la respuesta ya salio. Esto no es solo
+    prolijidad: es lo que evita que la llamada real y bloqueante a la API
+    de SendGrid (100-500ms tipico) se vuelva un timing attack obvio que
+    revele si el correo existe (la rama "no existe" respondia casi
+    instantaneo, la rama "existe" tardaria notoriamente mas si se esperara
+    el envio antes de responder).
+    """
+    ip = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else "desconocida"
+    if not await permitir_solicitud_reset(ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiadas solicitudes de recuperación. Intenta más tarde.",
+        )
+
+    result = await db.execute(select(Usuario).where(Usuario.email == req.email))
+    usuario = result.scalar_one_or_none()
+
+    # Log interno para auditoria (nunca expuesto en la respuesta HTTP) -
+    # incluye si se encontro cuenta, nunca el token (que ni siquiera existe
+    # todavia en este punto para la rama "no encontrado").
+    logger.info(
+        "password_reset.solicitud email=%s ip=%s cuenta_encontrada=%s",
+        req.email, ip, usuario is not None,
+    )
+
+    if usuario is not None:
+        token = await crear_token_reset(usuario.rfc_personal)
+        background_tasks.add_task(enviar_correo_reset, usuario.email, token)
+
+    return {"mensaje": RESET_MENSAJE_GENERICO}
+
+
+@app.post("/auth/password-reset/confirm")
+async def password_reset_confirm(req: PasswordResetConfirmRequest, db: AsyncSession = Depends(get_db)):
+    """Publico, mismo motivo que password_reset_request de arriba."""
+    # Complejidad de la contrasena ANTES de tocar el token - si el usuario
+    # escribe una contrasena demasiado corta, el token debe seguir sirviendo
+    # para un segundo intento real, no perderse por un error de formulario.
+    nueva_password = validar_password_nueva(req.nueva_password)
+
+    # consumir_token_reset borra el token atomicamente (GETDEL) al leerlo -
+    # a partir de aqui, sea cual sea el resultado, ese token ya no sirve
+    # para nada mas, incluso si el resto de esta funcion falla despues.
+    rfc_personal = await consumir_token_reset(req.token)
+
+    MENSAJE_TOKEN_INVALIDO = "El enlace de recuperación no es válido, ya expiró o ya fue utilizado."
+
+    if rfc_personal is None:
+        # Sin distinguir "no existe" / "expiro" / "ya se uso" - las 3 son
+        # el mismo caso desde la perspectiva del caller (requisito
+        # explicito: no filtrar detalles sensibles sobre el motivo).
+        raise HTTPException(status_code=400, detail=MENSAJE_TOKEN_INVALIDO)
+
+    result = await db.execute(select(Usuario).where(Usuario.rfc_personal == rfc_personal))
+    usuario = result.scalar_one_or_none()
+    if usuario is None:
+        # Caso raro (cuenta borrada entre la solicitud y la confirmacion) -
+        # mismo mensaje generico que un token invalido, no uno distinto.
+        raise HTTPException(status_code=400, detail=MENSAJE_TOKEN_INVALIDO)
+
+    usuario.password_hash = bcrypt.hashpw(nueva_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    await db.flush()
+
+    # Invalidacion de sesiones activas previas: NO implementada (marcada
+    # como opcional en el requisito). Los JWT de este servicio son
+    # stateless (el Gateway solo verifica firma/expiracion, nunca consulta
+    # Redis/BD por cada request) - invalidar tokens ya emitidos de verdad
+    # requeriria agregar un chequeo de revocacion en verify_token() del
+    # Gateway (una llamada extra, a Redis o similar, en CADA request
+    # proxiada, no solo en las de este servicio), un cambio de arquitectura
+    # mas amplio que este requisito no pidio explicitamente. Mitigante ya
+    # existente: los JWT expiran solos a la 1h (ver JWT_ALGORITHM arriba),
+    # asi que la ventana de exposicion tras un reset tiene un techo corto.
+    logger.info("password_reset.confirmado rfc=%s", rfc_personal)
+
+    return {"mensaje": "Contraseña actualizada correctamente."}
 
 
 @app.get("/auth/usuarios", response_model=List[UsuarioListItem])

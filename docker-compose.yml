@@ -172,6 +172,14 @@ services:
       JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
       REDIS_URL: "redis://redis:6379/1"
       ADMINISTRACION_URL: "http://administracion:8002"
+      # Login rate limiting + recuperacion de contrasena (14 ago 2026) -
+      # rate limiting usa el mismo REDIS_URL de arriba (ya estaba en el
+      # stack, sin usar). SendGrid/FRONTEND_URL solo para el correo de
+      # reset - sin default debil para la API key (falla explicito si
+      # falta, no manda correos con una clave vacia en silencio).
+      SENDGRID_API_KEY: "${SENDGRID_API_KEY:?SENDGRID_API_KEY no configurada}"
+      SENDGRID_FROM_EMAIL: "${SENDGRID_FROM_EMAIL:?SENDGRID_FROM_EMAIL no configurada}"
+      FRONTEND_URL: "${FRONTEND_URL:-http://localhost:3000}"
     depends_on: [postgres_auth, redis, administracion]
     command: uvicorn main:app --host 0.0.0.0 --port 8005 --reload
 

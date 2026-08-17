@@ -123,6 +123,11 @@ class WhatsAppClient:
                     body=resp.text[:500],
                 )
                 resp.raise_for_status()
+            logger.info(
+                "whatsapp.send_success",
+                wa_id=payload.get("to"),
+                status=resp.status_code,
+            )
             return resp.json()
 
 

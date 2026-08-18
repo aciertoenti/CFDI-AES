@@ -106,7 +106,7 @@ MSG_TIMBRADO_OK = (
     "• UUID: `{uuid}`\n"
     "• Folio: {folio}\n"
     "• Total: ${total:.2f} MXN\n\n"
-    "📎 Recibirás XML y PDF en tu correo *{email}* en unos minutos.\n\n"
+    "📎 Tu XML y PDF ya están generados y guardados con este folio.\n\n"
     "¿Necesitas algo más?"
 )
 

@@ -92,7 +92,7 @@ class WhatsAppClient:
         # Paso 1: obtener URL de descarga
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
-                f"{self._media_url}/{settings.whatsapp_api_version}/{media_id}",
+                f"{self._media_url}/{media_id}",
                 headers={"Authorization": f"Bearer {settings.whatsapp_token}"},
             )
             resp.raise_for_status()

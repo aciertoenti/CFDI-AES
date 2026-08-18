@@ -440,6 +440,12 @@ class ConversationStateMachine:
             EstadoConversacion.ENTREGA,
             EstadoConversacion.ERROR,
         ):
+            if "IDENTIFICAR" in texto.upper():
+                return TransitionResult(
+                    nuevo_estado=EstadoConversacion.IDENTIFICANDO_TICKETS,
+                    respuesta=MSG_IDENTIFICAR_INICIO,
+                    datos_actualizados=DatosCapturados(),
+                )
             if any(kw in texto.upper() for kw in ("FACTURA", "CANCELAR", "NUEVA")):
                 return TransitionResult(
                     nuevo_estado=EstadoConversacion.INICIO,

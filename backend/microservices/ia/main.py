@@ -28,6 +28,7 @@
 import os
 import base64
 import json
+import logging
 import httpx
 from datetime import datetime, date
 from typing import Optional, List, AsyncGenerator
@@ -41,6 +42,8 @@ from pydantic import BaseModel
 from shared.internal_key import require_internal_key
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CFDI-AES – Microservicio IA", version="1.0.0")
 
@@ -108,7 +111,24 @@ async def call_claude(messages: list, system: str, max_tokens: int = 1024) -> st
         resp = await client.post(ANTHROPIC_API_URL, headers=anthropic_headers(), json=payload)
         resp.raise_for_status()
         data = resp.json()
-        return data["content"][0]["text"]
+
+        content = data.get("content", [])
+        for bloque in content:
+            if bloque.get("type") == "text":
+                return bloque["text"]
+
+        # Ningún bloque de tipo text encontrado - loguear el payload completo
+        # para diagnosticar (stop_reason, tipos de bloque presentes, etc.)
+        logger.error(
+            "call_claude.sin_bloque_texto stop_reason=%s tipos_bloque=%s data_completo=%s",
+            data.get("stop_reason"),
+            [b.get("type") for b in content],
+            str(data)[:1000],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Claude no devolvió contenido de texto en la respuesta",
+        )
 
 async def stream_claude(messages: list, system: str, max_tokens: int = 1024) -> AsyncGenerator[str, None]:
     payload = {

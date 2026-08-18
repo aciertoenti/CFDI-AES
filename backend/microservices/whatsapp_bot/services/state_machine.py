@@ -95,6 +95,8 @@ MSG_CONFIRMACION = (
     "• Uso CFDI: {uso_cfdi} – {desc_uso}\n"
     "• Email: {email}\n"
     "• Ticket: {ticket_id}\n\n"
+    "⚠️ _Este es un ambiente de PRUEBA. Esta factura no tiene validez fiscal "
+    "ante el SAT._\n\n"
     "¿Los datos son correctos?\n"
     "Responde *SÍ* para timbrar o *NO* para corregir."
 )
@@ -117,12 +119,12 @@ MSG_ERROR_PAC = (
 
 MSG_TIMEOUT = (
     "⏰ Tu sesión expiró por inactividad. "
-    "Escribe *FACTURA* cuando quieras retomar."
+    "Escribe *FACTURAR* cuando quieras retomar."
 )
 
 MSG_OPTIN_RECHAZADO = (
     "Entendido. Sin tu consentimiento no podemos procesar la factura. "
-    "Si cambias de opinión escribe *FACTURA*."
+    "Si cambias de opinión escribe *FACTURAR*."
 )
 
 
@@ -210,7 +212,7 @@ class ConversationStateMachine:
             return TransitionResult(
                 nuevo_estado=EstadoConversacion.INICIO,
                 respuesta=(
-                    "👋 Escribe *FACTURA* para solicitar tu factura electrónica CFDI 4.0."
+                    "👋 Escribe *FACTURAR* para solicitar tu factura electrónica CFDI 4.0."
                 ),
                 datos_actualizados=datos,
             )
@@ -411,12 +413,12 @@ class ConversationStateMachine:
             if any(kw in texto.upper() for kw in ("FACTURA", "CANCELAR", "NUEVA")):
                 return TransitionResult(
                     nuevo_estado=EstadoConversacion.INICIO,
-                    respuesta="Iniciando una nueva solicitud. Escribe *FACTURA* para comenzar.",
+                    respuesta="Iniciando una nueva solicitud. Escribe *FACTURAR* para comenzar.",
                     datos_actualizados=DatosCapturados(),
                 )
             return TransitionResult(
                 nuevo_estado=estado,
-                respuesta="Escribe *FACTURA* para solicitar una nueva factura.",
+                respuesta="Escribe *FACTURAR* para solicitar una nueva factura.",
                 datos_actualizados=datos,
             )
 
@@ -424,6 +426,6 @@ class ConversationStateMachine:
         logger.warning("state_machine.unhandled_state", estado=estado, wa_id=ctx.wa_id)
         return TransitionResult(
             nuevo_estado=EstadoConversacion.ERROR,
-            respuesta="Estado inesperado. Escribe *FACTURA* para reiniciar.",
+            respuesta="Estado inesperado. Escribe *FACTURAR* para reiniciar.",
             datos_actualizados=datos,
         )

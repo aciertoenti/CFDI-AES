@@ -122,7 +122,7 @@ async def _process_change(value: dict) -> None:
             await whatsapp_client.send_text(
                 wa_id,
                 "Solo puedo procesar mensajes de texto, imágenes o PDF. "
-                "Escribe *FACTURA* para comenzar.",
+                "Escribe *FACTURAR* para comenzar.",
             )
 
 

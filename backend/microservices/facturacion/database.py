@@ -95,6 +95,9 @@ class Factura(Base):
     # mismo negocio (o el bot, ver X-Usuario-Rfc="BOT-WHATSAPP").
     creado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     cancelado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

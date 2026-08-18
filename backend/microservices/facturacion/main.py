@@ -9,6 +9,7 @@ from decimal import Decimal
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import date, datetime
@@ -175,8 +176,10 @@ ADMINISTRACION_URL = os.environ.get("ADMINISTRACION_URL", "http://administracion
 # Clave servicio-a-servicio (#42), extraida a backend/shared/internal_key.py
 # (14 ago 2026, refactor/shared-internal-key, ver import arriba) - antes
 # vivia copiada aqui, identica a la de administracion/ia. La misma
-# INTERNAL_API_KEY compartida se reusa como cliente saliente abajo (llamada
-# a administracion), en vez de leer la variable una segunda vez por separado.
+# INTERNAL_API_KEY compartida se reusa como cliente saliente en las llamadas
+# a administracion de este archivo (obtener_datos_emisor y
+# obtener_csd_descifrado, mas abajo), en vez de leer la variable una segunda
+# vez por separado.
 
 
 async def obtener_datos_emisor(rfc: str, x_negocio_id: Optional[str] = None) -> dict:
@@ -188,7 +191,12 @@ async def obtener_datos_emisor(rfc: str, x_negocio_id: Optional[str] = None) -> 
     Gateway (derivado del JWT ya verificado del usuario que llamo a este
     endpoint) y administracion lo exige para no dejar que un Negocio consulte
     (o firme a nombre de) el emisor de otro adivinando el RFC."""
+    # Hallazgo 18 ago 2026: esta llamada nunca mando X-Internal-Key desde que
+    # GET /admin/emisores/{rfc} empezo a exigirla (tarjeta 229004043, commit
+    # 3b47ef3) - causaba 403 en administracion y por lo tanto 502 aqui en
+    # cada timbrado. Agregado ahora, mismo patron que obtener_csd_descifrado.
     headers = {"X-Negocio-Id": x_negocio_id} if x_negocio_id else {}
+    headers["X-Internal-Key"] = INTERNAL_API_KEY
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(f"{ADMINISTRACION_URL}/admin/emisores/{rfc}", headers=headers)
@@ -470,8 +478,22 @@ async def timbrar_factura(
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
     x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     negocio_id = requerir_negocio_id(x_negocio_id)
+
+    if x_idempotency_key:
+        existente = await db.execute(
+            select(Factura).where(Factura.idempotency_key == x_idempotency_key)
+        )
+        factura_existente = existente.scalar_one_or_none()
+        if factura_existente:
+            logger.info("facturacion.idempotencia.hit idempotency_key=%s", x_idempotency_key)
+            return JSONResponse(
+                status_code=200,
+                content=_factura_to_response(factura_existente).model_dump(mode="json"),
+            )
+
     signer = await get_signer_para_negocio(factura.emisor_rfc, negocio_id)
     comprobante = await construir_comprobante(factura, signer, x_negocio_id)
 
@@ -515,6 +537,7 @@ async def timbrar_factura(
             costo_timbre=COSTO_TIMBRE_CON_IVA,
             metodo_pago=factura.metodo_pago,
             creado_por_rfc=x_usuario_rfc,
+            idempotency_key=x_idempotency_key,
         ))
         await db.commit()
     except Exception:

@@ -136,6 +136,17 @@ async def stream_claude(messages: list, system: str, max_tokens: int = 1024) -> 
                         continue
 
 
+def _limpiar_json_response(raw: str) -> str:
+    """Quita bloques de markdown (```json ... ```) que Claude a veces
+    agrega pese a la instruccion de no hacerlo."""
+    texto = raw.strip()
+    if texto.startswith("```"):
+        texto = texto.split("```")[1]  # toma el contenido entre el primer par de ```
+        if texto.startswith("json"):
+            texto = texto[4:]
+    return texto.strip()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MÓDULO 1 – LECTOR DE DOCUMENTOS (PDF / imagen)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -239,13 +250,93 @@ async def extraer_documento(file: UploadFile = File(...), _: str = Depends(requi
     raw = await call_claude(messages, PDF_EXTRACTION_SYSTEM, max_tokens=2000)
 
     try:
-        data = json.loads(raw.strip())
+        data = json.loads(_limpiar_json_response(raw))
     except json.JSONDecodeError:
         raise HTTPException(status_code=422, detail=f"La IA no devolvió JSON válido: {raw[:200]}")
 
     elapsed = int((datetime.utcnow() - start).total_seconds() * 1000)
     data["procesado_en_ms"] = elapsed
     return ExtractionResult(**data)
+
+
+class ProveedorResult(BaseModel):
+    proveedor_nombre: Optional[str]
+    proveedor_rfc: Optional[str]
+    proveedor_telefono: Optional[str]
+    proveedor_whatsapp: Optional[str]
+    proveedor_sitio_web: Optional[str]
+    ticket_folio: Optional[str]
+    ticket_monto: Optional[float]
+    ticket_fecha: Optional[str]
+    confianza: dict
+    procesado_en_ms: int
+
+
+PROVEEDOR_IDENTIFICACION_SYSTEM = """
+Analiza este ticket de compra y extrae:
+- Nombre del negocio/proveedor que emitió el ticket
+- RFC del proveedor si aparece impreso
+- Teléfono o número de WhatsApp para solicitar factura (busca frases como
+  "factura tu compra", "WhatsApp:", etc.)
+- Sitio web para autofacturación si aparece
+- Folio/número de ticket o transacción
+- Monto total
+- Fecha de la compra
+Responde ÚNICAMENTE con JSON válido, sin texto adicional, sin markdown, sin backticks, con estos campos:
+proveedor_nombre, proveedor_rfc, proveedor_telefono, proveedor_whatsapp,
+proveedor_sitio_web, ticket_folio, ticket_monto, ticket_fecha, confianza
+(dict con un float 0-1 por campo que sí encontraste).
+Si no encuentras un campo, usa null.
+"""
+
+@app.post("/ia/identificar-proveedor", response_model=ProveedorResult)
+async def identificar_proveedor(file: UploadFile = File(...), _: str = Depends(require_internal_key)):
+    """
+    Recibe un PDF o imagen de un ticket de compra.
+    Identifica al proveedor y los datos del ticket para guiar al cliente
+    final a su portal/canal de autofacturación.
+    """
+    start = datetime.utcnow()
+    content = await file.read()
+    b64 = base64.standard_b64encode(content).decode("utf-8")
+
+    # Determinar media_type
+    fname = (file.filename or "").lower()
+    if fname.endswith(".pdf"):
+        media_type = "application/pdf"
+        content_block = {
+            "type": "document",
+            "source": {"type": "base64", "media_type": media_type, "data": b64},
+        }
+    else:
+        # Imagen (jpg, png, webp)
+        ext_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+        media_type = ext_map.get("." + fname.rsplit(".", 1)[-1], "image/jpeg")
+        content_block = {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": b64},
+        }
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                content_block,
+                {"type": "text", "text": "Identifica al proveedor y extrae los datos de este ticket de compra."},
+            ],
+        }
+    ]
+
+    raw = await call_claude(messages, PROVEEDOR_IDENTIFICACION_SYSTEM, max_tokens=2000)
+
+    try:
+        data = json.loads(_limpiar_json_response(raw))
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail=f"La IA no devolvió JSON válido: {raw[:200]}")
+
+    elapsed = int((datetime.utcnow() - start).total_seconds() * 1000)
+    data["procesado_en_ms"] = elapsed
+    return ProveedorResult(**data)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     facturacion_url: str = Field(
         default="http://facturacion:8001", alias="FACTURACION_URL"
     )
+    ia_url: str = Field(default="http://ia:8007", alias="IA_URL")
     internal_api_key: str = Field(alias="INTERNAL_API_KEY")
 
     # PAC Finkok — URLs separadas para timbrado y cancelaciones

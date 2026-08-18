@@ -24,10 +24,12 @@ from services.facturacion_client import (
     FacturacionError,
     facturacion_client,
 )
+from services.ia_client import identificar_proveedor as ia_identificar_proveedor
 from services.ocr_service import procesar_csf
 from services.session_store import load_session, save_session
 from services.state_machine import (
     ConversationStateMachine,
+    DatosCapturados,
     MSG_TIMBRADO_OK,
     MSG_ERROR_PAC,
     SessionContext,
@@ -148,7 +150,12 @@ async def _handle_text_message(ctx: SessionContext, texto: str, wa_id: str) -> N
 async def _handle_media_message(
     ctx: SessionContext, media_id: str, wa_id: str
 ) -> None:
-    """Procesa imagen/PDF enviado como Constancia de Situación Fiscal (OCR)."""
+    """Procesa imagen/PDF: identificacion de proveedor (modo IDENTIFICAR) o
+    Constancia de Situacion Fiscal (OCR, flujo normal de facturacion)."""
+    if ctx.estado == EstadoConversacion.IDENTIFICANDO_TICKETS:
+        await _handle_media_identificar(ctx, media_id, wa_id)
+        return
+
     await whatsapp_client.send_text(
         wa_id, "📎 Procesando tu documento... Un momento."
     )
@@ -212,6 +219,68 @@ async def _handle_media_message(
 
     await whatsapp_client.send_text(wa_id, resumen)
     await save_session(ctx)
+
+
+async def _handle_media_identificar(
+    ctx: SessionContext, media_id: str, wa_id: str
+) -> None:
+    """Procesa una foto de ticket en modo IDENTIFICAR: identifica al
+    proveedor via ia_client, sin tocar el flujo normal de captura fiscal."""
+    await whatsapp_client.send_text(
+        wa_id, "📎 Identificando ticket... Un momento."
+    )
+
+    try:
+        contenido, mime_type = await whatsapp_client.download_media(media_id)
+    except Exception as exc:
+        logger.error("webhook.media_download_error", error=str(exc))
+        await whatsapp_client.send_text(
+            wa_id, "⚠️ No pude descargar la foto. Intenta de nuevo."
+        )
+        return
+
+    try:
+        resultado = await ia_identificar_proveedor(contenido, mime_type)
+    except Exception as exc:
+        logger.error("webhook.identificar_proveedor_error", error=str(exc))
+        await whatsapp_client.send_text(
+            wa_id, "⚠️ No pude identificar el ticket. Intenta con otra foto."
+        )
+        return
+
+    ctx.datos.tickets_identificados += 1
+    n = ctx.datos.tickets_identificados
+
+    lineas = [f"✅ Ticket {n}/10 identificado:"]
+    if resultado.get("proveedor_nombre"):
+        lineas.append(f"🏪 {resultado['proveedor_nombre']}")
+    if resultado.get("proveedor_rfc"):
+        lineas.append(f"📄 RFC: {resultado['proveedor_rfc']}")
+    if resultado.get("proveedor_sitio_web"):
+        lineas.append(f"🌐 Factura en: {resultado['proveedor_sitio_web']}")
+
+    detalle = []
+    if resultado.get("ticket_folio"):
+        detalle.append(f"🧾 Folio: {resultado['ticket_folio']}")
+    if resultado.get("ticket_monto") is not None:
+        detalle.append(f"💰 ${resultado['ticket_monto']}")
+    if resultado.get("ticket_fecha"):
+        detalle.append(f"📅 {resultado['ticket_fecha']}")
+    if detalle:
+        lineas.append(" | ".join(detalle))
+
+    await whatsapp_client.send_text(wa_id, "\n".join(lineas))
+    await save_session(ctx)
+
+    if n >= 10:
+        ctx.estado = EstadoConversacion.INICIO
+        ctx.datos = DatosCapturados()
+        await whatsapp_client.send_text(
+            wa_id,
+            "🔟 Llegaste al límite de 10 tickets por sesión. "
+            "Escribe *FACTURAR* o *IDENTIFICAR* de nuevo cuando quieras.",
+        )
+        await save_session(ctx)
 
 
 def _siguiente_estado_post_csf(ctx: SessionContext) -> EstadoConversacion:

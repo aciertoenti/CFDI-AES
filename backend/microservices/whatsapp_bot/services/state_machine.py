@@ -127,6 +127,12 @@ MSG_OPTIN_RECHAZADO = (
     "Si cambias de opinión escribe *FACTURAR*."
 )
 
+MSG_IDENTIFICAR_INICIO = (
+    "📋 Modo identificación de tickets. Mándame hasta 10 fotos de tickets "
+    "(uno por uno) y te digo quién los emitió y cómo facturarlos.\n"
+    "Escribe *LISTO* cuando termines."
+)
+
 
 # ─── Datos de sesión en memoria (Redis los persiste) ─────────────────────────
 
@@ -140,6 +146,7 @@ class DatosCapturados:
     email: Optional[str] = None
     ticket_id: Optional[str] = None
     csf_procesada: bool = False
+    tickets_identificados: int = 0
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -201,6 +208,12 @@ class ConversationStateMachine:
 
         # ── INICIO ────────────────────────────────────────────────────────────
         if estado == EstadoConversacion.INICIO:
+            if "IDENTIFICAR" in texto.upper():
+                return TransitionResult(
+                    nuevo_estado=EstadoConversacion.IDENTIFICANDO_TICKETS,
+                    respuesta=MSG_IDENTIFICAR_INICIO,
+                    datos_actualizados=datos,
+                )
             if any(kw in texto.upper() for kw in ("FACTURA", "HOLA", "INICIO", "START")):
                 return TransitionResult(
                     nuevo_estado=EstadoConversacion.ESPERANDO_OPTIN,
@@ -214,6 +227,23 @@ class ConversationStateMachine:
                 respuesta=(
                     "👋 Escribe *FACTURAR* para solicitar tu factura electrónica CFDI 4.0."
                 ),
+                datos_actualizados=datos,
+            )
+
+        # ── IDENTIFICANDO_TICKETS ────────────────────────────────────────────
+        # Las fotos de ticket se procesan en webhook.py (fuera de esta maquina
+        # de texto) - aqui solo se maneja la palabra clave LISTO para salir,
+        # y cualquier otro texto mientras el usuario sigue en este modo.
+        if estado == EstadoConversacion.IDENTIFICANDO_TICKETS:
+            if texto.upper() == "LISTO":
+                return TransitionResult(
+                    nuevo_estado=EstadoConversacion.INICIO,
+                    respuesta="Listo. Escribe *FACTURAR* o *IDENTIFICAR* de nuevo cuando quieras.",
+                    datos_actualizados=DatosCapturados(),
+                )
+            return TransitionResult(
+                nuevo_estado=EstadoConversacion.IDENTIFICANDO_TICKETS,
+                respuesta="📎 Mándame la foto del ticket, o escribe *LISTO* cuando termines.",
                 datos_actualizados=datos,
             )
 

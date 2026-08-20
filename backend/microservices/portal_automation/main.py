@@ -301,11 +301,10 @@ async def facturar_oxxo(solicitud: SolicitudFacturaOxxo):
         # height:24 - dimensiones reales, es el area de texto visible del
         # dropdown donde PrimeFaces ata su listener de click).
         try:
-            await page.click("#form\\:selectOneMenuRegFis_label", timeout=10000)
+            await page.click("#form\\:selectOneMenuRegFis_label", timeout=5000)
             await page.wait_for_selector(
-                "#form\\:selectOneMenuRegFis_panel", state="visible", timeout=5000
+                "#form\\:selectOneMenuRegFis_panel", state="visible", timeout=3000
             )
-            await page.click(f'#form\\:selectOneMenuRegFis_panel li[data-label="{regimen_texto}"]')
         except Exception as exc:
             await page.screenshot(path="/tmp/oxxo_debug_regfis_fallido.png", full_page=True)
             html_debug = await page.content()

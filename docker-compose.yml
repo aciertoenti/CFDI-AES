@@ -163,6 +163,15 @@ services:
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
     command: uvicorn main:app --host 0.0.0.0 --port 8007 --reload
 
+  portal_automation:
+    build:
+      context: ./backend
+      dockerfile: microservices/portal_automation/Dockerfile
+    ports: ["8008:8008"]
+    environment:
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
+    command: uvicorn main:app --host 0.0.0.0 --port 8008 --reload
+
   auth:
     # Mismo patron ya probado con administracion (12 ago 2026,
     # refactor/shared-negocio-id) - contexto ampliado a ./backend para poder

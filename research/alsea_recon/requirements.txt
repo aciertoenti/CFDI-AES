@@ -1,0 +1,6 @@
+# Este script reutiliza el entorno de portal_automation (Playwright +
+# Chromium ya instalados en esa imagen Docker) - se ejecuta via
+# `docker exec` dentro del contenedor cfdi-aes-portal_automation-1, no
+# se instala un entorno nuevo. Este archivo documenta la sola dependencia
+# real por si se decide correr el script fuera de ese contenedor algun dia.
+playwright

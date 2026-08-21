@@ -1,9 +1,8 @@
 import { useRef, useState } from "react";
 import { useToast } from "../../shared/layout/ToastProvider";
 import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
-import { Btn, Card } from "../../shared/components/atoms";
+import { Btn, Card, SectionTitle, SectionSub } from "../../shared/components/atoms";
 import { C, detalleError } from "../../shared/utils/format";
-import { SectionTitle, SectionSub } from "./shared";
 
 export default function AltaEmisorForm({ onCreado, onCancelar }) {
   const toast = useToast();

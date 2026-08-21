@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
 
 // ═══════════════════════════════════════════════════════════════════════════════

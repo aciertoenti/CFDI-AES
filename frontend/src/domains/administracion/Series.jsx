@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
-import { Card } from "../../shared/components/atoms";
+import { Card, SectionTitle, SectionSub } from "../../shared/components/atoms";
 import { C } from "../../shared/utils/format";
 import { Placeholder } from "../../shared/layout/AppShell";
-import { SectionTitle, SectionSub } from "./shared";
 
 export default function Series() {
   const [series,setSeries]=useState([]), [loading,setLoading]=useState(true), [error,setError]=useState(null);

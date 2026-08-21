@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import useEmisores from "../../shared/hooks/useEmisores";
-import { Btn, Card, TwoCol } from "../../shared/components/atoms";
+import { Btn, Card, TwoCol, SectionTitle, SectionSub } from "../../shared/components/atoms";
 import { C } from "../../shared/utils/format";
 import { Placeholder } from "../../shared/layout/AppShell";
 import AltaEmisorForm from "./AltaEmisorForm";
-import { SectionTitle, SectionSub } from "./shared";
 
 export default function Emisores() {
   const {emisores,loading,error,recargar,emisorActivoRfc,setEmisorActivoRfc}=useEmisores();

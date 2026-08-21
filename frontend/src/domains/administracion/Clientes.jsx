@@ -1,10 +1,9 @@
 import { useToast } from "../../shared/layout/ToastProvider";
 import useClientes from "../../shared/hooks/useClientes";
 import { API_BASE } from "../../shared/hooks/fetchAuth";
-import { Btn, Card, TwoCol } from "../../shared/components/atoms";
+import { Btn, Card, TwoCol, SectionTitle } from "../../shared/components/atoms";
 import { C, fmt } from "../../shared/utils/format";
 import { Placeholder } from "../../shared/layout/AppShell";
-import { SectionTitle } from "./shared";
 
 export default function Clientes() {
   const toast = useToast();

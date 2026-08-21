@@ -131,18 +131,30 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 
   addenda_aes:
-    build: ./backend/microservices/addenda_aes
+    # Contexto ampliado a ./backend (20 ago 2026, seguridad X-Internal-Key)
+    # para poder COPY backend/shared/ dentro de la imagen - mismo patron ya
+    # probado en facturacion/administracion/auth_usuarios/ia.
+    build:
+      context: ./backend
+      dockerfile: microservices/addenda_aes/Dockerfile
     ports: ["8003:8003"]
     environment:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_ADMIN:-cfdi}:${POSTGRES_PASSWORD_ADMIN:-secret_admin}@postgres_admin/${POSTGRES_DB_ADMIN:-cfdi_admin}"
       MINIO_URL: "http://minio:9000"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
     command: uvicorn main:app --host 0.0.0.0 --port 8003 --reload
 
   reportes:
-    build: ./backend/microservices/reportes
+    # Contexto ampliado a ./backend (20 ago 2026, seguridad X-Internal-Key)
+    # para poder COPY backend/shared/ dentro de la imagen - mismo patron ya
+    # probado en facturacion/administracion/auth_usuarios/ia.
+    build:
+      context: ./backend
+      dockerfile: microservices/reportes/Dockerfile
     ports: ["8004:8004"]
     environment:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_FACTURAS:-cfdi}:${POSTGRES_PASSWORD_FACTURAS:-secret_facturas}@postgres_facturas/${POSTGRES_DB_FACTURAS:-cfdi_facturas}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
     command: uvicorn main:app --host 0.0.0.0 --port 8004 --reload
 
   ia:

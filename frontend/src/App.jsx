@@ -427,7 +427,7 @@ function useFiscalChat() {
   const [messages,  setMessages]  = useState([]);
   const [streaming, setStreaming] = useState(false);
   const abortRef = useRef(null);
-  const send = useCallback(async (text, ctx = {}) => {
+  const send = useCallback(async (text, ctx = {}, modo = "cuenta") => {
     const history = [...messages, { role:"user", content:text }];
     setMessages([...history, { role:"assistant", content:"" }]);
     setStreaming(true);
@@ -438,10 +438,17 @@ function useFiscalChat() {
       // fetchAuth() sigue sirviendo tal cual: solo agrega el header
       // Authorization, la respuesta que devuelve es el mismo objeto Response
       // que fetch() normal, asi que res.body.getReader() de abajo no cambia.
+      // modo "general" (20 ago 2026, tarjeta 2mSpU) - contexto_cuenta ni
+      // siquiera se incluye en el body, no solo se manda vacio, para que
+      // quede honesto en Network tab que no se envio nada de la cuenta.
       const res = await fetchAuth(`${API_BASE}/ia/chat/stream`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         signal:abortRef.current.signal,
-        body: JSON.stringify({ messages:history, contexto_cuenta:ctx }),
+        body: JSON.stringify({
+          messages:history,
+          modo,
+          ...(modo === "cuenta" ? { contexto_cuenta: ctx } : {}),
+        }),
       });
       const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
       while (true) {
@@ -1102,9 +1109,14 @@ function ChatFiscal(){
   const {emisores,emisorActivoRfc}=useEmisores();
   const emisorActual=emisores.find(e=>e.rfc===emisorActivoRfc);
   const [input,setInput]=useState("");
+  // Modo del chat (20 ago 2026, tarjeta 2mSpU) - "cuenta" es el default para
+  // no cambiar el comportamiento existente de nadie que ya use el chat.
+  // Decorativo con useEmisores (header de abajo) no se toca: es independiente
+  // del modo, solo muestra el RFC conectado.
+  const [modo,setModo]=useState("cuenta");
   const bottomRef=useRef();
   useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"});},[messages]);
-  const submit=()=>{if(!input.trim()||streaming)return;send(input.trim(),CUENTA_CTX);setInput("");};
+  const submit=()=>{if(!input.trim()||streaming)return;send(input.trim(),CUENTA_CTX,modo);setInput("");};
   return (
     <div style={{display:"flex",flexDirection:"column",height:isMobile?"calc(100dvh - 170px)":"calc(100vh - 155px)",gap:10}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
@@ -1114,6 +1126,15 @@ function ChatFiscal(){
           <Btn variant="secondary" onClick={reset} style={{fontSize:12,padding:"6px 12px"}}>Nueva conversación</Btn>
         </div>
       </div>
+      <div style={{display:"flex",gap:6}}>
+        {[["cuenta","Mi cuenta"],["general","Consulta general"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setModo(id)}
+            style={{fontSize:11,padding:"5px 10px",borderRadius:12,border:`1px solid ${modo===id?C.accent:C.border}`,
+              background:modo===id?C.accentSoft:"transparent",color:modo===id?C.accentBorder:C.textSec,cursor:"pointer",whiteSpace:"nowrap"}}>
+            {lbl}
+          </button>
+        ))}
+      </div>
       <Card style={{flex:1,overflowY:"auto",padding:14,display:"flex",flexDirection:"column",gap:10,minHeight:0}}>
         {messages.length===0&&(
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",gap:14,padding:"0 10px"}}>
@@ -1121,7 +1142,7 @@ function ChatFiscal(){
             <div style={{fontSize:14,fontWeight:600,color:C.text,textAlign:"center"}}>¿En qué te ayudo hoy?</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:8,justifyContent:"center"}}>
               {SUGERENCIAS.map(s=>(
-                <button key={s} onClick={()=>send(s,CUENTA_CTX)}
+                <button key={s} onClick={()=>send(s,CUENTA_CTX,modo)}
                   style={{fontSize:12,padding:"7px 12px",borderRadius:20,border:`1px solid ${C.border}`,background:C.surface,color:C.textSec,cursor:"pointer",textAlign:"left"}}>
                   {s}
                 </button>

@@ -31,7 +31,7 @@ import json
 import logging
 import httpx
 from datetime import datetime, date
-from typing import Optional, List, AsyncGenerator
+from typing import Literal, Optional, List, AsyncGenerator
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Depends
@@ -43,6 +43,7 @@ from shared.internal_key import require_internal_key
 
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CFDI-AES – Microservicio IA", version="1.0.0")
@@ -378,6 +379,25 @@ dilo honestamente y sugiere dónde obtenerla.
 Formato de respuesta: texto plano con saltos de línea naturales. Máximo 3 párrafos.
 """
 
+# Modo "consulta general" (tarjeta PVTI_lAHOBYC0Os4BfCxZzg2mSpU, 20 ago 2026) -
+# agente de conocimiento fiscal general (retenciones, tipos de CFDI, ISR,
+# etc.), a proposito SIN ninguna afirmacion de acceso a datos de cuenta -
+# util para quien apenas esta evaluando el sistema, antes de operar con
+# datos reales. No usa contexto_cuenta aunque el cliente lo mande.
+CHAT_FISCAL_GENERAL_SYSTEM = """
+Eres el asistente de conocimiento fiscal de CFDI-AES. Respondes preguntas
+generales sobre fiscalidad mexicana: tipos de CFDI, retenciones, como
+funciona el ISR, regimenes fiscales, obligaciones ante el SAT, y temas
+similares. Respondes en español, de forma clara y directa.
+
+NO tienes acceso a facturas, clientes, ni movimientos bancarios de ninguna
+cuenta especifica - nunca afirmes tener esa informacion ni inventes cifras
+de una cuenta. Si la pregunta requiere datos de una cuenta en particular,
+indica que ese tipo de consulta requiere el modo "Mi cuenta".
+
+Formato de respuesta: texto plano con saltos de línea naturales. Máximo 3 párrafos.
+"""
+
 class ChatMessage(BaseModel):
     role: str  # "user" o "assistant"
     content: str
@@ -385,17 +405,26 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     contexto_cuenta: Optional[dict] = None  # Datos en tiempo real de la cuenta
+    modo: Literal["cuenta", "general"] = "cuenta"  # default preserva el comportamiento actual
 
 class ChatResponse(BaseModel):
     respuesta: str
     acciones_sugeridas: List[str]
 
+def _construir_system_prompt(req: ChatRequest) -> str:
+    """Elige el prompt de sistema segun el modo - factorizado para que
+    /ia/chat y /ia/chat/stream nunca puedan divergir en este criterio."""
+    if req.modo == "general":
+        return CHAT_FISCAL_GENERAL_SYSTEM
+    ctx = req.contexto_cuenta or {}
+    context_str = json.dumps(ctx, ensure_ascii=False, indent=2) if ctx else "No disponible"
+    return CHAT_FISCAL_SYSTEM + f"\n\nCONTEXTO DE LA CUENTA EN TIEMPO REAL:\n{context_str}"
+
 @app.post("/ia/chat", response_model=ChatResponse)
 async def chat_fiscal(req: ChatRequest, _: str = Depends(require_internal_key)):
     """Chat fiscal no-streaming. Para UI simple o integraciones."""
-    ctx = req.contexto_cuenta or {}
-    context_str = json.dumps(ctx, ensure_ascii=False, indent=2) if ctx else "No disponible"
-    system = CHAT_FISCAL_SYSTEM + f"\n\nCONTEXTO DE LA CUENTA EN TIEMPO REAL:\n{context_str}"
+    logger.info("chat_fiscal.modo=%s", req.modo)
+    system = _construir_system_prompt(req)
 
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
     respuesta = await call_claude(messages, system, max_tokens=800)
@@ -416,9 +445,8 @@ async def chat_fiscal_stream(req: ChatRequest, _: str = Depends(require_internal
     Chat fiscal con streaming Server-Sent Events.
     El frontend recibe tokens en tiempo real.
     """
-    ctx = req.contexto_cuenta or {}
-    context_str = json.dumps(ctx, ensure_ascii=False, indent=2) if ctx else "No disponible"
-    system = CHAT_FISCAL_SYSTEM + f"\n\nCONTEXTO DE LA CUENTA EN TIEMPO REAL:\n{context_str}"
+    logger.info("chat_fiscal_stream.modo=%s", req.modo)
+    system = _construir_system_prompt(req)
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
 
     async def event_generator():

@@ -1,67 +1,20 @@
 // ─── App.jsx ── CFDI-AES · Responsive + Toast + Table fix ─────────────────────
-import { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import logoAcierto from "./assets/logo-acierto.png";
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BREAKPOINT
-// ═══════════════════════════════════════════════════════════════════════════════
-function useBreakpoint() {
-  const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 1200);
-  useEffect(() => {
-    const h = () => setW(window.innerWidth);
-    window.addEventListener("resize", h);
-    return () => window.removeEventListener("resize", h);
-  }, []);
-  return { w, isMobile: w < 768, isTablet: w >= 768 && w < 1024, isDesktop: w >= 1024 };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TOAST SYSTEM — reemplaza todos los alert()
-// ═══════════════════════════════════════════════════════════════════════════════
-const ToastCtx = createContext(null);
-
-function ToastProvider({ children }) {
-  const [toasts, setToasts] = useState([]);
-  const add = useCallback((msg, type = "info", duration = 3500) => {
-    const id = Date.now() + Math.random();
-    setToasts(p => [...p, { id, msg, type }]);
-    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), duration);
-  }, []);
-  const remove = id => setToasts(p => p.filter(t => t.id !== id));
-
-  const typeStyle = {
-    info:    { bg: "#0A2540", color: "#E8F4FF",  icon: "ℹ" },
-    success: { bg: "#0A4A35", color: "#E6FAF5",  icon: "✓" },
-    warning: { bg: "#4A2800", color: "#FFF0D6",  icon: "⚠" },
-    error:   { bg: "#4A0A0A", color: "#FFE8E8",  icon: "✕" },
-    api:     { bg: "#1A1A2E", color: "#C8D8FF",  icon: "⚡" },
-  };
-
-  return (
-    <ToastCtx.Provider value={add}>
-      {children}
-      {/* Toast container */}
-      <div style={{ position:"fixed", bottom:80, right:16, zIndex:999, display:"flex", flexDirection:"column", gap:8, maxWidth:340, pointerEvents:"none" }}>
-        {toasts.map(t => {
-          const s = typeStyle[t.type] || typeStyle.info;
-          return (
-            <div key={t.id} onClick={() => remove(t.id)}
-              style={{ background:s.bg, color:s.color, borderRadius:10, padding:"10px 14px", fontSize:13, lineHeight:1.45,
-                display:"flex", alignItems:"flex-start", gap:10, pointerEvents:"all", cursor:"pointer",
-                boxShadow:"0 4px 20px rgba(0,0,0,.35)", animation:"toastIn .2s ease",
-                fontFamily:"'Inter',system-ui,sans-serif", wordBreak:"break-word" }}>
-              <span style={{ flexShrink:0, fontSize:15, marginTop:1 }}>{s.icon}</span>
-              <span>{t.msg}</span>
-            </div>
-          );
-        })}
-      </div>
-      <style>{`@keyframes toastIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}`}</style>
-    </ToastCtx.Provider>
-  );
-}
-
-const useToast = () => useContext(ToastCtx);
+import useAuth from "./shared/hooks/useAuth";
+import useBreakpoint from "./shared/hooks/useBreakpoint";
+import { API_BASE, fetchAuth } from "./shared/hooks/fetchAuth";
+import useEmisores, { EmisoresProvider } from "./shared/hooks/useEmisores";
+import useClientes from "./shared/hooks/useClientes";
+import useResumenEjecutivo from "./shared/hooks/useResumenEjecutivo";
+import { useToast, ToastProvider } from "./shared/layout/ToastProvider";
+import AppShell, { Placeholder } from "./shared/layout/AppShell";
+import { Badge, Card, Btn, TwoCol, KPI, KPIGrid } from "./shared/components/atoms";
+import { C, fmt, detalleError } from "./shared/utils/format";
+import Login from "./domains/auth/Login";
+import OlvideContrasena from "./domains/auth/OlvideContrasena";
+import ResetPassword from "./domains/auth/ResetPassword";
+import CrearCuenta from "./domains/auth/CrearCuenta";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HOOKS IA
@@ -70,339 +23,12 @@ const useToast = () => useContext(ToastCtx);
 // rewiring de IA) - antes usaban IA_BASE directo al microservicio, sin JWT
 // (ver #48/#65). useFiscalChat usa una ruta dedicada del Gateway
 // (/ia/chat/stream) en vez del proxy generico, por el streaming SSE.
-const API_BASE = "http://localhost:8000";
 // FACTURACION_BASE/ADMINISTRACION_BASE/AUTH_BASE ya no se usan para fetch
 // real (ver #48) - se dejan solo porque siguen apareciendo en textos de
 // error (ej. "No se pudo conectar con administracion (${ADMINISTRACION_BASE})").
 const FACTURACION_BASE = "http://localhost:8001";
 const ADMINISTRACION_BASE = "http://localhost:8002";
 const AUTH_BASE = "http://localhost:8005";
-
-// ─── Autenticacion (#48) ────────────────────────────────────────────────────
-const TOKEN_KEY = "cfdi_aes_token";
-const getToken = () => sessionStorage.getItem(TOKEN_KEY);
-const setStoredToken = t => t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY);
-
-// Solo lectura de claims (nombre/rfc_emisor/etc) para mostrar identidad en
-// UI - la firma ya fue verificada por el backend en cada request via
-// fetchAuth/Authorization header, esto nunca se usa para autenticar nada.
-function decodeJwtClaims(token) {
-  if (!token) return null;
-  try {
-    const [, payloadB64] = token.split(".");
-    return JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/")));
-  } catch {
-    return null;
-  }
-}
-
-async function fetchAuth(url, options = {}) {
-  const token = getToken();
-  const headers = { ...(options.headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
-  const res = await fetch(url, { ...options, headers });
-  if (res.status === 401 || res.status === 403) {
-    setStoredToken(null);
-    window.dispatchEvent(new Event("cfdi-auth-expired"));
-  }
-  return res;
-}
-
-function useAuth() {
-  const [token, setToken] = useState(getToken);
-  useEffect(() => {
-    const onExpired = () => setToken(null);
-    window.addEventListener("cfdi-auth-expired", onExpired);
-    return () => window.removeEventListener("cfdi-auth-expired", onExpired);
-  }, []);
-  const login = useCallback(async (identificador, password) => {
-    try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        // identificador acepta RFC personal O usuario indistintamente (ver
-        // auth_usuarios: LoginRequest.identificador) - el backend decide
-        // cual es segun la longitud/formato, el frontend no distingue.
-        body: JSON.stringify({ identificador, password }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { ok: false, error: detalleError(data, res) };
-      setStoredToken(data.access_token);
-      setToken(data.access_token);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  }, []);
-  const registro = useCallback(async (nombreNegocio, email, rfcPersonal, password, nombre, usuario) => {
-    try {
-      const res = await fetch(`${API_BASE}/auth/registro`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, rfc_personal: rfcPersonal, password, nombre, usuario }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { ok: false, error: detalleError(data, res) };
-      // POST /auth/registro (#15) crea el Negocio + primer usuario admin pero
-      // no regresa token - se reusa login() con las mismas credenciales para
-      // entrar directo tras crear la cuenta.
-      return login(rfcPersonal, password);
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  }, [login]);
-  const logout = useCallback(() => { setStoredToken(null); setToken(null); }, []);
-  // Recuperacion de contrasena (14 ago 2026) - ambas publicas, mismo patron
-  // que login/registro arriba (sin fetchAuth, no hay token todavia). La
-  // respuesta de solicitarReset es deliberadamente identica exista o no la
-  // cuenta (ver backend) - este hook solo la pasa tal cual, no interpreta nada.
-  const solicitarReset = useCallback(async (email) => {
-    try {
-      const res = await fetch(`${API_BASE}/auth/password-reset/request`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { ok: false, error: detalleError(data, res) };
-      return { ok: true, mensaje: data.mensaje };
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  }, []);
-  const confirmarReset = useCallback(async (token, nuevaPassword) => {
-    try {
-      const res = await fetch(`${API_BASE}/auth/password-reset/confirm`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, nueva_password: nuevaPassword }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { ok: false, error: detalleError(data, res) };
-      return { ok: true, mensaje: data.mensaje };
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  }, []);
-  // Identidad del principal autenticado (#1vWBI) - antes el header solo
-  // mostraba datos del Emisor conectado (useEmisores), nunca quien inicio
-  // sesion. usuarioActual se recalcula solo cuando cambia el token, no en
-  // cada render.
-  const usuarioActual = useMemo(() => decodeJwtClaims(token), [token]);
-  return { token, isAuthenticated: !!token, usuarioActual, login, registro, logout, solicitarReset, confirmarReset };
-}
-
-function Login({ onLogin, onIrARegistro, onIrAOlvide }) {
-  const [identificador, setIdentificador] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  const submit = async e => {
-    e.preventDefault();
-    setLoading(true); setError(null);
-    const r = await onLogin(identificador, password);
-    setLoading(false);
-    if (!r.ok) setError(r.error);
-  };
-
-  return (
-    <div style={{minHeight:"100dvh",display:"flex",alignItems:"center",justifyContent:"center",background:C.surface,padding:20,boxSizing:"border-box"}}>
-      <form onSubmit={submit} style={{background:C.card,padding:"28px 22px",borderRadius:12,width:340,maxWidth:"100%",boxShadow:"0 4px 24px rgba(0,0,0,.08)",border:`1px solid ${C.border}`,display:"flex",flexDirection:"column",alignItems:"center",boxSizing:"border-box"}}>
-        <img src={logoAcierto} alt="Acierto" style={{width:120,maxWidth:"60%",borderRadius:8,display:"block",marginBottom:14}}/>
-        <div style={{fontSize:14,color:C.textSec,marginBottom:22,textAlign:"center"}}>Inicia sesión para continuar</div>
-        <div style={{marginBottom:14,width:"100%"}}>
-          <label htmlFor="login-rfc" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>RFC o USUARIO</label>
-          {/* fontSize:16 en los inputs a proposito - por debajo de eso, Safari
-              en iOS hace zoom automatico al enfocar el campo. Acepta RFC
-              (13 caracteres) O el usuario alterno (6-10) - mismo campo,
-              backend decide cual es (ver useAuth.login). Cuentas viejas sin
-              usuario siguen entrando igual con su RFC, sin friccion. */}
-          <input id="login-rfc" type="text" required autoFocus maxLength={13} value={identificador}
-            onChange={e=>setIdentificador(e.target.value.toUpperCase())} placeholder="RFC o USUARIO"
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-        </div>
-        <div style={{marginBottom:10,width:"100%"}}>
-          <label htmlFor="login-password" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Contraseña</label>
-          <input id="login-password" type="password" required value={password} onChange={e=>setPassword(e.target.value)}
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-        </div>
-        <button type="button" onClick={onIrAOlvide} style={{alignSelf:"flex-end",marginBottom:16,background:"none",border:"none",color:C.textSec,fontSize:12,cursor:"pointer",textDecoration:"underline"}}>
-          ¿Olvidaste tu contraseña?
-        </button>
-        {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6,width:"100%",boxSizing:"border-box"}}>⚠ {error}</div>}
-        <Btn style={{width:"100%",padding:"12px 18px"}} disabled={loading}>{loading ? "Ingresando…" : "Iniciar sesión"}</Btn>
-        <button type="button" onClick={onIrARegistro} style={{marginTop:14,background:"none",border:"none",color:C.textSec,fontSize:12,cursor:"pointer",textDecoration:"underline"}}>
-          ¿No tienes cuenta? Crear una
-        </button>
-      </form>
-    </div>
-  );
-}
-
-function OlvideContrasena({ onSolicitar, onIrALogin }) {
-  const [email, setEmail] = useState("");
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [enviado, setEnviado] = useState(false);
-
-  const submit = async e => {
-    e.preventDefault();
-    setLoading(true); setError(null);
-    const r = await onSolicitar(email);
-    setLoading(false);
-    // Mensaje generico SIEMPRE que la llamada responda ok, sin importar si
-    // el correo existe o no (el backend ya garantiza la misma respuesta en
-    // ambos casos - este componente no distingue nada, solo la muestra).
-    if (r.ok) setEnviado(true); else setError(r.error);
-  };
-
-  return (
-    <div style={{minHeight:"100dvh",display:"flex",alignItems:"center",justifyContent:"center",background:C.surface,padding:20,boxSizing:"border-box"}}>
-      <div style={{background:C.card,padding:"28px 22px",borderRadius:12,width:340,maxWidth:"100%",boxShadow:"0 4px 24px rgba(0,0,0,.08)",border:`1px solid ${C.border}`,display:"flex",flexDirection:"column",alignItems:"center",boxSizing:"border-box"}}>
-        <img src={logoAcierto} alt="Acierto" style={{width:120,maxWidth:"60%",borderRadius:8,display:"block",marginBottom:14}}/>
-        {enviado ? (
-          <>
-            <div style={{fontSize:14,color:C.text,marginBottom:22,textAlign:"center",lineHeight:1.5}}>
-              Si <strong>{email}</strong> está registrado, te enviamos un enlace para recuperar tu contraseña. Revisa tu bandeja de entrada (y spam).
-            </div>
-            <button type="button" onClick={onIrALogin} style={{background:"none",border:"none",color:C.textSec,fontSize:12,cursor:"pointer",textDecoration:"underline"}}>
-              Volver a iniciar sesión
-            </button>
-          </>
-        ) : (
-          <form onSubmit={submit} style={{width:"100%",display:"flex",flexDirection:"column",alignItems:"center"}}>
-            <div style={{fontSize:14,color:C.textSec,marginBottom:22,textAlign:"center"}}>¿Olvidaste tu contraseña? Escribe tu correo y te mandamos un enlace para recuperarla.</div>
-            <div style={{marginBottom:20,width:"100%"}}>
-              <label htmlFor="olvide-email" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Correo electrónico</label>
-              <input id="olvide-email" type="email" required autoFocus value={email} onChange={e=>setEmail(e.target.value)}
-                style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-            </div>
-            {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6,width:"100%",boxSizing:"border-box"}}>⚠ {error}</div>}
-            <Btn style={{width:"100%",padding:"12px 18px"}} disabled={loading}>{loading ? "Enviando…" : "Enviar enlace"}</Btn>
-            <button type="button" onClick={onIrALogin} style={{marginTop:14,background:"none",border:"none",color:C.textSec,fontSize:12,cursor:"pointer",textDecoration:"underline"}}>
-              Volver a iniciar sesión
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ResetPassword({ token, onConfirmar, onIrALogin }) {
-  const [password, setPassword] = useState("");
-  const [confirmacion, setConfirmacion] = useState("");
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [exito, setExito] = useState(false);
-
-  const submit = async e => {
-    e.preventDefault();
-    setError(null);
-    if (password !== confirmacion) { setError("Las contraseñas no coinciden"); return; }
-    setLoading(true);
-    const r = await onConfirmar(token, password);
-    setLoading(false);
-    if (r.ok) setExito(true); else setError(r.error);
-  };
-
-  return (
-    <div style={{minHeight:"100dvh",display:"flex",alignItems:"center",justifyContent:"center",background:C.surface,padding:20,boxSizing:"border-box"}}>
-      <div style={{background:C.card,padding:"28px 22px",borderRadius:12,width:340,maxWidth:"100%",boxShadow:"0 4px 24px rgba(0,0,0,.08)",border:`1px solid ${C.border}`,display:"flex",flexDirection:"column",alignItems:"center",boxSizing:"border-box"}}>
-        <img src={logoAcierto} alt="Acierto" style={{width:120,maxWidth:"60%",borderRadius:8,display:"block",marginBottom:14}}/>
-        {exito ? (
-          <>
-            <div style={{fontSize:14,color:C.text,marginBottom:22,textAlign:"center"}}>Tu contraseña se actualizó correctamente.</div>
-            <Btn style={{width:"100%",padding:"12px 18px"}} onClick={onIrALogin}>Iniciar sesión</Btn>
-          </>
-        ) : (
-          <form onSubmit={submit} style={{width:"100%",display:"flex",flexDirection:"column",alignItems:"center"}}>
-            <div style={{fontSize:14,color:C.textSec,marginBottom:22,textAlign:"center"}}>Escribe tu nueva contraseña</div>
-            <div style={{marginBottom:14,width:"100%"}}>
-              <label htmlFor="reset-password" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Nueva contraseña</label>
-              <input id="reset-password" type="password" required minLength={8} autoFocus value={password} onChange={e=>setPassword(e.target.value)}
-                style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-            </div>
-            <div style={{marginBottom:20,width:"100%"}}>
-              <label htmlFor="reset-password-confirm" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Confirmar contraseña</label>
-              <input id="reset-password-confirm" type="password" required minLength={8} value={confirmacion} onChange={e=>setConfirmacion(e.target.value)}
-                style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-            </div>
-            {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6,width:"100%",boxSizing:"border-box"}}>⚠ {error}</div>}
-            <Btn style={{width:"100%",padding:"12px 18px"}} disabled={loading}>{loading ? "Guardando…" : "Cambiar contraseña"}</Btn>
-            <button type="button" onClick={onIrALogin} style={{marginTop:14,background:"none",border:"none",color:C.textSec,fontSize:12,cursor:"pointer",textDecoration:"underline"}}>
-              Volver a iniciar sesión
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CrearCuenta({ onRegistro, onIrALogin }) {
-  const [nombreNegocio, setNombreNegocio] = useState("");
-  const [nombre, setNombre] = useState("");
-  const [email, setEmail] = useState("");
-  const [rfcPersonal, setRfcPersonal] = useState("");
-  const [usuario, setUsuario] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  const submit = async e => {
-    e.preventDefault();
-    setLoading(true); setError(null);
-    const r = await onRegistro(nombreNegocio, email, rfcPersonal, password, nombre, usuario);
-    setLoading(false);
-    if (!r.ok) setError(r.error);
-  };
-
-  return (
-    <div style={{minHeight:"100dvh",display:"flex",alignItems:"center",justifyContent:"center",background:C.surface,padding:20,boxSizing:"border-box"}}>
-      <form onSubmit={submit} style={{background:C.card,padding:"28px 22px",borderRadius:12,width:340,maxWidth:"100%",boxShadow:"0 4px 24px rgba(0,0,0,.08)",border:`1px solid ${C.border}`,display:"flex",flexDirection:"column",alignItems:"center",boxSizing:"border-box"}}>
-        <img src={logoAcierto} alt="Acierto" style={{width:120,maxWidth:"60%",borderRadius:8,display:"block",marginBottom:14}}/>
-        <div style={{fontSize:14,color:C.textSec,marginBottom:22,textAlign:"center"}}>Crea tu cuenta</div>
-        <div style={{marginBottom:14,width:"100%"}}>
-          <label htmlFor="reg-negocio" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Nombre del negocio</label>
-          <input id="reg-negocio" type="text" required autoFocus value={nombreNegocio} onChange={e=>setNombreNegocio(e.target.value)}
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-        </div>
-        <div style={{marginBottom:14,width:"100%"}}>
-          <label htmlFor="reg-nombre" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Tu nombre</label>
-          <input id="reg-nombre" type="text" required value={nombre} onChange={e=>setNombre(e.target.value)}
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-        </div>
-        <div style={{marginBottom:14,width:"100%"}}>
-          <label htmlFor="reg-email" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Email</label>
-          <input id="reg-email" type="email" required value={email} onChange={e=>setEmail(e.target.value)}
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-        </div>
-        <div style={{marginBottom:14,width:"100%"}}>
-          <label htmlFor="reg-rfc" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>RFC</label>
-          <input id="reg-rfc" type="text" required maxLength={13} value={rfcPersonal}
-            onChange={e=>setRfcPersonal(e.target.value.toUpperCase())} placeholder="AAAA000101AAA"
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-        </div>
-        <div style={{marginBottom:14,width:"100%"}}>
-          <label htmlFor="reg-usuario" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Usuario</label>
-          {/* Credencial alterna al RFC para iniciar sesion despues (ver
-              Login) - mismo patron toUpperCase() que el campo RFC de arriba,
-              independiente de si el teclado esta en mayus/minus. */}
-          <input id="reg-usuario" type="text" required minLength={6} maxLength={10} value={usuario}
-            onChange={e=>setUsuario(e.target.value.toUpperCase())} placeholder="6-10 caracteres"
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-        </div>
-        <div style={{marginBottom:20,width:"100%"}}>
-          <label htmlFor="reg-password" style={{fontSize:13,color:C.textSec,display:"block",marginBottom:5}}>Contraseña</label>
-          <input id="reg-password" type="password" required minLength={8} value={password} onChange={e=>setPassword(e.target.value)}
-            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"11px 12px",fontSize:16,color:C.text,boxSizing:"border-box"}}/>
-        </div>
-        {error && <div style={{fontSize:12,color:C.danger,marginBottom:14,padding:"8px 10px",background:C.dangerSoft,borderRadius:6,width:"100%",boxSizing:"border-box"}}>⚠ {error}</div>}
-        <Btn style={{width:"100%",padding:"12px 18px"}} disabled={loading}>{loading ? "Creando cuenta…" : "Crear cuenta"}</Btn>
-        <button type="button" onClick={onIrALogin} style={{marginTop:14,background:"none",border:"none",color:C.textSec,fontSize:12,cursor:"pointer",textDecoration:"underline"}}>
-          ¿Ya tienes cuenta? Inicia sesión
-        </button>
-      </form>
-    </div>
-  );
-}
 
 function useDocumentExtractor() {
   const [loading, setLoading] = useState(false);
@@ -513,58 +139,6 @@ function useCostosResumen(emisorRfc) {
   return { datos, loading, error, recargar: cargar };
 }
 
-// Un solo emisor registrado hoy en administración (no hay multi-tenant/login
-// todavia) — se usa el primero de la lista como "el" emisor de la cuenta.
-const EmisoresContext = createContext(null);
-
-function EmisoresProvider({ children }) {
-  const [emisores, setEmisores] = useState([]);
-  const [loading,  setLoading]  = useState(true);
-  const [error,    setError]    = useState(null);
-  // Soporte multi-emisor (aun sin UI para cambiarlo a mano, ver tarjeta de
-  // seguimiento) - "cual emisor esta activo" en la cuenta. Auto-seleccion
-  // via setEmisorActivoRfc(prev => ...) (forma funcional, no lee
-  // emisorActivoRfc por closure) a proposito: mantiene cargar() con
-  // identidad estable entre renders, sin agregar emisorActivoRfc a sus
-  // dependencias - si no, cada cambio de emisorActivoRfc recrearia cargar
-  // y el useEffect de abajo volveria a disparar el fetch, un loop inutil.
-  const [emisorActivoRfc, setEmisorActivoRfc] = useState(null);
-  const cargar = useCallback(async () => {
-    setLoading(true); setError(null);
-    try {
-      const res = await fetchAuth(`${API_BASE}/admin/emisores`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setEmisores(data);
-      // Si ya habia un activo y sigue en la lista nueva, se respeta -
-      // si no (primera carga, o ese emisor ya no existe), cae al primero.
-      // Con un solo emisor (caso de hoy) esto siempre resuelve al mismo
-      // rfc, sin cambio de comportamiento visible.
-      setEmisorActivoRfc(prev => (prev && data.some(e => e.rfc === prev)) ? prev : (data[0]?.rfc ?? null));
-    } catch (e) { setError(e.message); }
-    finally { setLoading(false); }
-  }, []);
-  useEffect(() => { cargar(); }, [cargar]);
-  return (
-    <EmisoresContext.Provider value={{ emisores, loading, error, recargar: cargar, emisorActivoRfc, setEmisorActivoRfc }}>
-      {children}
-    </EmisoresContext.Provider>
-  );
-}
-
-// Antes: cada componente que llamaba useEmisores() disparaba su propio
-// fetch a /admin/emisores (hasta 5 llamadas redundantes por carga de app,
-// una por NuevaFactura/ChatFiscal/Emisores/ContadorVirtual/AppShell) y el
-// header no se enteraba cuando Emisores() creaba un emisor nuevo, porque
-// cada uno tenia su propio estado aislado. Ahora useEmisores() consume un
-// solo EmisoresContext (provisto en AuthGate, ver mas abajo) - un fetch,
-// estado compartido, recargar() de cualquiera actualiza a todos.
-function useEmisores() {
-  const ctx = useContext(EmisoresContext);
-  if (!ctx) throw new Error("useEmisores() debe usarse dentro de <EmisoresProvider>");
-  return ctx;
-}
-
 function useContadorVirtualISRResico(emisorRfc, anio, mes) {
   const [datos,   setDatos]   = useState(null);
   const [loading, setLoading] = useState(true);
@@ -619,45 +193,6 @@ function useUsuarios() {
   return { usuarios, loading, error };
 }
 
-function useClientes() {
-  const [clientes, setClientes] = useState([]);
-  const [loading,  setLoading]  = useState(true);
-  const [error,    setError]    = useState(null);
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetchAuth(`${API_BASE}/admin/clientes`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        setClientes(await res.json());
-      } catch (e) { setError(e.message); }
-      finally { setLoading(false); }
-    })();
-  }, []);
-  return { clientes, loading, error };
-}
-
-function useResumenEjecutivo() {
-  const [resultado, setResultado] = useState(null);
-  const [loading,   setLoading]   = useState(false);
-  const [error,     setError]     = useState(null);
-  const generar = useCallback(async (payload) => {
-    setLoading(true); setError(null); setResultado(null);
-    try {
-      const res = await fetchAuth(`${API_BASE}/ia/resumen-ejecutivo`, {
-        method: "POST", headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.detail || `HTTP ${res.status}`);
-      }
-      setResultado(await res.json());
-    } catch (e) { setError(e.message); }
-    finally { setLoading(false); }
-  }, []);
-  return { resultado, generar, loading, error };
-}
-
 function useAnomalias() {
   const [anomalias, setAnomalias] = useState([]);
   const [loading,   setLoading]   = useState(false);
@@ -683,20 +218,6 @@ function useAnomalias() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOKENS & DATA
 // ═══════════════════════════════════════════════════════════════════════════════
-const C = {
-  primary:"#0A2540", accent:"#00C896", accentSoft:"#E6FAF5", accentBorder:"#00A87E",
-  surface:"#F7F9FC", card:"#FFFFFF", border:"#E4E9F0",
-  text:"#0A2540", textSec:"#5A6B7E", textMuted:"#8A9BB0",
-  danger:"#E53E3E", dangerSoft:"#FFF5F5", warn:"#DD6B20", warnSoft:"#FFFAF0",
-  info:"#2B6CB0", infoSoft:"#EBF8FF",
-};
-const fmt = n => new Intl.NumberFormat("es-MX",{style:"currency",currency:"MXN"}).format(n);
-// FastAPI/Pydantic manda detail como string (400/409) o como arreglo de
-// errores de validacion (422) - normaliza ambos a un mensaje legible.
-const detalleError = (data, res) => Array.isArray(data.detail)
-  ? data.detail.map(d => d.msg || JSON.stringify(d)).join(", ")
-  : (data.detail || `HTTP ${res.status}`);
-
 const FACTURAS = [
   {folio:"A-0127",receptor:"Coppel SA de CV",total:77600,fecha:"2025-05-19",estado:"Vigente",uuid:"WXY7-ZAB8"},
   {folio:"A-0126",receptor:"OXXO Gas SA de CV",total:32100,fecha:"2025-05-16",estado:"Vigente",uuid:"KLM3-NOP4"},
@@ -721,36 +242,8 @@ const SUGERENCIAS = [
   "¿Cuánto me deben mis clientes?","Resumen ejecutivo de mayo",
 ];
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ATOMS
-// ═══════════════════════════════════════════════════════════════════════════════
-function Badge({estado}){
-  const map={Vigente:{bg:"#E6FAF5",c:"#0A6B4A"},Vencida:{bg:"#FFF5F5",c:"#9B2C2C"},
-    Cancelada:{bg:"#FFF5F5",c:"#9B2C2C"},Pendiente:{bg:"#FFFAF0",c:"#744210"},Alerta:{bg:"#FFFAF0",c:"#744210"}};
-  const s=map[estado]||map.Pendiente;
-  return <span style={{background:s.bg,color:s.c,fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,whiteSpace:"nowrap"}}>{estado}</span>;
-}
-function Card({children,style={},onClick}){
-  return <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:16,minWidth:0,maxWidth:"100%",boxSizing:"border-box",...style}} onClick={onClick}>{children}</div>;
-}
-function Btn({children,variant="primary",onClick,style={},disabled,type="submit"}){
-  const base={borderRadius:8,padding:"10px 18px",fontSize:13,fontWeight:600,cursor:disabled?"not-allowed":"pointer",border:"none",opacity:disabled?.5:1,...style};
-  const s={primary:{...base,background:C.primary,color:C.accent},secondary:{...base,background:"transparent",color:C.textSec,border:`1px solid ${C.border}`},accent:{...base,background:C.accent,color:"#fff"}};
-  return <button type={type} style={s[variant]||s.primary} onClick={disabled?undefined:onClick}>{children}</button>;
-}
 function SectionTitle({children}){return <h2 style={{fontSize:20,fontWeight:700,color:C.text,marginBottom:4}}>{children}</h2>;}
 function SectionSub({children}){return <p style={{color:C.textSec,fontSize:13,marginBottom:18,marginTop:2}}>{children}</p>;}
-function TwoCol({children,minCol=260}){return <div style={{display:"grid",gridTemplateColumns:`repeat(auto-fit,minmax(${minCol}px,1fr))`,gap:12,minWidth:0,width:"100%"}}>{children}</div>;}
-function KPIGrid({children}){return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:10,marginBottom:16,minWidth:0,width:"100%"}}>{children}</div>;}
-function KPI({label,value,sub,dark}){
-  return (
-    <div style={{background:dark?C.primary:C.card,border:`1px solid ${dark?"transparent":C.border}`,borderRadius:12,padding:"14px 14px",minWidth:0,maxWidth:"100%",boxSizing:"border-box"}}>
-      <div style={{fontSize:10,color:dark?"rgba(255,255,255,.5)":C.textMuted,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.06em",overflowWrap:"anywhere",wordBreak:"break-word",whiteSpace:"normal"}}>{label}</div>
-      <div style={{fontSize:22,fontWeight:700,color:dark?C.accent:C.text,lineHeight:1,overflowWrap:"anywhere",wordBreak:"break-word",whiteSpace:"nowrap"}}>{value}</div>
-      {sub&&<div style={{fontSize:11,color:dark?"rgba(255,255,255,.4)":C.textMuted,marginTop:3}}>{sub}</div>}
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // VISTA: NUEVA FACTURA
@@ -1789,16 +1282,6 @@ function ContadorVirtual(){
   );
 }
 
-function Placeholder({title,detail}){
-  return (
-    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:260,color:C.textMuted,padding:"0 16px",textAlign:"center"}}>
-      <div style={{fontSize:36,marginBottom:12}}>🚧</div>
-      <div style={{fontSize:15,fontWeight:600,color:C.textSec}}>{title}</div>
-      <div style={{fontSize:12,marginTop:5}}>{detail || "Conecta el microservicio para habilitar esta vista"}</div>
-    </div>
-  );
-}
-
 const VIEWS={
   nueva:<NuevaFactura/>,generadas:<FacturasGeneradas/>,recibidas:<Placeholder title="Facturas recibidas"/>,
   reporte:<ReporteMensual/>,costos:<DashboardCostos/>,contador:<ContadorVirtual/>,lector:<LectorDocumentos/>,chat:<ChatFiscal/>,
@@ -1807,169 +1290,6 @@ const VIEWS={
   usuarios:<Usuarios/>,series:<Series/>,
   addenda:<Placeholder title="Addenda AES"/>,
 };
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// SIDEBAR CONTENT (compartido entre drawer y sidebar fijo)
-// ═══════════════════════════════════════════════════════════════════════════════
-function SidebarNav({active, navigate, expanded, toggle, compact=false}){
-  return (
-    <>
-      <div style={{padding:compact?"14px 0 12px":"20px 18px 14px",borderBottom:"1px solid rgba(255,255,255,.08)",textAlign:compact?"center":"left"}}>
-        {compact
-          ? <img src={logoAcierto} alt="Acierto" style={{width:28,height:28,borderRadius:6,display:"inline-block"}}/>
-          : <>
-              <img src={logoAcierto} alt="Acierto" style={{width:110,maxWidth:"100%",borderRadius:6,display:"block"}}/>
-              <div style={{fontSize:13,fontWeight:600,color:"rgba(255,255,255,.9)",marginTop:6}}>Portal Inteligente</div>
-            </>
-        }
-      </div>
-      <nav style={{flex:1,padding:"8px 0",overflowY:"auto"}}>
-        {NAV.map(item=>(
-          <div key={item.id}>
-            <div onClick={()=>{if(item.children.length)toggle(item.id);else navigate(item.id);}}
-              style={{display:"flex",alignItems:"center",gap:compact?0:9,padding:compact?"10px 0":"9px 18px",justifyContent:compact?"center":"flex-start",cursor:"pointer",color:"rgba(255,255,255,.7)",fontSize:13,fontWeight:600,userSelect:"none"}}>
-              <span style={{fontSize:compact?18:15}}>{item.icon}</span>
-              {!compact&&<span style={{flex:1}}>{item.label}</span>}
-              {!compact&&item.id==="ia"&&<span style={{fontSize:9,padding:"2px 6px",borderRadius:8,background:"rgba(0,200,150,.2)",color:C.accent}}>IA</span>}
-              {!compact&&item.children.length>0&&<span style={{fontSize:10,opacity:.5}}>{expanded[item.id]?"▾":"▸"}</span>}
-            </div>
-            {!compact&&item.id==="addenda"&&(
-              <div onClick={()=>navigate("addenda")}
-                style={{padding:"6px 18px 6px 38px",cursor:"pointer",fontSize:13,color:active==="addenda"?C.accent:"rgba(255,255,255,.55)",background:active==="addenda"?"rgba(0,200,150,.1)":"transparent",borderLeft:active==="addenda"?`2px solid ${C.accent}`:"2px solid transparent"}}>
-                Addenda AES
-              </div>
-            )}
-            {!compact&&expanded[item.id]&&item.children.map(child=>(
-              <div key={child} onClick={()=>navigate(child)}
-                style={{padding:"6px 18px 6px 38px",cursor:"pointer",fontSize:13,color:active===child?C.accent:"rgba(255,255,255,.55)",background:active===child?"rgba(0,200,150,.1)":"transparent",borderLeft:active===child?`2px solid ${C.accent}`:"2px solid transparent",transition:"all .15s"}}>
-                {LABELS[child]}
-              </div>
-            ))}
-          </div>
-        ))}
-      </nav>
-      {!compact&&(
-        <div style={{padding:"12px 18px",borderTop:"1px solid rgba(255,255,255,.08)"}}>
-          <div style={{fontSize:10,color:"rgba(255,255,255,.3)"}}>v2.0 · 6 microservicios</div>
-          <div style={{display:"flex",gap:4,marginTop:5,flexWrap:"wrap"}}>
-            {["Facturación","Admin","IA","Auth"].map(s=>(
-              <span key={s} style={{fontSize:9,padding:"2px 6px",borderRadius:6,background:"rgba(0,200,150,.15)",color:C.accent}}>{s}</span>
-            ))}
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// APP SHELL
-// ═══════════════════════════════════════════════════════════════════════════════
-function AppShell({onLogout,usuarioActual}){
-  const {isMobile,isTablet}=useBreakpoint();
-  const [active,setActive]=useState("generadas");
-  const [expanded,setExpanded]=useState({facturas:true,ia:true,admin:false});
-  const [drawerOpen,setDrawerOpen]=useState(false);
-  const toggle=id=>setExpanded(e=>({...e,[id]:!e[id]}));
-  const navigate=id=>{setActive(id);setDrawerOpen(false);};
-
-  // Header conectado al Emisor real del Negocio del usuario logueado (#15) -
-  // antes mostraba el mock EMISOR fijo ("Distribuidora Nacional SA de CV")
-  // sin importar quien iniciara sesion. useEmisores() ya llega filtrado por
-  // negocio_id (ver aislamiento de lecturas, #15), asi que el primero de la
-  // lista es "el" emisor de esta cuenta - mismo criterio que ya usaba NuevaFactura.
-  const {emisores,loading:cargandoEmisor,emisorActivoRfc,setEmisorActivoRfc}=useEmisores();
-  // find() en vez de emisores[0] directo - con 1 solo emisor (caso de hoy)
-  // emisorActivoRfc ya fue auto-seleccionado a ese mismo rfc en
-  // EmisoresProvider, asi que esto resuelve exactamente igual que antes.
-  // Con 2+ emisores, sigue al selector de abajo.
-  const emisorActual=emisores.find(e=>e.rfc===emisorActivoRfc)??emisores[0];
-  const nombreEmisor=cargandoEmisor?"Cargando…":(emisorActual?.razon_social||"Sin emisor registrado");
-  const inicialesEmisor=emisorActual?.razon_social
-    ? emisorActual.razon_social.split(" ").filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join("")
-    : "—";
-
-  const sidebarW = isMobile ? 0 : isTablet ? 52 : 232;
-
-  return (
-    <div style={{display:"flex",height:"100dvh",fontFamily:"'Inter',system-ui,sans-serif",background:C.surface,color:C.text,overflow:"hidden"}}>
-
-      {/* Mobile drawer */}
-      {isMobile&&drawerOpen&&(
-        <div style={{position:"fixed",inset:0,zIndex:100,display:"flex"}}>
-          <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,.5)"}} onClick={()=>setDrawerOpen(false)}/>
-          <aside style={{width:240,background:C.primary,display:"flex",flexDirection:"column",position:"relative",zIndex:1,flexShrink:0}}>
-            <SidebarNav active={active} navigate={navigate} expanded={expanded} toggle={toggle} compact={false}/>
-          </aside>
-        </div>
-      )}
-
-      {/* Desktop/tablet sidebar */}
-      {!isMobile&&(
-        <aside style={{width:sidebarW,background:C.primary,display:"flex",flexDirection:"column",flexShrink:0,transition:"width .2s"}}>
-          <SidebarNav active={active} navigate={navigate} expanded={expanded} toggle={toggle} compact={isTablet}/>
-        </aside>
-      )}
-
-      <main style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
-        {/* Topbar */}
-        <header style={{background:C.card,borderBottom:`1px solid ${C.border}`,padding:isMobile?"10px 14px":"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,gap:8}}>
-          <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
-            {isMobile&&(
-              <button onClick={()=>setDrawerOpen(true)} aria-label="Abrir menú"
-                style={{background:"transparent",border:"none",cursor:"pointer",fontSize:20,color:C.text,padding:0,lineHeight:1,flexShrink:0}}>☰</button>
-            )}
-            <div style={{minWidth:0}}>
-              {/* Conectado como <identidad personal> - antes decia siempre
-                  "Bienvenido de vuelta" sin distinguir quien inicio sesion
-                  del Emisor conectado abajo (#1vWBI). nombre viene del JWT
-                  (claim agregado en auth_usuarios), con rfc_personal (sub)
-                  como respaldo por si un token viejo aun no lo trae. */}
-              <div style={{fontSize:10,color:C.textMuted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Conectado como {usuarioActual?.nombre||usuarioActual?.sub||"—"}</div>
-              <div style={{fontSize:isMobile?13:14,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nombreEmisor}</div>
-            </div>
-          </div>
-          <div style={{display:"flex",gap:10,alignItems:"center",flexShrink:0}}>
-            {!isMobile&&(emisores.length>1
-              ? (
-                <select value={emisorActivoRfc||""} onChange={e=>setEmisorActivoRfc(e.target.value)}
-                  style={{fontSize:11,color:C.textMuted,background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 6px",maxWidth:220,cursor:"pointer"}}>
-                  {emisores.map(e=>(<option key={e.rfc} value={e.rfc}>{e.razon_social} — {e.rfc}</option>))}
-                </select>
-              )
-              : <div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>Emisor: {cargandoEmisor?"…":(emisorActual?.rfc||"—")}</div>
-            )}
-            <div style={{position:"relative"}}>
-              <div style={{width:7,height:7,borderRadius:"50%",background:C.danger,position:"absolute",top:-1,right:-1,border:"2px solid #fff"}}/>
-              <span style={{fontSize:17,cursor:"pointer"}}>🔔</span>
-            </div>
-            <div style={{width:30,height:30,borderRadius:"50%",background:C.primary,display:"flex",alignItems:"center",justifyContent:"center",color:C.accent,fontWeight:700,fontSize:11,flexShrink:0}}>{inicialesEmisor}</div>
-            <button onClick={onLogout} title="Cerrar sesión"
-              style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 10px",fontSize:12,color:C.textSec,cursor:"pointer",flexShrink:0}}>Salir</button>
-          </div>
-        </header>
-
-        {/* Mobile bottom nav */}
-        {isMobile&&(
-          <div style={{display:"flex",background:C.primary,borderTop:"1px solid rgba(255,255,255,.1)",flexShrink:0,order:1}}>
-            {[["generadas","📄","Facturas"],["lector","📥","Lector IA"],["chat","🤖","Chat IA"],["clientes","👥","Clientes"]].map(([id,ic,lbl])=>(
-              <button key={id} onClick={()=>navigate(id)}
-                style={{flex:1,background:"transparent",border:"none",cursor:"pointer",padding:"7px 2px",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
-                <span style={{fontSize:17}}>{ic}</span>
-                <span style={{fontSize:9,color:active===id?C.accent:"rgba(255,255,255,.45)",fontWeight:active===id?700:400}}>{lbl}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Content area */}
-        <div style={{flex:1,overflowY:"auto",padding:isMobile?"14px 12px":"22px 26px",WebkitOverflowScrolling:"touch",order:0}}>
-          {VIEWS[active]||<Placeholder title={LABELS[active]}/>}
-        </div>
-      </main>
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ROOT — wrap con ToastProvider
@@ -1999,7 +1319,7 @@ function AuthGate(){
   // tener conocimiento del concepto de "vista", que es puramente de
   // AuthGate).
   const onLogout = () => { auth.logout(); setVista("login"); };
-  return <EmisoresProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual}/></EmisoresProvider>;
+  return <EmisoresProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></EmisoresProvider>;
 }
 
 export default function App(){

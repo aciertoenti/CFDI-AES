@@ -909,17 +909,6 @@ async def cancelar_factura(
         "cod_estatus": resultado["cod_estatus"],
     }
 
-@app.get("/facturas/reporte/mensual", dependencies=[Depends(require_internal_key)])
-async def reporte_mensual(anio: int = 2025, mes: int = Query(ge=1, le=12)):
-    return {
-        "anio": anio,
-        "mes": mes,
-        "total_emitido": 302450.00,
-        "total_cancelado": 9800.00,
-        "count_vigentes": 4,
-        "count_canceladas": 1,
-    }
-
 @app.get("/health")
 async def health():
     return {"service": "facturacion", "status": "ok", "version": "2.0.0"}

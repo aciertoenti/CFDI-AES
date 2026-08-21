@@ -18,7 +18,7 @@ from database import Usuario, create_tables, get_db, stamp_head_si_es_ambiente_n
 from rfc_validation import es_rfc_persona_fisica_valido
 from usuario_validation import es_usuario_valido
 from shared.negocio_id import requerir_negocio_id
-from shared.internal_key import require_internal_key
+from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 from email_sender import enviar_correo_reset
 from redis_client import (
     MAX_INTENTOS_LOGIN,
@@ -322,6 +322,12 @@ async def registro(req: RegistroRequest, db: AsyncSession = Depends(get_db)):
             resp = await client.post(
                 f"{ADMINISTRACION_URL}/admin/negocios",
                 json={"nombre": req.nombre_negocio, "plan": req.plan},
+                # X-Internal-Key (20 ago 2026, tarjeta 2mUws): administracion
+                # ahora exige esta clave en /admin/negocios - sin este header
+                # este mismo registro empezaria a fallar con 502 (403 real de
+                # administracion), mismo patron de regresion ya documentado
+                # el 18 ago para obtener_datos_emisor en facturacion.
+                headers={"X-Internal-Key": INTERNAL_API_KEY},
             )
         except httpx.RequestError:
             raise HTTPException(status_code=502, detail="No se pudo contactar al servicio de administracion")

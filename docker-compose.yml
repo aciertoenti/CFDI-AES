@@ -85,6 +85,13 @@ services:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_FACTURAS:-cfdi}:${POSTGRES_PASSWORD_FACTURAS:-secret_facturas}@postgres_facturas/${POSTGRES_DB_FACTURAS:-cfdi_facturas}"
       REDIS_URL: "redis://redis:6379/0"
       MINIO_URL: "http://minio:9000"
+      # Solucion TEMPORAL de prueba (21 ago 2026, tarjeta
+      # PVTI_lAHOBYC0Os4BfCxZzg1IacA) - endpoint PUBLICO usado solo para
+      # FIRMAR las URLs presignadas de lectura (ver storage_client.py), no
+      # para las subidas internas (esas siguen por MINIO_URL, red de
+      # Docker). Sin valor en .env, cae a MINIO_URL - mismo comportamiento
+      # que antes de este cambio.
+      MINIO_PUBLIC_URL: "${MINIO_PUBLIC_URL:-http://minio:9000}"
       MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-minio_admin}"
       MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-minio_secret}"
       PAC_URL: "${PAC_URL}"

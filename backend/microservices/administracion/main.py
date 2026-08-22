@@ -271,13 +271,36 @@ async def crear_emisor(
 
 # ─── Negocios (#15) ─────────────────────────────────────────────────────────────
 
-@app.post("/admin/negocios", response_model=NegocioResponse, status_code=201)
+@app.post(
+    "/admin/negocios",
+    response_model=NegocioResponse,
+    status_code=201,
+    dependencies=[Depends(require_internal_key)],
+)
 async def crear_negocio(negocio: NegocioCreate, db: AsyncSession = Depends(get_db)):
     """
     Usado por el flujo de registro real (POST /auth/registro en
     auth_usuarios, #15) - "crear cuenta" da de alta un Negocio nuevo antes
     de crear su primer usuario admin, en vez de un usuario suelto sin
-    tenant. Tambien disponible para alta manual directa.
+    tenant.
+
+    X-Internal-Key (20 ago 2026, tarjeta 2mUws - cierre del gap real de
+    administracion): decision tomada. Este endpoint NO es publico como
+    login/registro (el navegador nunca lo llama directo) - es una llamada
+    servicio-a-servicio que hoy solo hace auth_usuarios.registro() desde su
+    backend, sin pasar por el Gateway. Sin esta proteccion, cualquiera con
+    acceso a la red interna de Docker podia crear Negocios arbitrarios
+    llamando directo a administracion:8002/admin/negocios, sin ninguna
+    autenticacion. Se agrego el header en auth_usuarios (mismo cambio, ver
+    ese archivo) para no repetir la regresion ya documentada en esta misma
+    tarjeta (cierre del 18 ago: obtener_datos_emisor en facturacion se
+    protegio sin actualizar a su llamador).
+
+    X-Negocio-Id NO aplica aqui: este es el endpoint que CREA un Negocio -
+    no existe todavia un negocio_id previo contra el cual validar
+    pertenencia (es el genesis del tenant, no una operacion dentro de uno
+    ya existente). Sigue disponible para alta manual directa via curl con
+    la clave interna, sin restriccion adicional de negocio.
     """
     nuevo = Negocio(nombre=negocio.nombre, plan=negocio.plan)
     db.add(nuevo)
@@ -437,7 +460,12 @@ async def actualizar_emisor(
 
 # ─── Clientes ──────────────────────────────────────────────────────────────────
 
-@app.post("/admin/clientes", response_model=ClienteResponse, status_code=201)
+@app.post(
+    "/admin/clientes",
+    response_model=ClienteResponse,
+    status_code=201,
+    dependencies=[Depends(require_internal_key)],
+)
 async def crear_cliente(
     cliente: ClienteCreate,
     db: AsyncSession = Depends(get_db),
@@ -450,6 +478,15 @@ async def crear_cliente(
     # se valida via el emisor_rfc contra los emisores de este Negocio. 404
     # (no 403) si el emisor no pertenece al caller - no revela que el RFC
     # existe en otro Negocio, mismo criterio anti-fuga que el resto (#15).
+    #
+    # X-Internal-Key (20 ago 2026, tarjeta 2mUws): agregado para cerrar el
+    # ultimo hueco real de administracion. A diferencia de /admin/negocios,
+    # este endpoint SI lo llama el navegador (frontend/src/App.jsx) - pero
+    # siempre a traves del Gateway, cuyo proxy generico ya inyecta
+    # X-Internal-Key en cada llamada autenticada (ver backend/api_gateway/
+    # main.py:222), igual que ya hace para GET/PUT/DELETE /admin/clientes
+    # (protegidos desde el 14 ago). No requiere ningun cambio en frontend ni
+    # en el Gateway - el header ya viajaba, solo faltaba exigirlo aqui.
     negocio_id = requerir_negocio_id(x_negocio_id)
     rfcs_del_negocio = select(Emisor.rfc).where(Emisor.negocio_id == negocio_id)
     emisor_valido = await db.execute(

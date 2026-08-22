@@ -25,20 +25,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # plantilla, separar:
 #   - GENÉRICO, reutilizable tal cual con renombrado de campos: registro()
 #     (líneas ~290-371, el patrón "crear tenant + primer admin" no
-#     depende de fiscal), login() (líneas ~374-437, salvo el nombre del
-#     campo "identificador"), password_reset_request/confirm (líneas
-#     ~450-543, genérico end-to-end), crear_usuario()/listar_usuarios()
-#     (el patrón "tenant_id siempre del caller autenticado, nunca del
-#     body" es un patrón de seguridad genérico, no fiscal).
+#     depende de fiscal), la TÉCNICA de login() (líneas ~374-437:
+#     identificador+password con bcrypt, rate limiting por identificador,
+#     emisión de JWT - ver matiz de rfc_personal abajo, no es 100% limpio
+#     todavía), password_reset_request/confirm (líneas ~450-543, genérico
+#     end-to-end), crear_usuario()/listar_usuarios() (el patrón
+#     "tenant_id siempre del caller autenticado, nunca del body" es un
+#     patrón de seguridad genérico, no fiscal).
 #   - ESPECÍFICO DE FISCAL/CFDI, no debe copiarse tal cual a otro dominio:
 #     el import de rfc_validation.es_rfc_persona_fisica_valido() de abajo
 #     y validar_rfc_personal() (ver más abajo, usa el algoritmo de dígito
-#     verificador de RFC del SAT vía satcfdi) - en otro dominio el
-#     identificador de login sería simplemente un email/username sin
-#     validación de catálogo fiscal. También el campo rfc_emisor en
-#     UsuarioCreate/UsuarioResponse (vincula un usuario a un "emisor"
-#     fiscal, concepto que no existe fuera de CFDI) y el claim JWT
-#     "rfc_emisor" en login().
+#     verificador de RFC del SAT vía satcfdi). También el campo
+#     rfc_emisor en UsuarioCreate/UsuarioResponse (vincula un usuario a
+#     un "emisor" fiscal, concepto que no existe fuera de CFDI) y el
+#     claim JWT "rfc_emisor" en login().
+#     Precisión sobre login() (líneas 401-406): NO es solo el nombre del
+#     campo "identificador" lo que es fiscal - la query real busca
+#     WHERE Usuario.rfc_personal = :valor OR Usuario.usuario = :valor,
+#     dependiendo de la columna Usuario.rfc_personal en sí. En un dominio
+#     no fiscal esa columna se ELIMINA del modelo, no se renombra, y
+#     login() volvería a ser un simple email/username + password (la
+#     lógica de bcrypt/rate-limit/JWT alrededor no cambia).
 from database import Usuario, create_tables, get_db, stamp_head_si_es_ambiente_nuevo
 from rfc_validation import es_rfc_persona_fisica_valido  # [ESPECÍFICO FISCAL] - algoritmo de RFC/SAT (satcfdi), no genérico
 from usuario_validation import es_usuario_valido

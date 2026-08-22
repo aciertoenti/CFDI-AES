@@ -122,10 +122,19 @@ class Negocio(Base):
 
 # [LÓGICA DE NEGOCIO MEZCLADA] - ver clasificacion completa junto a
 # Negocio arriba. La relacion "Negocio tiene N Emisores" es generica
-# (tenant con sub-entidades hijas); los campos regimen_fiscal/
-# csd_cert_base64/csd_key_base64/csd_password son certificados de sello
-# fiscal del SAT, sin equivalente fuera de CFDI - se eliminarian, no se
-# renombrarian, en un dominio distinto a fiscal.
+# (tenant con sub-entidades hijas). Desglose campo por campo, no toda la
+# clase es lo mismo:
+#   - [REUTILIZABLE CON RENOMBRADO]: el campo rfc (abajo, String(13),
+#     unique=True, index=True) es SOLO un identificador unico indexado -
+#     el modelo en si no codifica ninguna validacion de digito
+#     verificador ni formato de RFC (esa validacion vive en el
+#     microservicio, en main.py, no aqui). Renombrarlo a
+#     identificador_fiscal/codigo_unico y ajustar el largo del String()
+#     es un cambio mecanico, no requiere reescribir logica.
+#   - [LÓGICA DE NEGOCIO MEZCLADA] real, se ELIMINA, no se renombra:
+#     regimen_fiscal/csd_cert_base64/csd_key_base64/csd_password son
+#     certificados de sello fiscal del SAT (CSD, cifrados con Fernet) sin
+#     ningun equivalente conceptual fuera de CFDI.
 class Emisor(Base):
     __tablename__ = "emisores"
 
@@ -134,9 +143,9 @@ class Emisor(Base):
     # Backfill de datos existentes ya aplicado (scripts/backfill_negocio.py,
     # #15) - ahora endurecido a NOT NULL.
     negocio_id: Mapped[int] = mapped_column(ForeignKey("negocios.id"), nullable=False, index=True)
-    rfc: Mapped[str] = mapped_column(String(13), unique=True, nullable=False, index=True)
+    rfc: Mapped[str] = mapped_column(String(13), unique=True, nullable=False, index=True)  # [REUTILIZABLE CON RENOMBRADO] - solo identificador unico, sin validacion de RFC en el modelo
     razon_social: Mapped[str] = mapped_column(String(300), nullable=False)
-    regimen_fiscal: Mapped[str] = mapped_column(String(10), nullable=False)
+    regimen_fiscal: Mapped[str] = mapped_column(String(10), nullable=False)  # [LÓGICA DE NEGOCIO MEZCLADA] - catalogo fiscal SAT, se elimina en otro dominio
     codigo_postal: Mapped[str] = mapped_column(String(5), nullable=False)
     # Cifrados en reposo con Fernet desde #34 - ver docs/cifrado-csd.md.
     # CifradoFernet cifra/descifra de forma transparente: este codigo (y el

@@ -1,62 +1,90 @@
-import { useFacturas } from "./hooks";
+import { useReporteMensual } from "./hooks";
 import useResumenEjecutivo from "../../shared/hooks/useResumenEjecutivo";
 import { Placeholder } from "../../shared/layout/AppShell";
 import { SectionTitle, Card, Btn, KPIGrid, KPI, TwoCol } from "../../shared/components/atoms";
 import { C, fmt } from "../../shared/utils/format";
 
-const FACTURACION_BASE = "http://localhost:8001";
 const MESES_CORTOS=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 
 export default function ReporteMensual(){
-  const {facturas,loading,error} = useFacturas();
+  const { datos, loading, error } = useReporteMensual(6);
   const resumen = useResumenEjecutivo();
 
-  if (error) return <Placeholder title="Reporte mensual" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>;
+  if (error) return <Placeholder title="Reporte mensual" detail={`No se pudo conectar con reportes: ${error}`}/>;
   if (loading) return <Placeholder title="Reporte mensual" detail="Cargando datos reales…"/>;
-  if (facturas.length===0) return <Placeholder title="Reporte mensual" detail="Todavía no hay facturas timbradas para reportar."/>;
 
-  const porMes = {};
-  for (const f of facturas) {
-    const d = new Date(f.fecha_timbrado);
-    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-    porMes[key] = (porMes[key]||0) + f.total;
-  }
-  const meses = Object.keys(porMes).sort();
-  const vals = meses.map(k=>porMes[k]);
-  const maxV = Math.max(...vals, 1);
-  const totalAcumulado = facturas.reduce((s,f)=>s+f.total,0);
+  const meses = datos?.meses || [];
+  const totalFacturas = meses.reduce((s,m)=>s+m.vigente.count+m.cancelada.count, 0);
+  if (totalFacturas === 0) return <Placeholder title="Reporte mensual" detail="Todavía no hay facturas timbradas para reportar."/>;
+
+  // vigente/cancelada SEPARADOS (semantica decidida 20 ago 2026, tarjeta
+  // PVTI_lAHOBYC0Os4BfCxZzg2m00E) - nunca sumados en un solo total, a
+  // diferencia del calculo viejo (useFacturas() + reduce sin filtrar estado).
+  const maxV = Math.max(...meses.map(m=>Math.max(m.vigente.total, m.cancelada.total)), 1);
+  const totalVigente = meses.reduce((s,m)=>s+m.vigente.total, 0);
+  const totalCancelada = meses.reduce((s,m)=>s+m.cancelada.total, 0);
+  const countVigente = meses.reduce((s,m)=>s+m.vigente.count, 0);
+  const countCancelada = meses.reduce((s,m)=>s+m.cancelada.count, 0);
   const rangoLabel = meses.length>1
-    ? `${MESES_CORTOS[Number(meses[0].slice(5))-1]} ${meses[0].slice(0,4)} – ${MESES_CORTOS[Number(meses[meses.length-1].slice(5))-1]} ${meses[meses.length-1].slice(0,4)}`
-    : `${MESES_CORTOS[Number(meses[0].slice(5))-1]} ${meses[0].slice(0,4)}`;
+    ? `${MESES_CORTOS[meses[0].mes-1]} ${meses[0].anio} – ${MESES_CORTOS[meses[meses.length-1].mes-1]} ${meses[meses.length-1].anio}`
+    : `${MESES_CORTOS[meses[0].mes-1]} ${meses[0].anio}`;
+
+  // datos_facturacion mantiene la MISMA forma que ya esperaba el resumen
+  // ejecutivo de IA (total_acumulado/num_facturas/promedio/por_mes) - no se
+  // rompe esa funcionalidad existente. por_mes ahora trae vigente/cancelada
+  // desglosados en vez de un solo numero sumado, mas informativo para el LLM.
+  const porMesParaResumen = Object.fromEntries(
+    meses.map(m => [`${m.anio}-${String(m.mes).padStart(2,"0")}`, { vigente: m.vigente.total, cancelada: m.cancelada.total }])
+  );
 
   return (
     <div>
       <SectionTitle>Reporte mensual</SectionTitle>
       <Card style={{marginTop:12}}>
         <div style={{fontSize:11,color:C.textMuted,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.06em"}}>Facturación real · {rangoLabel}</div>
-        <div style={{display:"flex",alignItems:"flex-end",gap:8,height:130,padding:"0 4px"}}>
-          {meses.map((k,i)=>(
-            <div key={k} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-              <div style={{fontSize:9,color:C.textMuted,textAlign:"center"}}>{(vals[i]/1000).toFixed(1)}k</div>
-              <div style={{width:"100%",background:i===meses.length-1?C.accent:C.primary,borderRadius:"5px 5px 0 0",height:`${(vals[i]/maxV)*100}px`,minHeight:2,opacity:i===meses.length-1?1:.7}}/>
-              <div style={{fontSize:11,color:C.textSec,fontWeight:i===meses.length-1?700:400}}>{MESES_CORTOS[Number(k.slice(5))-1]}</div>
-            </div>
-          ))}
+        <div style={{display:"flex",alignItems:"flex-end",gap:8,height:150,padding:"0 4px"}}>
+          {meses.map((m,i)=>{
+            const key = `${m.anio}-${m.mes}`;
+            const esUltimo = i===meses.length-1;
+            return (
+              <div key={key} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                <div style={{fontSize:9,color:C.textMuted,textAlign:"center"}}>{(m.vigente.total/1000).toFixed(1)}k</div>
+                <div style={{display:"flex",alignItems:"flex-end",gap:2,width:"100%",height:100}}>
+                  <div title={`Vigente: ${fmt(m.vigente.total)} (${m.vigente.count})`}
+                    style={{flex:1,background:esUltimo?C.accent:C.primary,borderRadius:"5px 5px 0 0",height:`${(m.vigente.total/maxV)*100}px`,minHeight:m.vigente.total>0?2:0,opacity:esUltimo?1:.7}}/>
+                  <div title={`Cancelada: ${fmt(m.cancelada.total)} (${m.cancelada.count})`}
+                    style={{flex:1,background:C.danger,borderRadius:"5px 5px 0 0",height:`${(m.cancelada.total/maxV)*100}px`,minHeight:m.cancelada.total>0?2:0,opacity:.6}}/>
+                </div>
+                <div style={{fontSize:11,color:C.textSec,fontWeight:esUltimo?700:400}}>{MESES_CORTOS[m.mes-1]}</div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{display:"flex",gap:14,marginTop:8,fontSize:10,color:C.textMuted}}>
+          <div style={{display:"flex",alignItems:"center",gap:4}}><span style={{width:8,height:8,borderRadius:2,background:C.primary,display:"inline-block"}}/>Vigente</div>
+          <div style={{display:"flex",alignItems:"center",gap:4}}><span style={{width:8,height:8,borderRadius:2,background:C.danger,opacity:.6,display:"inline-block"}}/>Cancelada</div>
         </div>
         <div style={{borderTop:`1px solid ${C.border}`,marginTop:14,paddingTop:12,display:"flex",gap:20,flexWrap:"wrap"}}>
-          {[["Total acumulado",fmt(totalAcumulado)],["CFDIs emitidos",String(facturas.length)],["Promedio",fmt(totalAcumulado/facturas.length)]].map(([l,v])=>(
+          {[
+            ["Vigente (total)",fmt(totalVigente)],
+            ["Vigente (CFDIs)",String(countVigente)],
+            ["Cancelada (total)",fmt(totalCancelada)],
+            ["Cancelada (CFDIs)",String(countCancelada)],
+          ].map(([l,v])=>(
             <div key={l}><div style={{fontSize:10,color:C.textMuted,marginBottom:3,textTransform:"uppercase"}}>{l}</div><div style={{fontSize:16,fontWeight:700,color:C.text}}>{v}</div></div>
           ))}
         </div>
         <Btn variant="secondary" style={{marginTop:12}} disabled={resumen.loading}
           onClick={()=>resumen.generar({
-            periodo_inicio: `${meses[0]}-01`,
+            periodo_inicio: `${meses[0].anio}-${String(meses[0].mes).padStart(2,"0")}-01`,
             periodo_fin: new Date().toISOString().slice(0,10),
             datos_facturacion: {
-              total_acumulado: totalAcumulado,
-              num_facturas: facturas.length,
-              promedio: totalAcumulado/facturas.length,
-              por_mes: porMes,
+              total_acumulado: totalVigente,
+              num_facturas: countVigente,
+              promedio: countVigente>0 ? totalVigente/countVigente : 0,
+              por_mes: porMesParaResumen,
+              cancelado_total: totalCancelada,
+              cancelado_count: countCancelada,
             },
             incluir_comparativo: meses.length>1,
           })}>

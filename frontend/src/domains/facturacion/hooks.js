@@ -37,6 +37,30 @@ export function useCostosResumen(emisorRfc) {
   return { datos, loading, error, recargar: cargar };
 }
 
+function formatearMes(fecha) {
+  return `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, "0")}`;
+}
+
+export function useReporteMensual(mesesAtras = 6) {
+  const [datos,   setDatos]   = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState(null);
+  const cargar = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const hoy = new Date();
+      const inicio = new Date(hoy.getFullYear(), hoy.getMonth() - (mesesAtras - 1), 1);
+      const params = new URLSearchParams({ desde: formatearMes(inicio), hasta: formatearMes(hoy) });
+      const res = await fetchAuth(`${API_BASE}/reportes/mensual?${params}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setDatos(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, [mesesAtras]);
+  useEffect(() => { cargar(); }, [cargar]);
+  return { datos, loading, error, recargar: cargar };
+}
+
 export function useContadorVirtualISRResico(emisorRfc, anio, mes) {
   const [datos,   setDatos]   = useState(null);
   const [loading, setLoading] = useState(true);

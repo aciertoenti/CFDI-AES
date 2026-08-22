@@ -4,6 +4,15 @@ import os
 from fastapi import HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 
+# [REUTILIZABLE TAL CUAL] (21 ago 2026, clasificacion de reutilizacion
+# para plantilla base de futuros proyectos SaaS) - este archivo no tiene
+# nada especifico de CFDI/fiscal. Es un mecanismo generico de auth
+# servicio-a-servicio (un solo header + una sola clave compartida via env
+# var) aplicable a cualquier arquitectura de microservicios donde exista
+# un Gateway y servicios internos que no deban ser alcanzables directo
+# desde fuera. Ni el nombre del header (X-Internal-Key) ni la logica
+# (comparacion de string + 403) dependen del dominio del negocio.
+
 # Clave servicio-a-servicio (#42) - mismo mecanismo que whatsapp_bot ya usa
 # contra facturacion (ver whatsapp_bot/core/security.py). Distinta de
 # X-Negocio-Id: esta protege endpoints que ningun caller fuera del Gateway

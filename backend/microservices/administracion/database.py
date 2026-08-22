@@ -71,6 +71,33 @@ class Base(DeclarativeBase):
     pass
 
 
+# [REUTILIZABLE CON RENOMBRADO] (21 ago 2026, clasificacion de
+# reutilizacion para plantilla base de futuros proyectos SaaS) - cadena
+# de modelos Negocio -> Usuarios -> Emisores. El patron de relaciones
+# (tenant raiz, referencias suaves entre bases de datos separadas por
+# servicio porque no puede haber FK real de Postgres entre ellas, backfill
+# + NOT NULL como estrategia de migracion) es genérico multi-tenant, no
+# fiscal. Desglose de que cambiaria en otro dominio:
+#   - Negocio (esta clase, abajo) = "Tenant"/"Organization"/"Cuenta" en
+#     cualquier SaaS. Campos id/nombre/plan/fecha_alta/estado son 100%
+#     genéricos, sin nada fiscal - REUTILIZABLE CON RENOMBRADO real (solo
+#     cambia el nombre de la clase/tabla, no la forma).
+#   - Usuario (auth_usuarios/database.py) = igual, genérico como
+#     "usuario pertenece a un tenant" (negocio_id), PERO con dos campos
+#     fiscal-especificos mezclados que no son solo un renombrado:
+#     rfc_personal (credencial de login = RFC en vez de email/username) y
+#     rfc_emisor (FK suave a Emisor). En otro dominio estos dos campos se
+#     ELIMINARIAN, no se renombrarian - el login volveria a ser por
+#     email/username simple. Ver clasificacion completa en
+#     auth_usuarios/main.py y auth_usuarios/database.py.
+#   - Emisor (clase de abajo) = el caso mas mezclado de los 3: la relacion
+#     "un Negocio tiene N Emisores" SI es un patron generico (un tenant
+#     con N sub-entidades hijas, ej. "Sucursal"/"Proyecto"/"Cuenta hija"
+#     en otro dominio), pero la mayoria de sus CAMPOS
+#     (regimen_fiscal/csd_cert_base64/csd_key_base64/csd_password) son
+#     certificados de sello fiscal del SAT sin ningun equivalente fuera
+#     de CFDI - en otro dominio esos campos se eliminan por completo, no
+#     se renombran. Ver nota puntual junto a la clase Emisor abajo.
 class Negocio(Base):
     """
     El cliente de pago (#15) - un Negocio puede administrar varios
@@ -93,6 +120,12 @@ class Negocio(Base):
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="Activo")
 
 
+# [LÓGICA DE NEGOCIO MEZCLADA] - ver clasificacion completa junto a
+# Negocio arriba. La relacion "Negocio tiene N Emisores" es generica
+# (tenant con sub-entidades hijas); los campos regimen_fiscal/
+# csd_cert_base64/csd_key_base64/csd_password son certificados de sello
+# fiscal del SAT, sin equivalente fuera de CFDI - se eliminarian, no se
+# renombrarian, en un dominio distinto a fiscal.
 class Emisor(Base):
     __tablename__ = "emisores"
 

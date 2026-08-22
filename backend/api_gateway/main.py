@@ -27,6 +27,30 @@ INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
 if not INTERNAL_API_KEY:
     raise RuntimeError("INTERNAL_API_KEY no está definido. Configúralo como variable de entorno.")
 
+# [REUTILIZABLE CON RENOMBRADO] (21 ago 2026, clasificacion de
+# reutilizacion para plantilla base de futuros proyectos SaaS) - el
+# MECANISMO de este Gateway (proxy generico por tabla de rutas + JWT
+# obligatorio salvo rutas publicas explicitas + inyeccion automatica de
+# X-Internal-Key/X-Negocio-Id/X-Usuario-* despues de validar el token, ver
+# proxy() y verify_token() mas abajo) es 100% generico, aplica igual a
+# cualquier arquitectura de microservicios con Gateway central. Lo que
+# cambiaria nombre por nombre en otro dominio:
+#   - Las claves/valores de SERVICES (facturas/admin/addenda/reportes/
+#     auth/bot/ia) son los microservicios de ESTE proyecto - en otro
+#     dominio seria una tabla distinta, misma idea.
+#   - El header "X-Usuario-Rfc" es especifico de fiscal/CFDI (RFC =
+#     identificador fiscal mexicano) - en otro dominio seria
+#     "X-Usuario-Id" o similar; el patron de "reenviar un claim del JWT ya
+#     verificado como header para que el downstream no vuelva a decodificar
+#     el token" si es genérico.
+#   - Las rutas publicas explicitas (/auth/login, /auth/registro,
+#     /auth/password-reset/*) y la ruta dedicada de streaming
+#     (/ia/chat/stream) son especificas de las features de ESTE proyecto,
+#     pero la TECNICA de cada una (rutas publicas registradas antes que la
+#     ruta generica por prioridad de Starlette; bypass del proxy generico
+#     para SSE porque resp.json() no sirve para streaming) es reutilizable
+#     para cualquier SaaS con login/registro/reset y un feature de IA con
+#     respuesta en streaming.
 SERVICES = {
     "facturas": "http://facturacion:8001",
     "admin": "http://administracion:8002",

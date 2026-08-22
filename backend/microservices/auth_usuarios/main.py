@@ -14,8 +14,33 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# [LÓGICA DE NEGOCIO MEZCLADA] (21 ago 2026, clasificacion de
+# reutilizacion para plantilla base de futuros proyectos SaaS) - este
+# servicio mezcla un flujo de auth genérico (registro -> crea tenant +
+# primer usuario admin, login por identificador+password con bcrypt,
+# rate limiting por identificador via Redis, password reset con token de
+# un solo uso + respuesta anti-timing-attack, JWT con claims estandar,
+# listar_usuarios multi-tenant) con validacion fiscal especifica de
+# CFDI/SAT mezclada en el mismo archivo. Antes de extraerlo como
+# plantilla, separar:
+#   - GENÉRICO, reutilizable tal cual con renombrado de campos: registro()
+#     (líneas ~290-371, el patrón "crear tenant + primer admin" no
+#     depende de fiscal), login() (líneas ~374-437, salvo el nombre del
+#     campo "identificador"), password_reset_request/confirm (líneas
+#     ~450-543, genérico end-to-end), crear_usuario()/listar_usuarios()
+#     (el patrón "tenant_id siempre del caller autenticado, nunca del
+#     body" es un patrón de seguridad genérico, no fiscal).
+#   - ESPECÍFICO DE FISCAL/CFDI, no debe copiarse tal cual a otro dominio:
+#     el import de rfc_validation.es_rfc_persona_fisica_valido() de abajo
+#     y validar_rfc_personal() (ver más abajo, usa el algoritmo de dígito
+#     verificador de RFC del SAT vía satcfdi) - en otro dominio el
+#     identificador de login sería simplemente un email/username sin
+#     validación de catálogo fiscal. También el campo rfc_emisor en
+#     UsuarioCreate/UsuarioResponse (vincula un usuario a un "emisor"
+#     fiscal, concepto que no existe fuera de CFDI) y el claim JWT
+#     "rfc_emisor" en login().
 from database import Usuario, create_tables, get_db, stamp_head_si_es_ambiente_nuevo
-from rfc_validation import es_rfc_persona_fisica_valido
+from rfc_validation import es_rfc_persona_fisica_valido  # [ESPECÍFICO FISCAL] - algoritmo de RFC/SAT (satcfdi), no genérico
 from usuario_validation import es_usuario_valido
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
@@ -180,6 +205,10 @@ class PasswordResetConfirmRequest(BaseModel):
 CREDENCIALES_INVALIDAS = "RFC, usuario o contraseña incorrectos"
 
 
+# [ESPECÍFICO FISCAL] - toda esta función es validación de catálogo SAT,
+# no aplica a un login genérico por email/username. En otro dominio esta
+# función completa se elimina (el campo de login deja de requerir
+# validación de RFC).
 def validar_rfc_personal(rfc_personal: str) -> str:
     """
     Formato + digito verificador real (rfc_validation.py, algoritmo de

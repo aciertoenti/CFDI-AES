@@ -1,4 +1,29 @@
 // ─── App.jsx ── CFDI-AES · Responsive + Toast + Table fix ─────────────────────
+// [REUTILIZABLE TAL CUAL] (21 ago 2026, clasificacion de reutilizacion
+// para plantilla base de futuros proyectos SaaS) - la ESTRUCTURA de
+// carpetas frontend/src/ (no el contenido de cada archivo) es un patron
+// generico de organizacion para cualquier frontend grande, sin nada
+// especifico de CFDI/fiscal en la estructura en si:
+//   shared/hooks/      - hooks reutilizables entre dominios (auth, fetch
+//                         con manejo de token, breakpoint, etc.)
+//   shared/components/ - atomos de UI puros (Btn, Card, KPI, etc.), sin
+//                         logica de negocio
+//   shared/layout/      - shell de la app (nav, header) + providers
+//                         globales (Toast)
+//   shared/utils/       - formateo/helpers sin estado
+//   domains/<dominio>/  - un dominio de negocio por carpeta, cada uno con
+//                         sus propios componentes + su propio hooks.js
+//                         para hooks que NO se comparten fuera de ese
+//                         dominio (ver domains/facturacion/hooks.js,
+//                         domains/ia/hooks.js como ejemplos del patron)
+//   App.jsx             - queda reducido a auth gate + tabla de rutas +
+//                         arbol raiz, sin logica de dominio
+// En otro proyecto, los nombres de las carpetas dentro de domains/
+// (auth/administracion/facturacion/ia) cambiarian por los dominios
+// reales de ese negocio - la ESTRUCTURA (shared/ + domains/<n>/, con
+// hooks.js local por dominio cuando aplique) se copia tal cual. Historia
+// completa de como se llego aqui: tarjeta PVTI_lAHOBYC0Os4BfCxZzg2V324
+// (refactor de App.jsx en 5 fases, 21 ago 2026).
 import { useState } from "react";
 import useAuth from "./shared/hooks/useAuth";
 import { EmisoresProvider } from "./shared/hooks/useEmisores";

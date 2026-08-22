@@ -2,6 +2,16 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+# [REUTILIZABLE TAL CUAL] (21 ago 2026, clasificacion de reutilizacion
+# para plantilla base de futuros proyectos SaaS) - este es el patron
+# generico de aislamiento multi-tenant (un tenant_id obligatorio via
+# header, fail-closed si falta), sin nada especifico de fiscal/CFDI
+# mezclado en la logica. "negocio" es multi-tenancy en espanol, no un
+# concepto fiscal - el mismo mecanismo aplica igual si el tenant se
+# llamara "organizacion", "cuenta" o "workspace" en otro dominio. Lo unico
+# que cambiaria en otro proyecto es el nombre (funcion, variable, header
+# X-Negocio-Id) por preferencia de vocabulario, no la logica en si.
+
 
 def requerir_negocio_id(x_negocio_id: Optional[str]) -> int:
     """

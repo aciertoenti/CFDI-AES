@@ -40,6 +40,13 @@ class Base(DeclarativeBase):
     pass
 
 
+# [REUTILIZABLE CON RENOMBRADO, con 2 campos fiscal-especificos] - ver
+# clasificacion completa de la cadena Negocio -> Usuarios -> Emisores en
+# administracion/database.py (junto a la clase Negocio). negocio_id
+# (usuario pertenece a un tenant) es 100% generico. rfc_personal (login
+# por RFC en vez de email/username) y rfc_emisor (FK suave a Emisor) son
+# especificos de fiscal - se eliminarian, no se renombrarian, en otro
+# dominio (el login volveria a ser email/username simple).
 class Usuario(Base):
     __tablename__ = "usuarios"
 

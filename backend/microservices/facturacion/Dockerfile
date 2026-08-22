@@ -9,6 +9,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# [REUTILIZABLE TAL CUAL] (21 ago 2026, clasificacion de reutilizacion
+# para plantilla base de futuros proyectos SaaS) - el patron de
+# build-context ampliado de este bloque (contexto de build = la carpeta
+# PADRE de todos los microservicios, COPY selectivo de la carpeta
+# compartida + la carpeta del servicio, en vez de copiar todo el
+# contexto) aplica igual a cualquier proyecto de microservicios en Python
+# que necesite compartir codigo (ej. backend/shared/) entre varios
+# servicios sin publicarlo como paquete pip instalable. No depende de
+# CFDI/fiscal en absoluto - solo depende de tener docker-compose.yml
+# apuntando el "context:" de cada servicio a la carpeta padre en vez de
+# a la carpeta del propio servicio. (Las dependencias de apt de arriba -
+# Pango/WeasyPrint para PDF - SI son especificas de este servicio, no
+# del patron; cada microservicio tendria las suyas segun lo que necesite.)
+#
 # Contexto de build ahora es ./backend (docker-compose.yml,
 # refactor/shared-negocio-id, 12 ago 2026) - mismo patron ya probado en
 # administracion y auth_usuarios. COPY selectivo a proposito: NO copiar

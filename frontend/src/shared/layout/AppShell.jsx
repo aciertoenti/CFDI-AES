@@ -65,11 +65,18 @@ export function SidebarNav({active,navigate,expanded,toggle,compact=false,nav,la
   );
 }
 
-export default function AppShell({onLogout,usuarioActual,views,labels,nav}){
+export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views,labels,nav}){
   const {isMobile,isTablet}=useBreakpoint();
   const [active,setActive]=useState("generadas");
   const [expanded,setExpanded]=useState({facturas:true,ia:true,admin:false});
   const [drawerOpen,setDrawerOpen]=useState(false);
+  const [mostrarPasswordModal,setMostrarPasswordModal]=useState(false);
+  const [passwordActual,setPasswordActual]=useState("");
+  const [nuevaPassword,setNuevaPassword]=useState("");
+  const [confirmarPassword,setConfirmarPassword]=useState("");
+  const [passwordError,setPasswordError]=useState(null);
+  const [passwordLoading,setPasswordLoading]=useState(false);
+  const [passwordSuccess,setPasswordSuccess]=useState(null);
   const toggle=id=>setExpanded(e=>({...e,[id]:!e[id]}));
   const navigate=id=>{setActive(id);setDrawerOpen(false);};
   const {emisores,loading:cargandoEmisor,emisorActivoRfc,setEmisorActivoRfc}=useEmisores();
@@ -79,6 +86,33 @@ export default function AppShell({onLogout,usuarioActual,views,labels,nav}){
     ? emisorActual.razon_social.split(" ").filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join("")
     : "—";
   const sidebarW = isMobile ? 0 : isTablet ? 52 : 232;
+
+  const submitCambiarPassword = async e => {
+    e.preventDefault();
+    setPasswordError(null); setPasswordSuccess(null);
+    if (!passwordActual || !nuevaPassword || !confirmarPassword) {
+      setPasswordError("Completa todos los campos.");
+      return;
+    }
+    if (nuevaPassword.length < 8) {
+      setPasswordError("La nueva contraseña debe tener al menos 8 caracteres.");
+      return;
+    }
+    if (nuevaPassword !== confirmarPassword) {
+      setPasswordError("La confirmación no coincide con la nueva contraseña.");
+      return;
+    }
+    setPasswordLoading(true);
+    const r = await onCambiarPassword(passwordActual, nuevaPassword);
+    setPasswordLoading(false);
+    if (!r.ok) {
+      setPasswordError(r.error);
+      return;
+    }
+    setPasswordSuccess(r.mensaje || "Contraseña actualizada correctamente.");
+    setPasswordActual(""); setNuevaPassword(""); setConfirmarPassword("");
+    setTimeout(() => setMostrarPasswordModal(false), 900);
+  };
 
   return (
     <div style={{display:"flex",height:"100dvh",fontFamily:"'Inter',system-ui,sans-serif",background:C.surface,color:C.text,overflow:"hidden"}}>
@@ -122,6 +156,8 @@ export default function AppShell({onLogout,usuarioActual,views,labels,nav}){
               <span style={{fontSize:17,cursor:"pointer"}}>🔔</span>
             </div>
             <div style={{width:30,height:30,borderRadius:"50%",background:C.primary,display:"flex",alignItems:"center",justifyContent:"center",color:C.accent,fontWeight:700,fontSize:11,flexShrink:0}}>{inicialesEmisor}</div>
+            <button onClick={()=>setMostrarPasswordModal(true)} title="Cambiar contraseña"
+              style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 10px",fontSize:12,color:C.textSec,cursor:"pointer",flexShrink:0}}>Cambiar contraseña</button>
             <button onClick={onLogout} title="Cerrar sesión"
               style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 10px",fontSize:12,color:C.textSec,cursor:"pointer",flexShrink:0}}>Salir</button>
           </div>
@@ -140,6 +176,33 @@ export default function AppShell({onLogout,usuarioActual,views,labels,nav}){
         <div style={{flex:1,overflowY:"auto",padding:isMobile?"14px 12px":"22px 26px",WebkitOverflowScrolling:"touch",order:0}}>
           {views[active]||<Placeholder title={labels[active]}/>} 
         </div>
+        {mostrarPasswordModal && (
+          <div style={{position:"fixed",inset:0,background:"rgba(3,6,18,.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:120}} onClick={()=>setMostrarPasswordModal(false)}>
+            <div style={{width:380,maxWidth:"calc(100vw - 24px)",background:C.card,borderRadius:12,padding:22,border:`1px solid ${C.border}`,boxShadow:"0 22px 60px rgba(0,0,0,.35)",position:"relative"}} onClick={e=>e.stopPropagation()}>
+              <button type="button" onClick={()=>setMostrarPasswordModal(false)} style={{position:"absolute",top:12,right:12,background:"transparent",border:"none",fontSize:20,color:C.textMuted,cursor:"pointer"}}>×</button>
+              <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:18}}>Cambiar contraseña</div>
+              <form onSubmit={submitCambiarPassword} style={{display:"grid",gap:12}}>
+                <div>
+                  <label style={{display:"block",fontSize:12,color:C.textSec,marginBottom:6}}>Contraseña actual</label>
+                  <input type="password" value={passwordActual} onChange={e=>setPasswordActual(e.target.value)} style={{width:"100%",boxSizing:"border-box",padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:14,color:C.text}} />
+                </div>
+                <div>
+                  <label style={{display:"block",fontSize:12,color:C.textSec,marginBottom:6}}>Nueva contraseña</label>
+                  <input type="password" value={nuevaPassword} onChange={e=>setNuevaPassword(e.target.value)} style={{width:"100%",boxSizing:"border-box",padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:14,color:C.text}} />
+                </div>
+                <div>
+                  <label style={{display:"block",fontSize:12,color:C.textSec,marginBottom:6}}>Confirmar contraseña</label>
+                  <input type="password" value={confirmarPassword} onChange={e=>setConfirmarPassword(e.target.value)} style={{width:"100%",boxSizing:"border-box",padding:"10px 12px",border:`1px solid ${C.border}`,borderRadius:8,fontSize:14,color:C.text}} />
+                </div>
+                {passwordError && <div style={{fontSize:12,color:C.danger,background:C.dangerSoft,padding:"8px 10px",borderRadius:6}}>{passwordError}</div>}
+                {passwordSuccess && <div style={{fontSize:12,color:C.accent,background:"rgba(0,200,150,.08)",padding:"8px 10px",borderRadius:6}}>{passwordSuccess}</div>}
+                <button type="submit" disabled={passwordLoading} style={{padding:"12px 16px",borderRadius:8,border:"none",background:C.accent,color:"#fff",fontWeight:700,cursor:"pointer",opacity:passwordLoading?0.7:1}}>
+                  {passwordLoading ? "Guardando…" : "Actualizar contraseña"}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

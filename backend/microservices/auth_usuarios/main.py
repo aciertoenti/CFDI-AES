@@ -21,7 +21,6 @@ from usuario_validation import es_usuario_valido
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 from email_sender import enviar_correo_reset
-from auth_utils import obtener_email_seguro
 from redis_client import (
     MAX_INTENTOS_LOGIN,
     consumir_token_reset,
@@ -576,6 +575,11 @@ async def cambiar_password(
 
     usuario.password_hash = bcrypt.hashpw(nueva_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     await db.flush()
+
+    # Mismo hallazgo que en password_reset_confirm(): invalidacion de
+    # sesiones activas previas NO implementada. Un JWT robado antes de
+    # este cambio sigue siendo valido hasta su expiracion natural (1h,
+    # ver JWT_ALGORITHM arriba) - cambiar la contrasena no lo revoca.
     logger.info("password_change.confirmado rfc=%s", token["sub"])
 
     return {"mensaje": "Contraseña actualizada correctamente."}

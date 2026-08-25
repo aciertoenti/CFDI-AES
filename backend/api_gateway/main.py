@@ -175,6 +175,24 @@ async def password_reset_confirm_proxy(request: Request):
         raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
 
 
+@app.post("/auth/password/change")
+async def password_change_proxy(request: Request, token=Depends(verify_token)):
+    """Actualiza la contraseña solo para usuarios autenticados."""
+    target = f"{SERVICES['auth']}/auth/password/change"
+    headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(
+            method="POST",
+            url=target,
+            headers=headers,
+            content=await request.body(),
+        )
+    try:
+        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
+
+
 @app.post("/ia/chat/stream")
 async def ia_chat_stream_proxy(request: Request, token=Depends(verify_token)):
     """

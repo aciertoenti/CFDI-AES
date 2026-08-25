@@ -214,6 +214,19 @@ async def obtener_datos_emisor(rfc: str, x_negocio_id: Optional[str] = None) -> 
     return resp.json()
 
 
+async def obtener_plan_negocio(negocio_id: int) -> str:
+    """Consulta el plan vigente del negocio antes de aplicar su cuota mensual."""
+    headers = {"X-Negocio-Id": str(negocio_id), "X-Internal-Key": INTERNAL_API_KEY}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(f"{ADMINISTRACION_URL}/admin/negocios/{negocio_id}", headers=headers)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo consultar el plan del negocio: {e}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"administracion respondio {resp.status_code} al consultar el plan")
+    return resp.json().get("plan", "basico").lower()
+
+
 async def obtener_siguiente_folio(rfc: str, serie: str, x_negocio_id: Optional[str] = None) -> str:
     """Pide a administracion el siguiente folio consecutivo real para este
     emisor+serie (#12) - el conteo atomico vive alla, no aqui. Reemplaza el
@@ -493,6 +506,25 @@ async def timbrar_factura(
                 status_code=200,
                 content=_factura_to_response(factura_existente).model_dump(mode="json"),
             )
+
+    plan = await obtener_plan_negocio(negocio_id)
+    limites_facturas = {"emprendedor": 10, "basico": 50, "contador": 100, "despacho": 500}
+    limite_mensual = limites_facturas.get(plan, limites_facturas["basico"])
+    inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    facturas_mes = await db.scalar(
+        select(func.count(Factura.id)).where(
+            Factura.negocio_id == negocio_id,
+            Factura.fecha_timbrado >= inicio_mes,
+        )
+    ) or 0
+    if facturas_mes >= limite_mensual:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"El plan {plan} permite hasta {limite_mensual} factura(s) por mes. "
+                "Actualiza tu plan para continuar."
+            ),
+        )
 
     signer = await get_signer_para_negocio(factura.emisor_rfc, negocio_id)
     comprobante = await construir_comprobante(factura, signer, x_negocio_id)

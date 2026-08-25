@@ -1,30 +1,5 @@
 // ─── App.jsx ── CFDI-AES · Responsive + Toast + Table fix ─────────────────────
-// [REUTILIZABLE TAL CUAL] (21 ago 2026, clasificacion de reutilizacion
-// para plantilla base de futuros proyectos SaaS) - la ESTRUCTURA de
-// carpetas frontend/src/ (no el contenido de cada archivo) es un patron
-// generico de organizacion para cualquier frontend grande, sin nada
-// especifico de CFDI/fiscal en la estructura en si:
-//   shared/hooks/      - hooks reutilizables entre dominios (auth, fetch
-//                         con manejo de token, breakpoint, etc.)
-//   shared/components/ - atomos de UI puros (Btn, Card, KPI, etc.), sin
-//                         logica de negocio
-//   shared/layout/      - shell de la app (nav, header) + providers
-//                         globales (Toast)
-//   shared/utils/       - formateo/helpers sin estado
-//   domains/<dominio>/  - un dominio de negocio por carpeta, cada uno con
-//                         sus propios componentes + su propio hooks.js
-//                         para hooks que NO se comparten fuera de ese
-//                         dominio (ver domains/facturacion/hooks.js,
-//                         domains/ia/hooks.js como ejemplos del patron)
-//   App.jsx             - queda reducido a auth gate + tabla de rutas +
-//                         arbol raiz, sin logica de dominio
-// En otro proyecto, los nombres de las carpetas dentro de domains/
-// (auth/administracion/facturacion/ia) cambiarian por los dominios
-// reales de ese negocio - la ESTRUCTURA (shared/ + domains/<n>/, con
-// hooks.js local por dominio cuando aplique) se copia tal cual. Historia
-// completa de como se llego aqui: tarjeta PVTI_lAHOBYC0Os4BfCxZzg2V324
-// (refactor de App.jsx en 5 fases, 21 ago 2026).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import useAuth from "./shared/hooks/useAuth";
 import { EmisoresProvider } from "./shared/hooks/useEmisores";
 import { ToastProvider } from "./shared/layout/ToastProvider";
@@ -33,6 +8,7 @@ import Login from "./domains/auth/Login";
 import OlvideContrasena from "./domains/auth/OlvideContrasena";
 import ResetPassword from "./domains/auth/ResetPassword";
 import CrearCuenta from "./domains/auth/CrearCuenta";
+import PlanesLanding from "./domains/billing/PlanesLanding";
 import Clientes from "./domains/administracion/Clientes";
 import Emisores from "./domains/administracion/Emisores";
 import Series from "./domains/administracion/Series";
@@ -56,7 +32,7 @@ const NAV = [
   {id:"addenda",label:"Addenda AES",icon:"🔗",children:[]},
 ];
 const LABELS = {
-  nueva:"Nueva Factura",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",contador:"Contador Virtual",
+  nueva:"Nueva Factura",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",contador:"🧮 Contador Virtual",
   lector:"Lector de Documentos",chat:"Chat Fiscal",anomalias:"Anomalías IA",conciliacion:"Conciliación",
   emisores:"Emisores",clientes:"Clientes",usuarios:"Usuarios",series:"Series",addenda:"Addenda AES",
 };
@@ -79,15 +55,43 @@ function AuthGate(){
   // window.location.search se lee UNA vez al montar (useState con
   // funcion inicializadora), no en cada render. Sin react-router en el
   // proyecto: esto es deliberadamente el unico lugar que lee la URL.
-  const [vista, setVista] = useState(() => (
-    new URLSearchParams(window.location.search).get("token") ? "reset" : "login"
-  )); // "login" | "registro" | "olvide" | "reset"
+  const [vista, setVista] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("vista") || (params.get("token") ? "reset" : "landing");
+  }); // "landing" | "login" | "registro" | "prueba" | "olvide" | "reset"
+  // Plan elegido en la landing (?plan=emprendedor) - se lee de la URL igual
+  // que "vista", para que sobreviva un refresh a mitad del registro. Sin
+  // esto, el plan se perdia entre PlanesLanding y CrearCuenta: quedaba en
+  // la URL pero nunca llegaba al POST /auth/registro, y toda cuenta nueva
+  // caia en el default "basico" del backend sin importar el plan elegido
+  // (hallazgo real, confirmado en BD - 24 ago 2026, verificacion E2E).
+  const [planSeleccionado, setPlanSeleccionado] = useState(() => new URLSearchParams(window.location.search).get("plan"));
   const tokenReset = new URLSearchParams(window.location.search).get("token");
+  useEffect(() => {
+    const onPopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      setVista(params.get("vista") || (params.get("token") ? "reset" : "landing"));
+      setPlanSeleccionado(params.get("plan"));
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  const navigatePublic = (nextVista, plan, periodicidad) => {
+    const params = new URLSearchParams();
+    params.set("vista", nextVista);
+    if (plan) params.set("plan", plan);
+    if (periodicidad) params.set("periodicidad", periodicidad);
+    window.history.pushState({}, "", `${window.location.pathname}?${params.toString()}`);
+    setVista(nextVista);
+    setPlanSeleccionado(plan || null);
+  };
   if (!auth.isAuthenticated) {
-    if (vista === "registro") return <CrearCuenta onRegistro={auth.registro} onIrALogin={()=>setVista("login")}/>;
+    if (vista === "landing") return <PlanesLanding onIrALogin={()=>navigatePublic("login")} onIrARegistro={()=>navigatePublic("registro")} onElegirPlan={(plan,periodicidad)=>navigatePublic("registro", plan, periodicidad)}/>
+    if (vista === "registro") return <CrearCuenta plan={planSeleccionado} onRegistro={auth.registro} onIrALogin={()=>navigatePublic("login")} onIrAHome={()=>navigatePublic("landing")}/>;
+    if (vista === "prueba") return <CrearCuenta subtitulo="Prueba Controlada" plan={planSeleccionado} onRegistro={auth.registro} onIrALogin={()=>navigatePublic("login")} onIrAHome={()=>navigatePublic("landing")}/>;
     if (vista === "olvide") return <OlvideContrasena onSolicitar={auth.solicitarReset} onIrALogin={()=>setVista("login")}/>;
     if (vista === "reset") return <ResetPassword token={tokenReset} onConfirmar={auth.confirmarReset} onIrALogin={()=>setVista("login")}/>;
-    return <Login onLogin={auth.login} onIrARegistro={()=>setVista("registro")} onIrAOlvide={()=>setVista("olvide")}/>;
+    return <Login onLogin={auth.login} onIrARegistro={()=>navigatePublic("registro")} onIrAOlvide={()=>setVista("olvide")} onIrAHome={()=>navigatePublic("landing")}/>;
   }
   // AuthGate nunca se desmonta entre login/logout (solo cambia que rama
   // renderiza), asi que "vista" sobrevive el logout tal cual quedo antes
@@ -96,7 +100,7 @@ function AuthGate(){
   // resetea aqui, no dentro de auth.logout() (useAuth no tiene ni debe
   // tener conocimiento del concepto de "vista", que es puramente de
   // AuthGate).
-  const onLogout = () => { auth.logout(); setVista("login"); };
+  const onLogout = () => { auth.logout(); window.history.pushState({}, "", `${window.location.pathname}?vista=landing`); setVista("landing"); };
   return <EmisoresProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></EmisoresProvider>;
 }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { API_BASE, getToken, setStoredToken } from "./fetchAuth";
+import { API_BASE, fetchAuth, getToken, setStoredToken } from "./fetchAuth";
 import { detalleError } from "../utils/format";
 
 function decodeJwtClaims(token) {
@@ -34,11 +34,13 @@ export default function useAuth() {
       return { ok: false, error: e.message };
     }
   }, []);
-  const registro = useCallback(async (nombreNegocio, email, rfcPersonal, password, nombre, usuario) => {
+  const registro = useCallback(async (nombreNegocio, email, rfcPersonal, password, nombre, usuario, plan) => {
     try {
       const res = await fetch(`${API_BASE}/auth/registro`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, rfc_personal: rfcPersonal, password, nombre, usuario }),
+        // plan es opcional (backend cae en "basico" si se omite, ver
+        // RegistroRequest.plan) - solo se manda si viene de la landing.
+        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, rfc_personal: rfcPersonal, password, nombre, usuario, ...(plan ? { plan } : {}) }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return { ok: false, error: detalleError(data, res) };
@@ -74,6 +76,20 @@ export default function useAuth() {
       return { ok: false, error: e.message };
     }
   }, []);
+  const cambiarPassword = useCallback(async (passwordActual, nuevaPassword) => {
+    try {
+      const res = await fetchAuth(`${API_BASE}/auth/password/change`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password_actual: passwordActual, nueva_password: nuevaPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, error: detalleError(data, res) };
+      return { ok: true, mensaje: data.mensaje || "Contraseña actualizada correctamente." };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }, []);
   const usuarioActual = useMemo(() => decodeJwtClaims(token), [token]);
-  return { token, isAuthenticated: !!token, usuarioActual, login, registro, logout, solicitarReset, confirmarReset };
+  return { token, isAuthenticated: !!token, usuarioActual, login, registro, logout, solicitarReset, confirmarReset, cambiarPassword };
 }

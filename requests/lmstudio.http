@@ -1,0 +1,17 @@
+### LM Studio - CFDI-AES Assistant
+POST http://localhost:1234/v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "qwen2.5-coder-3b-instruct",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Eres un asistente especializado en desarrollo backend con Python/FastAPI y microservicios. Tu tarea es ayudar a continuar el proyecto CFDI-AES."
+    },
+    {
+      "role": "user",
+      "content": "Genera un endpoint en FastAPI para timbrar CFDI, incluyendo validación de datos y respuesta JSON."
+    }
+  ]
+}

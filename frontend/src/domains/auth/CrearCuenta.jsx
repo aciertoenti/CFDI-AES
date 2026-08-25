@@ -35,7 +35,7 @@ export default function CrearCuenta({ onRegistro, onIrALogin, onIrAHome, subtitu
             <Btn type="button" variant="secondary" onClick={()=>{setMenuOpen(false);onIrALogin();}} style={{width:"100%"}}>Iniciar sesión</Btn>
           </nav>}
         </div>
-        <img src={logoAcierto} alt="Acierto" style={{width:170,height:170,objectFit:"contain",mixBlendMode:"screen",marginBottom:14,clipPath:"inset(0 9px 9px 0)"}}/>
+        <img src={logoAcierto} alt="Acierto" style={{width:170,height:170,objectFit:"contain",mixBlendMode:"screen",marginBottom:14}}/>
         <div style={{fontSize:14,color:"rgba(255,255,255,.72)",marginBottom:22,textAlign:"center"}}>{subtitulo}</div>
         {field("reg-negocio","Nombre del negocio",nombreNegocio,setNombreNegocio,{autoFocus:true})}
         {field("reg-nombre","Tu nombre",nombre,setNombre)}

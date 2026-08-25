@@ -27,7 +27,7 @@ export default function Login({ onLogin, onIrARegistro, onIrAOlvide, onIrAHome }
             <Btn type="button" onClick={()=>{setMenuOpen(false);onIrAHome();}} style={{width:"100%"}}>Inicio</Btn>
           </nav>}
         </div>
-        <img src={logoAcierto} alt="Acierto" style={{width:170,height:170,objectFit:"contain",mixBlendMode:"screen",marginBottom:14,clipPath:"inset(0 9px 9px 0)"}}/>
+        <img src={logoAcierto} alt="Acierto" style={{width:170,height:170,objectFit:"contain",mixBlendMode:"screen",marginBottom:14}}/>
         <div style={{fontSize:14,color:"rgba(255,255,255,.72)",marginBottom:22,textAlign:"center"}}>Inicia sesión para continuar</div>
         <div style={{marginBottom:14,width:"100%"}}>
           <label htmlFor="login-rfc" style={{fontSize:13,color:"rgba(255,255,255,.78)",display:"block",marginBottom:5}}>RFC o USUARIO</label>

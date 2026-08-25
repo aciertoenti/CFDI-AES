@@ -34,11 +34,13 @@ export default function useAuth() {
       return { ok: false, error: e.message };
     }
   }, []);
-  const registro = useCallback(async (nombreNegocio, email, rfcPersonal, password, nombre, usuario) => {
+  const registro = useCallback(async (nombreNegocio, email, rfcPersonal, password, nombre, usuario, plan) => {
     try {
       const res = await fetch(`${API_BASE}/auth/registro`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, rfc_personal: rfcPersonal, password, nombre, usuario }),
+        // plan es opcional (backend cae en "basico" si se omite, ver
+        // RegistroRequest.plan) - solo se manda si viene de la landing.
+        body: JSON.stringify({ nombre_negocio: nombreNegocio, email, rfc_personal: rfcPersonal, password, nombre, usuario, ...(plan ? { plan } : {}) }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return { ok: false, error: detalleError(data, res) };

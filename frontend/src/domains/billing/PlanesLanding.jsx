@@ -66,7 +66,7 @@ export default function PlanesLanding({ onIrALogin, onIrARegistro, onIrAPrueba, 
           <h1 style={{fontSize:"clamp(36px,6vw,72px)",lineHeight:1.02,margin:"0 0 20px",letterSpacing:0}}>Confianza para crecer sin límites.</h1>
           <p style={{color:C.accent,fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:".14em",margin:"0 0 16px"}}>Desde tu primer RFC hasta la gestión de múltiples cuentas</p>
           <p style={{fontSize:"clamp(16px,2vw,18px)",lineHeight:1.55,color:"rgba(255,255,255,.74)",maxWidth:650,margin:"0 auto"}}>Administra tus facturas emitidas y recibidas mes con mes en tiempo y forma, con un contador virtual desde un chat fiscal con IA, todo en una sola cuenta, mediante planes claros que te permiten crecer sin perder el control.</p>
-          <Btn type="button" onClick={onIrALogin} style={{marginTop:24,padding:"13px 24px",maxWidth:"100%"}}>Prueba sin costo la Facturación Inteligente</Btn>
+          <Btn type="button" onClick={onIrALogin} style={{marginTop:24,padding:"13px 24px",maxWidth:"100%"}}>¡Accede ahora a la Facturación Inteligente!</Btn>
         </section>
 
         <section aria-label="Planes disponibles">

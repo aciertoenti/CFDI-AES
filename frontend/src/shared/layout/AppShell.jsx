@@ -17,12 +17,12 @@ export function Placeholder({title,detail}){
 export function SidebarNav({active,navigate,expanded,toggle,compact=false,nav,labels}){
   return (
     <>
-      <div style={{padding:compact?"14px 0 12px":"20px 18px 14px",borderBottom:"1px solid rgba(255,255,255,.08)",textAlign:compact?"center":"left"}}>
+      <div style={{padding:compact?"14px 0 12px":"20px 18px 14px",borderBottom:"1px solid rgba(255,255,255,.08)",textAlign:"center"}}>
         {compact
-          ? <img src={logoAcierto} alt="Acierto" style={{width:28,height:28,borderRadius:6,display:"inline-block"}}/>
+          ? <img src={logoAcierto} alt="Acierto" style={{width:28,height:28,objectFit:"contain",mixBlendMode:"screen",display:"inline-block"}}/>
           : <>
-              <img src={logoAcierto} alt="Acierto" style={{width:110,maxWidth:"100%",borderRadius:6,display:"block"}}/>
-              <div style={{fontSize:13,fontWeight:600,color:"rgba(255,255,255,.9)",marginTop:6}}>Portal Inteligente</div>
+              <img src={logoAcierto} alt="Acierto" style={{width:110,maxWidth:"100%",objectFit:"contain",mixBlendMode:"screen",display:"block",margin:"0 auto"}}/>
+              <div style={{fontSize:13,fontWeight:600,color:"rgba(255,255,255,.9)",marginTop:6}}>Facturación Inteligente</div>
             </>
         }
       </div>

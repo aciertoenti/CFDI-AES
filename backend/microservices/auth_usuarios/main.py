@@ -9,6 +9,7 @@ import httpx
 import jwt
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -59,6 +60,18 @@ JWT_SECRET = os.environ.get("JWT_SECRET")
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET no está definido. Configúralo como variable de entorno.")
 JWT_ALGORITHM = "HS256"
+
+security = HTTPBearer()
+
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token inválido")
 
 
 class LoginRequest(BaseModel):
@@ -171,6 +184,11 @@ class PasswordResetRequestRequest(BaseModel):
 
 class PasswordResetConfirmRequest(BaseModel):
     token: str
+    nueva_password: str
+
+
+class CambiarPasswordRequest(BaseModel):
+    password_actual: str
     nueva_password: str
 
 
@@ -528,17 +546,41 @@ async def password_reset_confirm(req: PasswordResetConfirmRequest, db: AsyncSess
     usuario.password_hash = bcrypt.hashpw(nueva_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     await db.flush()
 
-    # Invalidacion de sesiones activas previas: NO implementada (marcada
-    # como opcional en el requisito). Los JWT de este servicio son
-    # stateless (el Gateway solo verifica firma/expiracion, nunca consulta
-    # Redis/BD por cada request) - invalidar tokens ya emitidos de verdad
-    # requeriria agregar un chequeo de revocacion en verify_token() del
-    # Gateway (una llamada extra, a Redis o similar, en CADA request
-    # proxiada, no solo en las de este servicio), un cambio de arquitectura
-    # mas amplio que este requisito no pidio explicitamente. Mitigante ya
-    # existente: los JWT expiran solos a la 1h (ver JWT_ALGORITHM arriba),
-    # asi que la ventana de exposicion tras un reset tiene un techo corto.
     logger.info("password_reset.confirmado rfc=%s", rfc_personal)
+
+    return {"mensaje": "Contraseña actualizada correctamente."}
+
+
+@app.post("/auth/password/change")
+async def cambiar_password(
+    req: CambiarPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    token=Depends(verify_token),
+):
+    """Actualiza la contraseña autenticada sin depender del correo."""
+    if "sub" not in token or not token["sub"]:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    nueva_password = validar_password_nueva(req.nueva_password)
+    if not req.password_actual:
+        raise HTTPException(status_code=400, detail="La contraseña actual es obligatoria")
+
+    result = await db.execute(select(Usuario).where(Usuario.rfc_personal == token["sub"]))
+    usuario = result.scalar_one_or_none()
+    if usuario is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if not bcrypt.checkpw(req.password_actual.encode("utf-8"), usuario.password_hash.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="La contraseña actual no coincide")
+
+    usuario.password_hash = bcrypt.hashpw(nueva_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    await db.flush()
+
+    # Mismo hallazgo que en password_reset_confirm(): invalidacion de
+    # sesiones activas previas NO implementada. Un JWT robado antes de
+    # este cambio sigue siendo valido hasta su expiracion natural (1h,
+    # ver JWT_ALGORITHM arriba) - cambiar la contrasena no lo revoca.
+    logger.info("password_change.confirmado rfc=%s", token["sub"])
 
     return {"mensaje": "Contraseña actualizada correctamente."}
 

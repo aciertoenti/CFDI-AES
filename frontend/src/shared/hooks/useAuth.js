@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { API_BASE, getToken, setStoredToken } from "./fetchAuth";
+import { API_BASE, fetchAuth, getToken, setStoredToken } from "./fetchAuth";
 import { detalleError } from "../utils/format";
 
 function decodeJwtClaims(token) {
@@ -74,6 +74,20 @@ export default function useAuth() {
       return { ok: false, error: e.message };
     }
   }, []);
+  const cambiarPassword = useCallback(async (passwordActual, nuevaPassword) => {
+    try {
+      const res = await fetchAuth(`${API_BASE}/auth/password/change`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password_actual: passwordActual, nueva_password: nuevaPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, error: detalleError(data, res) };
+      return { ok: true, mensaje: data.mensaje || "Contraseña actualizada correctamente." };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }, []);
   const usuarioActual = useMemo(() => decodeJwtClaims(token), [token]);
-  return { token, isAuthenticated: !!token, usuarioActual, login, registro, logout, solicitarReset, confirmarReset };
+  return { token, isAuthenticated: !!token, usuarioActual, login, registro, logout, solicitarReset, confirmarReset, cambiarPassword };
 }

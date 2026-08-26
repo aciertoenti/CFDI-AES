@@ -36,12 +36,6 @@ export function SidebarNav({active,navigate,expanded,toggle,compact=false,nav,la
               {!compact&&item.id==="ia"&&<span style={{fontSize:9,padding:"2px 6px",borderRadius:8,background:"rgba(0,200,150,.2)",color:C.accent}}>IA</span>}
               {!compact&&item.children.length>0&&<span style={{fontSize:10,opacity:.5}}>{expanded[item.id]?"▾":"▸"}</span>}
             </div>
-            {!compact&&item.id==="addenda"&&(
-              <div onClick={()=>navigate("addenda")}
-                style={{padding:"6px 18px 6px 38px",cursor:"pointer",fontSize:13,color:active==="addenda"?C.accent:"rgba(255,255,255,.55)",background:active==="addenda"?"rgba(0,200,150,.1)":"transparent",borderLeft:active==="addenda"?`2px solid ${C.accent}`:"2px solid transparent"}}>
-                Addenda AES
-              </div>
-            )}
             {!compact&&expanded[item.id]&&item.children.map(child=>(
               <div key={child} onClick={()=>navigate(child)}
                 style={{padding:"6px 18px 6px 38px",cursor:"pointer",fontSize:13,color:active===child?C.accent:"rgba(255,255,255,.55)",background:active===child?"rgba(0,200,150,.1)":"transparent",borderLeft:active===child?`2px solid ${C.accent}`:"2px solid transparent",transition:"all .15s"}}>

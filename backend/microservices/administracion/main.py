@@ -17,7 +17,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +44,13 @@ from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 # caido (ver actualizar_emisor), nunca debe bloquear una rotacion de CSD
 # valida solo porque facturacion no esta disponible en ese momento.
 FACTURACION_URL = os.environ.get("FACTURACION_URL", "http://facturacion:8001")
+
+PLAN_LIMITS = {
+    "emprendedor": {"emisores": 1, "facturas_mes": 10},
+    "basico": {"emisores": 1, "facturas_mes": 50},
+    "contador": {"emisores": 5, "facturas_mes": 100},
+    "despacho": {"emisores": 10, "facturas_mes": 500},
+}
 
 
 async def _invalidar_csd_cache_en_facturacion(rfc: str) -> bool:
@@ -228,6 +235,26 @@ async def crear_emisor(
         raise HTTPException(status_code=409, detail=f"El emisor {emisor.rfc} ya existe")
 
     negocio_id = requerir_negocio_id(x_negocio_id)
+
+    negocio_result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
+    negocio = negocio_result.scalar_one_or_none()
+    if negocio is None:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+    limite_emisores = PLAN_LIMITS.get(negocio.plan, PLAN_LIMITS["basico"])["emisores"]
+    emisores_activos = await db.scalar(
+        select(func.count(Emisor.id)).where(
+            Emisor.negocio_id == negocio_id,
+            Emisor.estado == "Activo",
+        )
+    ) or 0
+    if emisores_activos >= limite_emisores:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"El plan {negocio.plan} permite hasta {limite_emisores} emisor(es). "
+                "Actualiza tu plan para agregar otro emisor."
+            ),
+        )
 
     # Validacion CSD<->RFC (ver investigacion en csd_rfc.py): el RFC
     # declarado en el body debe coincidir con el RFC real embebido en el

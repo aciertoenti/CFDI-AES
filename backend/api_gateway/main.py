@@ -115,7 +115,14 @@ async def password_reset_request_proxy(request: Request):
     # Si ya trae X-Forwarded-For (proxy/balanceador delante del Gateway en
     # produccion), se antepone el salto conocido en vez de reemplazarlo -
     # mismo patron estandar de cadena XFF.
-    xff_previo = forward_headers.get("x-forwarded-for") or forward_headers.get("X-Forwarded-For")
+    # Fix de seguridad (26 ago 2026): mismo patron de colision de casing que
+    # el proxy generico (linea 218) - "x-forwarded-for" del cliente y
+    # "X-Forwarded-For" que este codigo calcula coexistian como llaves
+    # DISTINTAS, dejando el valor crudo del cliente (potencialmente falseado)
+    # disponible junto al valor correctamente encadenado. Se usa pop() en
+    # vez de get() para ELIMINAR la entrada existente (cualquier casing) al
+    # leerla, no solo copiar su valor - asi solo queda una llave final.
+    xff_previo = forward_headers.pop("x-forwarded-for", None) or forward_headers.pop("X-Forwarded-For", None)
     forward_headers["X-Forwarded-For"] = f"{xff_previo}, {client_ip}" if xff_previo else client_ip
 
     async with httpx.AsyncClient(timeout=30.0) as client:

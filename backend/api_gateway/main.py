@@ -215,7 +215,17 @@ async def proxy(service: str, request: Request, path: str = "", token=Depends(ve
     full_path = f"{service}/{path}" if path else service
     target = f"{SERVICES[service]}/{full_path}"
 
-    forward_headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+    # Fix de seguridad (26 ago 2026): antes solo se excluia "host", dejando que
+    # el cliente inyectara sus propios X-Negocio-Id/X-Usuario-Email/X-Usuario-Rfc/
+    # X-Internal-Key con distinto casing (ej. "x-negocio-id" en minusculas) que
+    # coexistian como llaves DISTINTAS junto a las que este mismo proxy agrega
+    # abajo con mayusculas - el downstream terminaba leyendo el valor del
+    # atacante, no el del servidor (confirmado explotable: fuga cross-tenant
+    # real via X-Negocio-Id). Se excluyen aqui TODOS los headers de confianza
+    # que este proxy fija mas abajo, sin importar el casing con que llegaron
+    # del cliente, para que no puedan colisionar.
+    HEADERS_DE_CONFIANZA = {"host", "x-negocio-id", "x-usuario-email", "x-usuario-rfc", "x-internal-key"}
+    forward_headers = {k: v for k, v in request.headers.items() if k.lower() not in HEADERS_DE_CONFIANZA}
     # Inyectado tras verificar el JWT (#15) - el downstream nunca decodifica
     # el token el mismo, confia en este header. negocio_id solo existe en
     # tokens emitidos despues de #15; los anteriores no lo tienen, y el

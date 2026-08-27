@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useToast } from "../../shared/layout/ToastProvider";
 import useEmisores from "../../shared/hooks/useEmisores";
 import useClientes from "../../shared/hooks/useClientes";
@@ -20,6 +20,17 @@ export default function NuevaFactura(){
   const [resultado,setResultado]=useState(null);
   const [errorTimbrado,setErrorTimbrado]=useState(null);
 
+  // Receptor generico (Publico en General): el SAT exige que su domicilio
+  // fiscal sea igual al LugarExpedicion del emisor activo (regla ya aplicada
+  // en facturacion/main.py al armar el CFDI). Si el usuario cambia de emisor
+  // con el generico ya seleccionado, este CP debe seguir al emisor - un
+  // cliente real conserva su propio domicilio fiscal, sin tocarlo aqui.
+  useEffect(() => {
+    if (form.rfc === "XAXX010101000" && emisor?.codigo_postal) {
+      setForm(f => f.domicilioFiscal === emisor.codigo_postal ? f : {...f, domicilioFiscal: emisor.codigo_postal});
+    }
+  }, [emisor?.codigo_postal, form.rfc]);
+
   const sub=(parseFloat(form.cantidad)||0)*(parseFloat(form.precio)||0);
   const total=sub*(1+(parseFloat(form.iva)||0)/100);
 
@@ -31,10 +42,10 @@ export default function NuevaFactura(){
     setForm(f=>({...f,clienteRfc:rfc,receptor:c.nombre,rfc:c.rfc,usoCfdi:c.uso_cfdi_default||f.usoCfdi,domicilioFiscal:c.domicilio_fiscal||"",regimenFiscal:c.regimen_fiscal||""}));
   };
 
-  const inp=(lbl,k,type="text")=>(
+  const inp=(lbl,k,type="text",extra={})=>(
     <div style={{marginBottom:10}}>
       <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>{lbl}</label>
-      <input type={type} value={form[k]} onChange={e=>setForm({...form,[k]:e.target.value})} placeholder={lbl}
+      <input type={type} value={form[k]} onChange={e=>setForm({...form,[k]:e.target.value})} placeholder={lbl} {...extra}
         style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}/>
     </div>
   );
@@ -43,6 +54,10 @@ export default function NuevaFactura(){
     if (!emisor) { toast("No hay ningún emisor registrado en Administración todavía","error"); return; }
     if (!form.receptor||!form.rfc||!form.domicilioFiscal||!form.concepto||!form.cantidad||!form.precio) {
       toast("Completa receptor, domicilio fiscal y los datos del concepto antes de timbrar","warning"); return;
+    }
+    if (parseFloat(form.cantidad) <= 0 || parseFloat(form.precio) <= 0) {
+      toast("Cantidad y precio unitario deben ser mayores a cero", "warning");
+      return;
     }
     setEnviando(true); setErrorTimbrado(null); setResultado(null);
     const payload = {
@@ -123,8 +138,8 @@ export default function NuevaFactura(){
         <div style={{fontSize:11,fontWeight:700,color:C.accent,letterSpacing:"0.08em",marginBottom:12,textTransform:"uppercase"}}>Conceptos</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:10}}>
           {inp("Descripción","concepto")}
-          {inp("Cantidad","cantidad","number")}
-          {inp("Precio unitario","precio","number")}
+          {inp("Cantidad","cantidad","number",{min:"0"})}
+          {inp("Precio unitario","precio","number",{min:"0"})}
           {inp("IVA %","iva","number")}
         </div>
         <div style={{display:"flex",justifyContent:"flex-end",gap:20,paddingTop:12,borderTop:`1px solid ${C.border}`,flexWrap:"wrap"}}>

@@ -256,7 +256,20 @@ async def proxy(service: str, request: Request, path: str = "", token=Depends(ve
     # hallazgo aparte, fuera de alcance aqui).
     forward_headers["X-Internal-Key"] = INTERNAL_API_KEY
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    # Timeout subido de 30s a 60s (27 ago 2026) - un timbrado real contra
+    # Finkok tardo 34.6s en pruebas, mas que el timeout anterior. El gateway
+    # cortaba la conexion ANTES de que el PAC respondiera, devolviendo
+    # 500/error al usuario mientras facturacion seguia procesando en segundo
+    # plano y completaba el timbrado con exito - riesgo real de que el
+    # usuario, viendo el error, reintente y genere una SEGUNDA factura real
+    # timbrada para la misma operacion (un CFDI ya timbrado no se puede
+    # borrar, solo cancelar formalmente ante el SAT). 60s da margen razonable
+    # sobre los 34.6s observados. Nota: esto reduce la ventana de riesgo, no
+    # la elimina del todo - una solucion mas robusta (ej. idempotencia real
+    # en el timbrado, o polling de estado en vez de esperar la respuesta
+    # sincrona completa) queda como mejora de fondo pendiente, documentada
+    # en tarjeta de backlog aparte.
+    async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.request(
             method=request.method,
             url=target,

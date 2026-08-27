@@ -61,6 +61,7 @@ COSTO_TIMBRE_CON_IVA = (COSTO_TIMBRE_FINKOK * (1 + IVA_TASA_COSTO_TIMBRE)).quant
 # para RESICO Personas Fisicas. Tasa fija sobre el TOTAL del mes (no es
 # calculo marginal como las tarifas de sueldos) - Art. 113-E LISR.
 REGIMEN_RESICO = "626"  # verificado contra el catalogo oficial C756_c_RegimenFiscal (satcfdi), no asumido
+REGIMEN_SIN_OBLIGACIONES = "616"  # verificado contra C756_c_RegimenFiscal (satcfdi), no asumido
 RFC_LEN_PERSONA_FISICA = 13  # 12 = Persona Moral - el codigo 626 aplica a ambas, hay que distinguir por RFC
 TABLA_ISR_RESICO_PF = [
     (Decimal("25000.00"), Decimal("0.0100")),
@@ -412,11 +413,20 @@ async def construir_comprobante(factura: FacturaCreate, signer: Signer, x_negoci
     if factura.receptor.rfc == RFC_PUBLICO_EN_GENERAL:
         domicilio_fiscal_receptor = datos_emisor["codigo_postal"]
 
+    # Mismo criterio que DomicilioFiscalReceptor: si el receptor es Publico
+    # en General, su RegimenFiscalReceptor debe ser 616 (Sin obligaciones
+    # fiscales) - el SAT lo exige y el default "601" de ReceptorCFDI no debe
+    # llegar nunca al CFDI para XAXX010101000. Se fuerza aqui, no se confia
+    # en que el caller lo mande bien.
+    regimen_fiscal_receptor = factura.receptor.regimen_fiscal
+    if factura.receptor.rfc == RFC_PUBLICO_EN_GENERAL:
+        regimen_fiscal_receptor = REGIMEN_SIN_OBLIGACIONES
+
     receptor = Receptor(
         rfc=factura.receptor.rfc,
         nombre=factura.receptor.nombre,
         domicilio_fiscal_receptor=domicilio_fiscal_receptor,
-        regimen_fiscal_receptor=factura.receptor.regimen_fiscal,
+        regimen_fiscal_receptor=regimen_fiscal_receptor,
         uso_cfdi=factura.receptor.uso_cfdi,
     )
     conceptos = [

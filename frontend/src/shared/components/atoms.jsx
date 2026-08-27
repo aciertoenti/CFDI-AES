@@ -12,7 +12,7 @@ export function Card({children,style={},onClick}){
 export function Btn({children,variant="primary",onClick,style={},disabled,type="submit"}){
   const base={borderRadius:8,padding:"10px 18px",fontSize:13,fontWeight:600,cursor:disabled?"not-allowed":"pointer",border:"none",opacity:disabled?.5:1,...style};
   const s={primary:{...base,background:C.primary,color:C.accent},secondary:{...base,background:"transparent",color:C.textSec,border:`1px solid ${C.border}`},accent:{...base,background:C.accent,color:"#fff"}};
-  return <button type={type} style={s[variant]||s.primary} onClick={disabled?undefined:onClick}>{children}</button>;
+  return <button type={type} disabled={disabled} aria-disabled={disabled} style={s[variant]||s.primary} onClick={disabled?undefined:onClick}>{children}</button>;
 }
 export function TwoCol({children,minCol=260}){return <div style={{display:"grid",gridTemplateColumns:`repeat(auto-fit,minmax(${minCol}px,1fr))`,gap:12,minWidth:0,width:"100%"}}>{children}</div>;}
 export function KPIGrid({children}){return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:10,marginBottom:16,minWidth:0,width:"100%"}}>{children}</div>;}

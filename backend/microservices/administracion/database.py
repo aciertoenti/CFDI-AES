@@ -119,6 +119,10 @@ class Emisor(Base):
     # de auditoria, no se rechaza el alta si falta, y los emisores previos a
     # este cambio (ej. EKU9003173C9) no lo tienen - no se inventa retroactivamente.
     creado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Mismo criterio que creado_por_rfc: auditoria, no control de seguridad,
+    # nullable (un emisor nunca editado no lo tiene). Se llena tanto en el
+    # PATCH de campos simples como en el PUT de reemplazo de CSD.
+    modificado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

@@ -93,6 +93,15 @@ class EmisorCreate(BaseModel):
     csd_key_base64: str   # Llave privada .key en base64
     csd_password: str
 
+class EmisorUpdateParcial(BaseModel):
+    # Todos opcionales a proposito: PATCH solo toca lo que venga, a
+    # diferencia de PUT /admin/emisores/{rfc} (actualizar_emisor) que exige
+    # el body completo de EmisorCreate, CSD incluido. Este endpoint es
+    # deliberadamente ajeno al CSD - nunca lo recibe, nunca lo toca.
+    razon_social: Optional[str] = None
+    regimen_fiscal: Optional[str] = None
+    codigo_postal: Optional[str] = None
+
 class EmisorResponse(BaseModel):
     rfc: str
     razon_social: str
@@ -102,6 +111,7 @@ class EmisorResponse(BaseModel):
     negocio_id: int
     created_at: datetime
     creado_por_rfc: Optional[str] = None
+    modificado_por_rfc: Optional[str] = None
     # None en crear_emisor/listar (no aplica); True/False solo en
     # actualizar_emisor (PUT) - indica si facturacion confirmo haber
     # invalidado su cache del CSD viejo. False no es un error del PUT en si
@@ -185,6 +195,7 @@ def _emisor_to_response(e: Emisor, cache_invalidado: Optional[bool] = None) -> E
         negocio_id=e.negocio_id,
         created_at=e.created_at,
         creado_por_rfc=e.creado_por_rfc,
+        modificado_por_rfc=e.modificado_por_rfc,
         cache_invalidado=cache_invalidado,
     )
 
@@ -434,6 +445,7 @@ async def actualizar_emisor(
     emisor: EmisorCreate,
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
 ):
     # El mas grave de los IDOR (#15) - sin este check, cualquiera podia
     # editar el CSD de un emisor ajeno adivinando el RFC. 404 (no 403) si no
@@ -474,6 +486,7 @@ async def actualizar_emisor(
     existente.csd_cert_base64 = emisor.csd_cert_base64
     existente.csd_key_base64 = emisor.csd_key_base64
     existente.csd_password = emisor.csd_password
+    existente.modificado_por_rfc = x_usuario_rfc
     await db.commit()
     await db.refresh(existente)
 
@@ -484,6 +497,39 @@ async def actualizar_emisor(
     # reinicie o se reintente. Nunca fallar en silencio.
     cache_invalidado = await _invalidar_csd_cache_en_facturacion(rfc)
     return _emisor_to_response(existente, cache_invalidado=cache_invalidado)
+
+
+@app.patch(
+    "/admin/emisores/{rfc}",
+    response_model=EmisorResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def actualizar_emisor_parcial(
+    rfc: str,
+    emisor: EmisorUpdateParcial,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+):
+    """Actualiza SOLO campos simples (razon_social/regimen_fiscal/
+    codigo_postal) sin tocar el CSD en absoluto - para eso sigue existiendo
+    el PUT de arriba (actualizar_emisor), que exige CSD completo a proposito
+    (confirmacion explicita antes de rotar un secreto). Mismo IDOR check que
+    el PUT: 404 (no 403) si el emisor no pertenece al Negocio del caller."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(select(Emisor).where(Emisor.rfc == rfc, Emisor.negocio_id == negocio_id))
+    existente = result.scalar_one_or_none()
+    if existente is None:
+        raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
+
+    datos = emisor.model_dump(exclude_unset=True)
+    for campo, valor in datos.items():
+        setattr(existente, campo, valor)
+    existente.modificado_por_rfc = x_usuario_rfc
+    await db.commit()
+    await db.refresh(existente)
+    return _emisor_to_response(existente)
+
 
 # ─── Clientes ──────────────────────────────────────────────────────────────────
 

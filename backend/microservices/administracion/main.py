@@ -72,6 +72,28 @@ async def _invalidar_csd_cache_en_facturacion(rfc: str) -> bool:
         return False
 
 
+async def _contar_facturas_del_emisor(rfc: str, negocio_id: int) -> Optional[int]:
+    """None si no se pudo verificar (timeout/error) - en ese caso el
+    DELETE debe FALLAR CERRADO (rechazar el borrado), no asumir 0 facturas
+    por una falla de red. Distinto criterio a la invalidacion de cache
+    (que sí puede degradar silenciosamente) porque aquí una falla mal
+    manejada podría borrar un emisor con historial real."""
+    if not INTERNAL_API_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{FACTURACION_URL}/facturas/count",
+                params={"emisor_rfc": rfc},
+                headers={"X-Internal-Key": INTERNAL_API_KEY, "X-Negocio-Id": str(negocio_id)},
+            )
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("total_facturas")
+    except httpx.RequestError:
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await create_tables()
@@ -101,6 +123,11 @@ class EmisorUpdateParcial(BaseModel):
     razon_social: Optional[str] = None
     regimen_fiscal: Optional[str] = None
     codigo_postal: Optional[str] = None
+    # "Inactivar" un emisor = PATCH estado="Inactivo". El conteo del plan
+    # (crear_emisor) ya filtra por estado == "Activo", asi que inactivar
+    # libera un cupo sin tocar esa logica. Reemplaza al DELETE cuando el
+    # emisor tiene facturas timbradas y no se puede borrar.
+    estado: Optional[str] = None
 
 class EmisorResponse(BaseModel):
     rfc: str
@@ -523,12 +550,45 @@ async def actualizar_emisor_parcial(
         raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
 
     datos = emisor.model_dump(exclude_unset=True)
+    if datos.get("estado") and datos["estado"] not in ("Activo", "Inactivo"):
+        raise HTTPException(status_code=422, detail="estado debe ser 'Activo' o 'Inactivo'")
     for campo, valor in datos.items():
         setattr(existente, campo, valor)
     existente.modificado_por_rfc = x_usuario_rfc
     await db.commit()
     await db.refresh(existente)
     return _emisor_to_response(existente)
+
+
+@app.delete("/admin/emisores/{rfc}", dependencies=[Depends(require_internal_key)])
+async def eliminar_emisor(
+    rfc: str,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Mismo patron que eliminar_cliente (IDOR check + 404 + hard delete),
+    con el chequeo adicional de facturas asociadas antes de borrar."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(select(Emisor).where(Emisor.rfc == rfc, Emisor.negocio_id == negocio_id))
+    existente = result.scalar_one_or_none()
+    if existente is None:
+        raise HTTPException(status_code=404, detail=f"Emisor {rfc} no encontrado")
+
+    total_facturas = await _contar_facturas_del_emisor(rfc, negocio_id)
+    if total_facturas is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo verificar si el emisor tiene facturas asociadas. Intenta de nuevo.",
+        )
+    if total_facturas > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"El emisor {rfc} tiene {total_facturas} factura(s) timbrada(s) - no se puede eliminar. Usa 'Inactivar' en su lugar.",
+        )
+
+    await db.delete(existente)
+    await db.commit()
+    return {"rfc": rfc, "eliminado": True}
 
 
 # ─── Clientes ──────────────────────────────────────────────────────────────────

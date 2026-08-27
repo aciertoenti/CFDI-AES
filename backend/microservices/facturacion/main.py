@@ -620,6 +620,25 @@ async def timbrar_factura(
         creado_por_rfc=x_usuario_rfc,
     )
 
+@app.get("/facturas/count", dependencies=[Depends(require_internal_key)])
+async def contar_facturas_por_emisor(
+    emisor_rfc: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Cuenta facturas timbradas de un emisor, para verificar antes de
+    permitir eliminarlo desde administracion - endpoint barato (solo
+    COUNT, no trae las filas), mismo aislamiento por negocio_id que el
+    resto del servicio."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    total = await db.scalar(
+        select(func.count(Factura.id)).where(
+            Factura.negocio_id == negocio_id,
+            Factura.emisor_rfc == emisor_rfc,
+        )
+    ) or 0
+    return {"emisor_rfc": emisor_rfc, "total_facturas": total}
+
 @app.get("/facturas", response_model=List[FacturaResponse], dependencies=[Depends(require_internal_key)])
 async def listar_facturas(
     tipo: str = Query("generadas", enum=["generadas", "recibidas"]),

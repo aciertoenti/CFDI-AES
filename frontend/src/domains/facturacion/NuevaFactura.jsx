@@ -39,7 +39,16 @@ export default function NuevaFactura(){
     if (!rfc) { setForm(f=>({...f,clienteRfc:"",receptor:"",rfc:"",domicilioFiscal:"",regimenFiscal:""})); return; }
     const c = clientes.find(c=>c.rfc===rfc);
     if (!c) return;
-    setForm(f=>({...f,clienteRfc:rfc,receptor:c.nombre,rfc:c.rfc,usoCfdi:c.uso_cfdi_default||f.usoCfdi,domicilioFiscal:c.domicilio_fiscal||"",regimenFiscal:c.regimen_fiscal||""}));
+    setForm(f=>({
+      ...f,
+      clienteRfc:rfc,
+      receptor:c.nombre,
+      rfc:c.rfc,
+      usoCfdi:c.uso_cfdi_default||f.usoCfdi,
+      domicilioFiscal:c.domicilio_fiscal||"",
+      regimenFiscal:c.regimen_fiscal||"",
+      concepto: (c.rfc === "XAXX010101000" && !f.concepto) ? "Venta al público en general" : f.concepto,
+    }));
   };
 
   const inp=(lbl,k,type="text",extra={})=>(

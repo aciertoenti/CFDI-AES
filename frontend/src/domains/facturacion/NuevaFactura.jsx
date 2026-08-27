@@ -19,6 +19,14 @@ export default function NuevaFactura(){
   const [enviando,setEnviando]=useState(false);
   const [resultado,setResultado]=useState(null);
   const [errorTimbrado,setErrorTimbrado]=useState(null);
+  // Idempotencia real de timbrado (27 ago 2026) - una key por "sesion de
+  // captura", generada una sola vez (no en cada render/click). Un reintento
+  // de la MISMA operacion (ej. tras un timeout de red) reusa esta misma key,
+  // asi el backend detecta el duplicado y devuelve la factura ya existente
+  // en vez de timbrar dos veces. Solo se regenera cuando el formulario se
+  // resetea de verdad (timbrado exitoso), nunca al editar campos ni al
+  // fallar un intento.
+  const [idempotencyKey,setIdempotencyKey]=useState(() => crypto.randomUUID());
 
   // Receptor generico (Publico en General): el SAT exige que su domicilio
   // fiscal sea igual al LugarExpedicion del emisor activo (regla ya aplicada
@@ -51,6 +59,7 @@ export default function NuevaFactura(){
         cantidad: "",
         precio: "",
       }));
+      setIdempotencyKey(crypto.randomUUID());
     }
   }, [resultado]);
 
@@ -110,7 +119,9 @@ export default function NuevaFactura(){
     };
     try {
       const res = await fetchAuth(`${API_BASE}/facturas/timbrar`, {
-        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload),
+        method:"POST",
+        headers:{"Content-Type":"application/json","X-Idempotency-Key":idempotencyKey},
+        body:JSON.stringify(payload),
       });
       const data = await res.json().catch(()=>({}));
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);

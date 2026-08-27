@@ -31,6 +31,29 @@ export default function NuevaFactura(){
     }
   }, [emisor?.codigo_postal, form.rfc]);
 
+  // Reset automatico tras timbrado exitoso (27 ago 2026) - una vez que la
+  // factura se timbro, la operacion termino: limpiar los campos de
+  // receptor/concepto para la siguiente venta, sin necesidad de un boton
+  // manual. Se dispara SOLO cuando `resultado` pasa de vacio a tener valor
+  // (justo despues de un timbrado exitoso), nunca mientras el usuario esta
+  // escribiendo - evita el riesgo de pisar texto a medio capturar que tenia
+  // la alternativa de "limpiar al vaciar el campo".
+  useEffect(() => {
+    if (resultado) {
+      setForm(f => ({
+        ...f,
+        clienteRfc: "",
+        receptor: "",
+        rfc: "",
+        domicilioFiscal: "",
+        regimenFiscal: "",
+        concepto: "",
+        cantidad: "",
+        precio: "",
+      }));
+    }
+  }, [resultado]);
+
   const sub=(parseFloat(form.cantidad)||0)*(parseFloat(form.precio)||0);
   const total=sub*(1+(parseFloat(form.iva)||0)/100);
 

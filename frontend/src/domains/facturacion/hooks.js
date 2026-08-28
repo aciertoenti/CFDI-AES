@@ -19,6 +19,26 @@ export function useFacturas(emisorRfc) {
   return { facturas, loading, error, recargar: cargar };
 }
 
+// Borradores de factura: fuente de datos aparte (endpoint propio, NO es un
+// filtro client-side sobre `facturas`). Solo dispara la carga cuando `activo`
+// es true - es una pestaña dentro de "Generadas" que casi nunca esta abierta.
+export function useBorradores(activo) {
+  const [borradores, setBorradores] = useState([]);
+  const [loading,    setLoading]    = useState(false);
+  const [error,      setError]      = useState(null);
+  const cargar = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetchAuth(`${API_BASE}/facturas/borradores`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setBorradores(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { if (activo) cargar(); }, [activo, cargar]);
+  return { borradores, loading, error, recargar: cargar };
+}
+
 export function useCostosResumen(emisorRfc) {
   const [datos,   setDatos]   = useState([]);
   const [loading, setLoading] = useState(true);

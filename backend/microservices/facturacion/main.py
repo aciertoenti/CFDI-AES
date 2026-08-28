@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from datetime import date, datetime
 import httpx
@@ -34,7 +34,7 @@ from satcfdi.create.cfd.cfdi40 import (
 
 import finkok_client
 import storage_client
-from database import Factura, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import BorradorFactura, Factura, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 
@@ -638,6 +638,78 @@ async def contar_facturas_por_emisor(
         )
     ) or 0
     return {"emisor_rfc": emisor_rfc, "total_facturas": total}
+
+
+# ─── Borradores de factura ────────────────────────────────────────────────────
+# Un borrador es el form de NuevaFactura.jsx guardado tal cual (datos_json),
+# NO un documento fiscal. Mismo aislamiento por negocio_id que Factura.
+# IMPORTANTE: estas rutas van declaradas ANTES de /facturas/{uuid} para que
+# "borradores" no lo capture esa ruta generica (mismo cuidado que /facturas/count).
+
+class BorradorCreate(BaseModel):
+    emisor_rfc: Optional[str] = None
+    datos_json: str
+
+class BorradorResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    negocio_id: int
+    emisor_rfc: Optional[str] = None
+    datos_json: str
+    created_at: datetime
+    updated_at: datetime
+
+@app.post("/facturas/borradores", response_model=BorradorResponse, status_code=201, dependencies=[Depends(require_internal_key)])
+async def crear_borrador(
+    borrador: BorradorCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    nuevo = BorradorFactura(negocio_id=negocio_id, emisor_rfc=borrador.emisor_rfc, datos_json=borrador.datos_json, creado_por_rfc=x_usuario_rfc)
+    db.add(nuevo)
+    await db.commit()
+    await db.refresh(nuevo)
+    return nuevo
+
+@app.get("/facturas/borradores", response_model=List[BorradorResponse], dependencies=[Depends(require_internal_key)])
+async def listar_borradores(
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(select(BorradorFactura).where(BorradorFactura.negocio_id == negocio_id).order_by(BorradorFactura.updated_at.desc()))
+    return result.scalars().all()
+
+@app.get("/facturas/borradores/{borrador_id}", response_model=BorradorResponse, dependencies=[Depends(require_internal_key)])
+async def obtener_borrador(
+    borrador_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(select(BorradorFactura).where(BorradorFactura.id == borrador_id, BorradorFactura.negocio_id == negocio_id))
+    b = result.scalar_one_or_none()
+    if b is None:
+        raise HTTPException(status_code=404, detail=f"Borrador {borrador_id} no encontrado")
+    return b
+
+@app.delete("/facturas/borradores/{borrador_id}", dependencies=[Depends(require_internal_key)])
+async def eliminar_borrador(
+    borrador_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(select(BorradorFactura).where(BorradorFactura.id == borrador_id, BorradorFactura.negocio_id == negocio_id))
+    b = result.scalar_one_or_none()
+    if b is None:
+        raise HTTPException(status_code=404, detail=f"Borrador {borrador_id} no encontrado")
+    await db.delete(b)
+    await db.commit()
+    return {"id": borrador_id, "eliminado": True}
+
 
 @app.get("/facturas", response_model=List[FacturaResponse], dependencies=[Depends(require_internal_key)])
 async def listar_facturas(

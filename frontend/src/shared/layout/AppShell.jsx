@@ -2,6 +2,7 @@ import { useState } from "react";
 import logoAcierto from "../../assets/logo-acierto.png";
 import useBreakpoint from "../hooks/useBreakpoint";
 import useEmisores from "../hooks/useEmisores";
+import { useNav } from "./nav";
 import { C } from "../utils/format";
 
 export function Placeholder({title,detail}){
@@ -61,7 +62,9 @@ export function SidebarNav({active,navigate,expanded,toggle,compact=false,nav,la
 
 export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views,labels,nav}){
   const {isMobile,isTablet}=useBreakpoint();
-  const [active,setActive]=useState("generadas");
+  // `active` vive en NavProvider (shared/layout/nav) para que otras vistas
+  // puedan navegar y pasar datos (ej. "Abrir" un borrador -> Nueva Factura).
+  const {active,navigate:navegarA}=useNav();
   const [expanded,setExpanded]=useState({facturas:true,ia:true,admin:false});
   const [drawerOpen,setDrawerOpen]=useState(false);
   const [mostrarPasswordModal,setMostrarPasswordModal]=useState(false);
@@ -72,7 +75,7 @@ export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views
   const [passwordLoading,setPasswordLoading]=useState(false);
   const [passwordSuccess,setPasswordSuccess]=useState(null);
   const toggle=id=>setExpanded(e=>({...e,[id]:!e[id]}));
-  const navigate=id=>{setActive(id);setDrawerOpen(false);};
+  const navigate=id=>{navegarA(id);setDrawerOpen(false);};
   const {emisores,loading:cargandoEmisor,emisorActivoRfc,setEmisorActivoRfc}=useEmisores();
   const emisorActual=emisores.find(e=>e.rfc===emisorActivoRfc)??emisores[0];
   const nombreEmisor=cargandoEmisor?"Cargando…":(emisorActual?.razon_social||"Sin emisor registrado");

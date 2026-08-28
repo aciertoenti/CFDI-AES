@@ -101,6 +101,24 @@ class Factura(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class BorradorFactura(Base):
+    __tablename__ = "borradores_factura"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Mismo patron que Factura.negocio_id - denormalizado, poblado desde
+    # X-Negocio-Id verificado en el gateway, no un FK real (Negocio vive
+    # en otra BD, cfdi_admin).
+    negocio_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    emisor_rfc: Mapped[Optional[str]] = mapped_column(String(13), nullable=True, index=True)
+    # El form completo de NuevaFactura.jsx serializado tal cual (JSON de
+    # strings) - no se modela cada campo por separado, es un borrador, no
+    # un documento fiscal validado.
+    datos_json: Mapped[str] = mapped_column(Text, nullable=False)
+    creado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 async def get_db() -> AsyncSession:  # type: ignore[misc]
     """Dependencia FastAPI para inyectar sesion de base de datos."""
     async with AsyncSessionLocal() as session:

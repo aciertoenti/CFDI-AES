@@ -3,11 +3,15 @@ import { useToast } from "../../shared/layout/ToastProvider";
 import useEmisores from "../../shared/hooks/useEmisores";
 import useClientes from "../../shared/hooks/useClientes";
 import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
+import { useNav } from "../../shared/layout/nav";
 import { SectionTitle, SectionSub, Card, TwoCol, Btn } from "../../shared/components/atoms";
-import { C, fmt } from "../../shared/utils/format";
+import { C, fmt, detalleError } from "../../shared/utils/format";
+
+const FORM_VACIO = {clienteRfc:"",receptor:"",rfc:"",usoCfdi:"G03",domicilioFiscal:"",regimenFiscal:"",concepto:"",cantidad:"",precio:"",iva:"16"};
 
 export default function NuevaFactura(){
   const toast = useToast();
+  const nav = useNav();
   const { emisores, loading:loadingEmisores, error:errorEmisores, emisorActivoRfc } = useEmisores();
   const { clientes, loading:loadingClientes, error:errorClientes } = useClientes();
   // emisorActivoRfc puede ser null (negocio sin ningun emisor) - find()
@@ -15,10 +19,34 @@ export default function NuevaFactura(){
   // caso, mismo placeholder/mensaje de "sin emisor" que ya existia.
   const emisor = emisores.find(e=>e.rfc===emisorActivoRfc);
 
-  const [form,setForm]=useState({clienteRfc:"",receptor:"",rfc:"",usoCfdi:"G03",domicilioFiscal:"",regimenFiscal:"",concepto:"",cantidad:"",precio:"",iva:"16"});
+  const [form,setForm]=useState(FORM_VACIO);
   const [enviando,setEnviando]=useState(false);
+  const [guardandoBorrador,setGuardandoBorrador]=useState(false);
+  // id del borrador que se abrio con "Abrir" desde la lista - si viene, se
+  // elimina tras timbrar con exito para que no quede duplicado en la lista.
+  const [borradorId,setBorradorId]=useState(null);
   const [resultado,setResultado]=useState(null);
   const [errorTimbrado,setErrorTimbrado]=useState(null);
+
+  // Cargar un borrador entregado por la navegacion ("Abrir" en Generadas >
+  // Borradores). Se hace en un effect (no en el initializer de useState)
+  // porque esta vista NO se re-monta al navegar - es un elemento estatico
+  // en VIEWS. Se consume el payload una sola vez (nav.setPayload(null)).
+  const borradorEntrante = nav?.payload?.borrador;
+  useEffect(() => {
+    if (!borradorEntrante) return;
+    try {
+      const datos = JSON.parse(borradorEntrante.datos_json);
+      setForm({ ...FORM_VACIO, ...datos });
+      setBorradorId(borradorEntrante.id);
+      setResultado(null);
+      setErrorTimbrado(null);
+      toast(`Borrador #${borradorEntrante.id} cargado`, "info");
+    } catch {
+      toast("El borrador está dañado y no se pudo abrir", "error");
+    }
+    nav.setPayload(null);
+  }, [borradorEntrante]);
   // Idempotencia real de timbrado (27 ago 2026) - una key por "sesion de
   // captura", generada una sola vez (no en cada render/click). Un reintento
   // de la MISMA operacion (ej. tras un timeout de red) reusa esta misma key,
@@ -60,6 +88,13 @@ export default function NuevaFactura(){
         precio: "",
       }));
       setIdempotencyKey(crypto.randomUUID());
+      // Si se timbro desde un borrador, borrarlo: la operacion termino, ya
+      // existe una factura real, dejarlo en la lista solo confundiria.
+      // best-effort: si el DELETE falla el usuario puede borrarlo a mano.
+      if (borradorId) {
+        fetchAuth(`${API_BASE}/facturas/borradores/${borradorId}`, { method: "DELETE" }).catch(() => {});
+        setBorradorId(null);
+      }
     }
   }, [resultado]);
 
@@ -90,6 +125,30 @@ export default function NuevaFactura(){
         style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}/>
     </div>
   );
+
+  const guardarBorrador = async () => {
+    setGuardandoBorrador(true);
+    try {
+      const res = await fetchAuth(`${API_BASE}/facturas/borradores`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emisor_rfc: emisor?.rfc || null,
+          datos_json: JSON.stringify(form),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(detalleError(data, res));
+      // Si se guarda un borrador NUEVO desde uno abierto, el que ya existia
+      // sigue en la lista - se "desengancha" para no borrarlo al timbrar.
+      setBorradorId(null);
+      toast(`Borrador guardado (#${data.id})`, "success");
+    } catch (e) {
+      toast(`Error al guardar borrador: ${e.message}`, "error");
+    } finally {
+      setGuardandoBorrador(false);
+    }
+  };
 
   const timbrar = async () => {
     if (!emisor) { toast("No hay ningún emisor registrado en Administración todavía","error"); return; }
@@ -196,7 +255,8 @@ export default function NuevaFactura(){
       </Card>
       <div style={{marginTop:12,display:"flex",gap:10,flexWrap:"wrap"}}>
         <Btn onClick={timbrar} disabled={enviando}>{enviando?"Timbrando…":"Timbrar con PAC →"}</Btn>
-        <Btn variant="secondary" onClick={()=>toast("Borrador guardado localmente","success")}>Guardar borrador</Btn>
+        <Btn variant="secondary" onClick={guardarBorrador} disabled={guardandoBorrador}>{guardandoBorrador?"Guardando…":(borradorId?"Guardar como nuevo borrador":"Guardar borrador")}</Btn>
+        {borradorId && <span style={{fontSize:12,color:C.textMuted,alignSelf:"center"}}>Editando borrador #{borradorId} — al timbrar se elimina</span>}
       </div>
       {errorTimbrado && (
         <Card style={{marginTop:12,borderColor:C.danger,background:C.dangerSoft}}>

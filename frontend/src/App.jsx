@@ -4,6 +4,7 @@ import useAuth from "./shared/hooks/useAuth";
 import { EmisoresProvider } from "./shared/hooks/useEmisores";
 import { ToastProvider } from "./shared/layout/ToastProvider";
 import AppShell, { Placeholder } from "./shared/layout/AppShell";
+import { NavProvider } from "./shared/layout/nav";
 import Login from "./domains/auth/Login";
 import OlvideContrasena from "./domains/auth/OlvideContrasena";
 import ResetPassword from "./domains/auth/ResetPassword";
@@ -99,7 +100,7 @@ function AuthGate(){
   // tener conocimiento del concepto de "vista", que es puramente de
   // AuthGate).
   const onLogout = () => { auth.logout(); window.history.pushState({}, "", `${window.location.pathname}?vista=landing`); setVista("landing"); };
-  return <EmisoresProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></EmisoresProvider>;
+  return <EmisoresProvider><NavProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></NavProvider></EmisoresProvider>;
 }
 
 export default function App(){

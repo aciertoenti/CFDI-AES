@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { IconEmprendedor, IconBasico, IconContador, IconDespacho } from "./PlanIcons";
 import logoAcierto from "../../assets/logo-acierto.png";
 import { Btn, Card } from "../../shared/components/atoms";
 import { C, fmt } from "../../shared/utils/format";
@@ -7,42 +8,42 @@ const PLANS = [
   {
     id: "emprendedor",
     name: "Emprendedor@",
-    audience: "Persona que empieza a facturar",
+    audience: "Empieza a facturar con acompañamiento cercano.",
+    icon: IconEmprendedor,
     emitters: 1,
     invoices: 25,
     monthly: 399,
-    description: "Para comenzar a facturar con lo esencial y acompañamiento cercano.",
     features: ["1 usuario administrador", "Hasta 25 facturas al mes", "CFDI 4.0 estándar", "Soporte por WhatsApp"],
     featured: true,
   },
   {
     id: "basico",
     name: "Básico",
-    audience: "Persona física / micro negocio",
+    audience: "Lleva una operación sencilla y ordenada.",
+    icon: IconBasico,
     emitters: 1,
     invoices: 50,
     monthly: 799,
-    description: "Para emitir CFDI con una operación sencilla y ordenada.",
     features: ["1 usuario administrador", "Hasta 50 facturas al mes", "CFDI 4.0 estándar", "Soporte por WhatsApp"],
   },
   {
     id: "contador",
     name: "Contador",
-    audience: "Contador independiente con cartera pequeña",
+    audience: "Administra tu cartera de clientes sin complicaciones.",
+    icon: IconContador,
     emitters: 5,
     invoices: 100,
     monthly: 1490,
-    description: "Para administrar varios emisores desde un mismo espacio.",
-    features: ["Hasta 100 facturas al mes", "20 facturas por emisor al mes", "3 a 5 usuarios", "Selector rápido de RFC", "Exportaciones básicas", "Soporte por WhatsApp"],
+    features: ["Hasta 100 facturas al mes", "20 facturas por emisor al mes", "Hasta 5 usuarios", "Selector rápido de RFC", "Exportaciones básicas", "Soporte por WhatsApp"],
   },
   {
     id: "despacho",
     name: "Despacho",
-    audience: "Despacho contable PyME",
+    audience: "Escala tu despacho con control total.",
+    icon: IconDespacho,
     emitters: 10,
     invoices: 500,
     monthly: 2990,
-    description: "Para equipos que necesitan control y operación multiempresa.",
     features: ["Hasta 500 facturas al mes", "50 facturas por emisor al mes", "Usuarios y roles", "Reportes consolidados por emisor", "Plantillas y catálogos avanzados", "Onboarding asistido y SLA"],
   },
 ];
@@ -90,14 +91,14 @@ export default function PlanesLanding({ onIrALogin, onIrARegistro, onIrAPrueba, 
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(340px,100%),1fr))",gap:16,alignItems:"stretch"}}>
             {PLANS.map(plan => {
               const price = annual ? plan.monthly * 10 : plan.monthly;
+              const Icon = plan.icon;
               return <Card key={plan.id} style={{position:"relative",display:"flex",flexDirection:"column",alignItems:"center",textAlign:"center",padding:24,border:plan.featured?`2px solid ${C.accent}`:`1px solid ${C.border}`,boxShadow:plan.featured?"0 16px 40px rgba(0,200,150,.16)":"0 12px 28px rgba(0,0,0,.12)"}}>
                 {plan.featured && <span style={{position:"absolute",top:-12,left:20,background:C.accent,color:C.primary,borderRadius:6,padding:"5px 10px",fontSize:11,fontWeight:800,textTransform:"uppercase",letterSpacing:".08em"}}>Más elegido</span>}
                 <p style={{color:C.textMuted,fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",margin:"0 0 10px"}}>{plan.name}</p>
-                <h3 style={{fontSize:25,margin:"0 0 8px",color:C.text,minHeight:64}}>{plan.audience}</h3>
-                <p style={{fontSize:14,lineHeight:1.45,color:C.textSec,minHeight:42,margin:"0 0 20px"}}>{plan.description}</p>
-                <div style={{display:"flex",alignItems:"baseline",gap:5,marginBottom:4,flexWrap:"wrap",justifyContent:"center"}}><strong style={{fontSize:35,color:C.text}}>{fmt(price)}</strong><span style={{fontSize:13,color:C.textMuted}}>MXN {annual?"/año":"/mes"} con IVA incluido</span></div>
-                <p style={{fontSize:13,color:C.accentBorder,fontWeight:700,margin:"0 0 20px"}}>{plan.emitters} {plan.emitters === 1 ? "emisor" : "emisores"}</p>
-                <ul style={{padding:0,margin:"0 0 24px",listStyle:"none",display:"grid",gap:10,flex:1,justifyItems:"start",width:"100%"}}>{plan.features.map(feature=><li key={feature} style={{fontSize:13,color:C.textSec,display:"flex",gap:9,alignItems:"center",textAlign:"left"}}><span aria-hidden="true" style={{color:C.accentBorder,fontWeight:800,flexShrink:0}}>✓</span><span>{feature}</span></li>)}</ul>
+                <Icon size={32} color={C.info} />
+                <h3 style={{fontSize:22,margin:"10px 0 8px",color:C.info,minHeight:56,fontWeight:700}}>{plan.audience}</h3>
+                <ul style={{padding:0,margin:"0 0 24px",listStyle:"none",display:"grid",gap:10,flex:1,justifyItems:"start",width:"100%"}}><li key="emitters" style={{fontSize:13,color:C.textSec,display:"flex",gap:9,alignItems:"center",textAlign:"left"}}><span aria-hidden="true" style={{color:C.accentBorder,fontWeight:800,flexShrink:0}}>✓</span><span>{plan.emitters} {plan.emitters === 1 ? "emisor" : "emisores"}</span></li>{plan.features.map(feature=><li key={feature} style={{fontSize:13,color:C.textSec,display:"flex",gap:9,alignItems:"center",textAlign:"left"}}><span aria-hidden="true" style={{color:C.accentBorder,fontWeight:800,flexShrink:0}}>✓</span><span>{feature}</span></li>)}</ul>
+                <div style={{display:"flex",alignItems:"baseline",gap:5,marginBottom:4,flexWrap:"wrap",justifyContent:"center"}}><strong style={{fontSize:26,color:C.text,fontWeight:700}}>{fmt(price)}</strong><span style={{fontSize:13,color:C.textMuted}}>MXN {annual?"/año":"/mes"} (IVA incluido)</span></div>
                 <Btn type="button" variant={plan.featured?"accent":"primary"} onClick={()=>selectPlan(plan)} style={{width:"100%"}}>Elegir {plan.name}</Btn>
               </Card>;
             })}

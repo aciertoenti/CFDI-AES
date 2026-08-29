@@ -9,10 +9,10 @@ const PLANS = [
     name: "Emprendedor@",
     audience: "Persona que empieza a facturar",
     emitters: 1,
-    invoices: 10,
+    invoices: 25,
     monthly: 399,
     description: "Para comenzar a facturar con lo esencial y acompañamiento cercano.",
-    features: ["1 usuario administrador", "Hasta 10 facturas al mes", "CFDI 4.0 estándar", "Soporte por WhatsApp"],
+    features: ["1 usuario administrador", "Hasta 25 facturas al mes", "CFDI 4.0 estándar", "Soporte por WhatsApp"],
     featured: true,
   },
   {

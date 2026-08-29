@@ -46,7 +46,7 @@ from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 FACTURACION_URL = os.environ.get("FACTURACION_URL", "http://facturacion:8001")
 
 PLAN_LIMITS = {
-    "emprendedor": {"emisores": 1, "facturas_mes": 10},
+    "emprendedor": {"emisores": 1, "facturas_mes": 25},
     "basico": {"emisores": 1, "facturas_mes": 50},
     "contador": {"emisores": 5, "facturas_mes": 100},
     "despacho": {"emisores": 10, "facturas_mes": 500},

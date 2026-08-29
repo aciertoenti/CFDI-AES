@@ -535,7 +535,7 @@ async def timbrar_factura(
             )
 
     plan = await obtener_plan_negocio(negocio_id)
-    limites_facturas = {"emprendedor": 10, "basico": 50, "contador": 100, "despacho": 500}
+    limites_facturas = {"emprendedor": 25, "basico": 50, "contador": 100, "despacho": 500}
     limite_mensual = limites_facturas.get(plan, limites_facturas["basico"])
     inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     facturas_mes = await db.scalar(

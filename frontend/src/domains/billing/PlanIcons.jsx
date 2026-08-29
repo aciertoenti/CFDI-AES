@@ -13,9 +13,10 @@ export function IconEmprendedor({size=32,color="#2B6CB0"}) {
 export function IconBasico({size=32,color="#2B6CB0"}) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M6 2h9l5 5v15H6z" />
-      <path d="M15 2v5h5" />
-      <path d="M9 13h6M9 17h6" />
+      <path d="M3 9l1.5-5h15L21 9" />
+      <path d="M3 9v11h18V9" />
+      <path d="M3 9c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 3 3s3-1.3 3-3" />
+      <path d="M9 20v-6h6v6" />
     </svg>
   );
 }

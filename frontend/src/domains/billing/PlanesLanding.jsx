@@ -13,18 +13,18 @@ const PLANS = [
     emitters: 1,
     invoices: 25,
     monthly: 399,
-    features: ["1 usuario administrador", "Hasta 25 facturas al mes", "CFDI 4.0 estándar", "Soporte por WhatsApp"],
+    features: ["IA que resuelve tus dudas fiscales al instante", "1 usuario administrador", "Hasta 25 facturas al mes", "CFDI 4.0 estándar", "Soporte por WhatsApp"],
     featured: true,
   },
   {
     id: "basico",
-    name: "Básico",
+    name: "Micronegocio",
     audience: "Lleva una operación sencilla y ordenada.",
     icon: IconBasico,
     emitters: 1,
     invoices: 50,
     monthly: 799,
-    features: ["1 usuario administrador", "Hasta 50 facturas al mes", "CFDI 4.0 estándar", "Soporte por WhatsApp"],
+    features: ["IA que resuelve tus dudas fiscales al instante", "1 usuario administrador", "Hasta 50 facturas al mes", "CFDI 4.0 estándar", "Soporte por WhatsApp"],
   },
   {
     id: "contador",
@@ -34,7 +34,7 @@ const PLANS = [
     emitters: 5,
     invoices: 100,
     monthly: 1490,
-    features: ["Hasta 100 facturas al mes", "20 facturas por emisor al mes", "Hasta 5 usuarios", "Selector rápido de RFC", "Exportaciones básicas", "Soporte por WhatsApp"],
+    features: ["IA que resuelve tus dudas fiscales al instante", "Hasta 100 facturas al mes", "20 facturas por emisor al mes", "Hasta 5 usuarios", "Selector rápido de RFC", "Exportaciones básicas", "Soporte por WhatsApp"],
   },
   {
     id: "despacho",
@@ -44,7 +44,7 @@ const PLANS = [
     emitters: 10,
     invoices: 500,
     monthly: 2990,
-    features: ["Hasta 500 facturas al mes", "50 facturas por emisor al mes", "Usuarios y roles", "Reportes consolidados por emisor", "Plantillas y catálogos avanzados", "Onboarding asistido y SLA"],
+    features: ["IA que resuelve tus dudas fiscales al instante", "Hasta 500 facturas al mes", "50 facturas por emisor al mes", "Usuarios y roles", "Reportes consolidados por emisor", "Plantillas y catálogos avanzados", "Onboarding asistido y SLA"],
   },
 ];
 

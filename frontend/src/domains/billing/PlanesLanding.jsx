@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import logoAcierto from "../../assets/logo-acierto.png";
 import { Btn, Card } from "../../shared/components/atoms";
 import { C, fmt } from "../../shared/utils/format";
@@ -50,6 +50,9 @@ const PLANS = [
 export default function PlanesLanding({ onIrALogin, onIrARegistro, onIrAPrueba, onElegirPlan }) {
   const [annual, setAnnual] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Variante B: los planes siguen siempre visibles; el CTA del hero solo
+  // hace scroll suave hasta la seccion.
+  const planesRef = useRef(null);
   const selectPlan = plan => onElegirPlan(plan.id, annual ? "annual" : "monthly");
   return (
     <main style={{minHeight:"100dvh",background:"linear-gradient(135deg,#071c31 0%,#0A2540 54%,#104d5d 100%)",color:"#fff",padding:"28px 20px 56px",boxSizing:"border-box"}}>
@@ -66,10 +69,10 @@ export default function PlanesLanding({ onIrALogin, onIrARegistro, onIrAPrueba, 
           <h1 style={{fontSize:"clamp(36px,6vw,72px)",lineHeight:1.02,margin:"0 0 20px",letterSpacing:0}}>Confianza para crecer sin límites.</h1>
           <p style={{color:C.accent,fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:".14em",margin:"0 0 16px"}}>Desde tu primer RFC hasta la gestión de múltiples cuentas</p>
           <p style={{fontSize:"clamp(16px,2vw,18px)",lineHeight:1.55,color:"rgba(255,255,255,.74)",maxWidth:650,margin:"0 auto"}}>Administra tus facturas emitidas y recibidas mes con mes en tiempo y forma, con un contador virtual desde un chat fiscal con IA, todo en una sola cuenta, mediante planes claros que te permiten crecer sin perder el control.</p>
-          <Btn type="button" onClick={onIrALogin} style={{marginTop:24,padding:"13px 24px",maxWidth:"100%"}}>¡Accede ahora a la Facturación Inteligente!</Btn>
+          <Btn type="button" onClick={()=>planesRef.current?.scrollIntoView({behavior:"smooth"})} style={{marginTop:24,padding:"13px 24px",maxWidth:"100%"}}>¡Accede ahora a la Facturación Inteligente!</Btn>
         </section>
 
-        <section aria-label="Planes disponibles">
+        <section ref={planesRef} aria-label="Planes disponibles">
           {/* Header y grid comparten el mismo maxWidth 760 para que el titulo
               "Elige como quieres operar" quede alineado con el grid 2x2. */}
           <div style={{maxWidth:760,margin:"0 auto"}}>

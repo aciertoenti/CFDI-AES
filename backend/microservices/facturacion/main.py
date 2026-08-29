@@ -400,6 +400,23 @@ async def construir_comprobante(factura: FacturaCreate, signer: Signer, x_negoci
 
     datos_emisor = await obtener_datos_emisor(factura.emisor_rfc, x_negocio_id)
 
+    # Un emisor Inactivo NO puede emitir CFDI nuevos (RFC dado de baja, CSD
+    # que ya no debe usarse, etc.). La autorizacion vive aqui, no solo en que
+    # el frontend oculte el boton - una llamada directa a POST /facturas/timbrar
+    # con un emisor_rfc inactivo tiene que fallar antes de siquiera llamar a
+    # Finkok. Se valida SOLO en el path de emision: obtener_datos_emisor lo
+    # comparten rutas de lectura (GET /facturas, /costos-resumen,
+    # /contador-virtual) y la cancelacion, que deben seguir funcionando para
+    # emisores inactivos (el historico no desaparece al inactivar).
+    if datos_emisor.get("estado") != "Activo":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"El emisor {factura.emisor_rfc} esta Inactivo — no puede "
+                f"timbrar. Reactivalo en Administracion antes de continuar."
+            ),
+        )
+
     emisor = Emisor(
         rfc=str(signer.rfc),
         nombre=signer.legal_name,

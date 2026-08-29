@@ -143,7 +143,7 @@ export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views
               ? (
                 <select value={emisorActivoRfc||""} onChange={e=>setEmisorActivoRfc(e.target.value)}
                   style={{fontSize:11,color:C.textMuted,background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 6px",maxWidth:220,cursor:"pointer"}}>
-                  {emisores.map(e=>(<option key={e.rfc} value={e.rfc}>{e.razon_social} — {e.rfc}</option>))}
+                  {emisores.map(e=>(<option key={e.rfc} value={e.rfc}>{e.razon_social} — {e.rfc}{e.estado==="Inactivo"?" · Inactivo":""}</option>))}
                 </select>
               )
               : <div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>Emisor: {cargandoEmisor?"…":(emisorActual?.rfc||"—")}</div>

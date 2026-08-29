@@ -18,6 +18,11 @@ export default function NuevaFactura(){
   // sobre [] o sin match devuelve undefined igual que emisores[0] en ese
   // caso, mismo placeholder/mensaje de "sin emisor" que ya existia.
   const emisor = emisores.find(e=>e.rfc===emisorActivoRfc);
+  // Un emisor Inactivo no puede emitir CFDI nuevos - el backend ya lo rechaza
+  // (facturacion/construir_comprobante -> 409), esto es el guard de UI para
+  // que el usuario no llegue a intentarlo. Las pantallas de solo lectura
+  // (Generadas, Reporte Mensual, etc.) NO se tocan: el historico sigue.
+  const emisorInactivo = !!emisor && emisor.estado === "Inactivo";
 
   const [form,setForm]=useState(FORM_VACIO);
   const [enviando,setEnviando]=useState(false);
@@ -152,6 +157,7 @@ export default function NuevaFactura(){
 
   const timbrar = async () => {
     if (!emisor) { toast("No hay ningún emisor registrado en Administración todavía","error"); return; }
+    if (emisorInactivo) { toast("El emisor activo está Inactivo y no puede timbrar. Reactívalo en Administración › Emisores.","error"); return; }
     if (!form.receptor||!form.rfc||!form.domicilioFiscal||!form.concepto||!form.cantidad||!form.precio) {
       toast("Completa receptor, domicilio fiscal y los datos del concepto antes de timbrar","warning"); return;
     }
@@ -198,6 +204,16 @@ export default function NuevaFactura(){
     <div>
       <SectionTitle>Nueva Factura CFDI 4.0</SectionTitle>
       <SectionSub>O usa el <strong>Lector IA</strong> para subir una orden de compra y rellenar automáticamente.</SectionSub>
+      {emisorInactivo && (
+        <Card style={{marginBottom:12,borderColor:C.danger,background:C.dangerSoft}}>
+          <div style={{fontSize:13,color:C.danger,fontWeight:600}}>
+            ⚠ El emisor <strong>{emisor.razon_social}</strong> ({emisor.rfc}) está <strong>Inactivo</strong> y no puede timbrar facturas.
+          </div>
+          <div style={{fontSize:12,color:C.textSec,marginTop:4}}>
+            Ve a <strong>Administración › Emisores</strong> para reactivarlo, o selecciona otro emisor activo en el menú superior.
+          </div>
+        </Card>
+      )}
       <TwoCol>
         <Card>
           <div style={{fontSize:11,fontWeight:700,color:C.accent,letterSpacing:"0.08em",marginBottom:12,textTransform:"uppercase"}}>Emisor</div>
@@ -206,10 +222,10 @@ export default function NuevaFactura(){
           {!loadingEmisores && !errorEmisores && !emisor && (
             <div style={{fontSize:13,color:C.warn}}>No hay emisores registrados en Administración.</div>
           )}
-          {emisor && [["Razón social",emisor.razon_social],["RFC",emisor.rfc],["Régimen fiscal",emisor.regimen_fiscal],["CP",emisor.codigo_postal]].map(([l,v])=>(
+          {emisor && [["Razón social",emisor.razon_social],["RFC",emisor.rfc],["Régimen fiscal",emisor.regimen_fiscal],["CP",emisor.codigo_postal],["Estado",emisor.estado]].map(([l,v])=>(
             <div key={l} style={{marginBottom:10}}>
               <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>{l}</label>
-              <input readOnly value={v} style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:C.surface,boxSizing:"border-box"}}/>
+              <input readOnly value={v} style={{width:"100%",border:`1px solid ${l==="Estado"&&emisorInactivo?C.danger:C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:l==="Estado"&&emisorInactivo?C.danger:C.text,fontWeight:l==="Estado"&&emisorInactivo?700:400,background:C.surface,boxSizing:"border-box"}}/>
             </div>
           ))}
         </Card>
@@ -254,7 +270,7 @@ export default function NuevaFactura(){
         </div>
       </Card>
       <div style={{marginTop:12,display:"flex",gap:10,flexWrap:"wrap"}}>
-        <Btn onClick={timbrar} disabled={enviando}>{enviando?"Timbrando…":"Timbrar con PAC →"}</Btn>
+        <Btn onClick={timbrar} disabled={enviando||emisorInactivo}>{enviando?"Timbrando…":(emisorInactivo?"Emisor Inactivo — no se puede timbrar":"Timbrar con PAC →")}</Btn>
         <Btn variant="secondary" onClick={guardarBorrador} disabled={guardandoBorrador}>{guardandoBorrador?"Guardando…":(borradorId?"Guardar como nuevo borrador":"Guardar borrador")}</Btn>
         {borradorId && <span style={{fontSize:12,color:C.textMuted,alignSelf:"center"}}>Editando borrador #{borradorId} — al timbrar se elimina</span>}
       </div>

@@ -70,6 +70,9 @@ export default function PlanesLanding({ onIrALogin, onIrARegistro, onIrAPrueba, 
         </section>
 
         <section aria-label="Planes disponibles">
+          {/* Header y grid comparten el mismo maxWidth 760 para que el titulo
+              "Elige como quieres operar" quede alineado con el grid 2x2. */}
+          <div style={{maxWidth:760,margin:"0 auto"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:18,flexWrap:"wrap",marginBottom:18}}>
             <div>
               <h2 style={{fontSize:22,margin:"0 0 5px"}}>Elige cómo quieres operar</h2>
@@ -81,13 +84,13 @@ export default function PlanesLanding({ onIrALogin, onIrARegistro, onIrAPrueba, 
             </div>
           </div>
 
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:16,alignItems:"stretch",maxWidth:1080,margin:"0 auto"}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(340px,100%),1fr))",gap:16,alignItems:"stretch"}}>
             {PLANS.map(plan => {
               const price = annual ? plan.monthly * 10 : plan.monthly;
               return <Card key={plan.id} style={{position:"relative",display:"flex",flexDirection:"column",alignItems:"center",textAlign:"center",padding:24,border:plan.featured?`2px solid ${C.accent}`:`1px solid ${C.border}`,boxShadow:plan.featured?"0 16px 40px rgba(0,200,150,.16)":"0 12px 28px rgba(0,0,0,.12)"}}>
                 {plan.featured && <span style={{position:"absolute",top:-12,left:20,background:C.accent,color:C.primary,borderRadius:6,padding:"5px 10px",fontSize:11,fontWeight:800,textTransform:"uppercase",letterSpacing:".08em"}}>Más elegido</span>}
                 <p style={{color:C.textMuted,fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",margin:"0 0 10px"}}>{plan.name}</p>
-                <h3 style={{fontSize:25,margin:"0 0 8px",color:C.text}}>{plan.audience}</h3>
+                <h3 style={{fontSize:25,margin:"0 0 8px",color:C.text,minHeight:64}}>{plan.audience}</h3>
                 <p style={{fontSize:14,lineHeight:1.45,color:C.textSec,minHeight:42,margin:"0 0 20px"}}>{plan.description}</p>
                 <div style={{display:"flex",alignItems:"baseline",gap:5,marginBottom:4,flexWrap:"wrap",justifyContent:"center"}}><strong style={{fontSize:35,color:C.text}}>{fmt(price)}</strong><span style={{fontSize:13,color:C.textMuted}}>MXN {annual?"/año":"/mes"} con IVA incluido</span></div>
                 <p style={{fontSize:13,color:C.accentBorder,fontWeight:700,margin:"0 0 20px"}}>{plan.emitters} {plan.emitters === 1 ? "emisor" : "emisores"}</p>
@@ -95,6 +98,7 @@ export default function PlanesLanding({ onIrALogin, onIrARegistro, onIrAPrueba, 
                 <Btn type="button" variant={plan.featured?"accent":"primary"} onClick={()=>selectPlan(plan)} style={{width:"100%"}}>Elegir {plan.name}</Btn>
               </Card>;
             })}
+          </div>
           </div>
         </section>
 

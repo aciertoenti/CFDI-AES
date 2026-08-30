@@ -20,9 +20,16 @@ export function EmisoresProvider({ children }) {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
+  // Fuente unica de "el emisor activo y si esta Inactivo" - antes se
+  // recalculaba por separado en NuevaFactura.jsx y AppShell.jsx con su
+  // propio find(), con riesgo de desincronizarse. find() plano, sin
+  // fallback a emisores[0]: si emisorActivoRfc es null, emisorActivo debe
+  // ser undefined, no el primer emisor de la lista por accidente.
+  const emisorActivo = emisores.find(e => e.rfc === emisorActivoRfc);
+  const emisorInactivo = !!emisorActivo && emisorActivo.estado === "Inactivo";
   return createElement(
     EmisoresContext.Provider,
-    { value: { emisores, loading, error, recargar: cargar, emisorActivoRfc, setEmisorActivoRfc } },
+    { value: { emisores, loading, error, recargar: cargar, emisorActivoRfc, setEmisorActivoRfc, emisorActivo, emisorInactivo } },
     children,
   );
 }

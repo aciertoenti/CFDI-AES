@@ -4,6 +4,7 @@ import useBreakpoint from "../hooks/useBreakpoint";
 import useEmisores from "../hooks/useEmisores";
 import { useNav } from "./nav";
 import { C } from "../utils/format";
+import { Card, Btn } from "../components/atoms";
 
 export function Placeholder({title,detail}){
   return (
@@ -76,7 +77,7 @@ export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views
   const [passwordSuccess,setPasswordSuccess]=useState(null);
   const toggle=id=>setExpanded(e=>({...e,[id]:!e[id]}));
   const navigate=id=>{navegarA(id);setDrawerOpen(false);};
-  const {emisores,loading:cargandoEmisor,emisorActivoRfc,setEmisorActivoRfc}=useEmisores();
+  const {emisores,loading:cargandoEmisor,emisorActivoRfc,setEmisorActivoRfc,emisorActivo:emisorGuard,emisorInactivo}=useEmisores();
   const emisorActual=emisores.find(e=>e.rfc===emisorActivoRfc)??emisores[0];
   const nombreEmisor=cargandoEmisor?"Cargando…":(emisorActual?.razon_social||"Sin emisor registrado");
   const inicialesEmisor=emisorActual?.razon_social
@@ -171,7 +172,9 @@ export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views
           </div>
         )}
         <div style={{flex:1,overflowY:"auto",padding:isMobile?"14px 12px":"22px 26px",WebkitOverflowScrolling:"touch",order:0}}>
-          {views[active]||<Placeholder title={labels[active]}/>} 
+          {emisorInactivo && active !== "emisores"
+            ? <BloqueoEmisorInactivo emisor={emisorGuard} onIrAEmisores={()=>navegarA("emisores")}/>
+            : (views[active]||<Placeholder title={labels[active]}/>)}
         </div>
         {mostrarPasswordModal && (
           <div style={{position:"fixed",inset:0,background:"rgba(3,6,18,.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:120}} onClick={()=>setMostrarPasswordModal(false)}>
@@ -202,5 +205,26 @@ export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views
         )}
       </main>
     </div>
+  );
+}
+
+// Guard central (30 ago 2026): cuando el emisor activo esta Inactivo, esta
+// pantalla reemplaza CUALQUIER vista salvo Administracion > Emisores - la
+// unica salida es reactivarlo ahi o cambiar de emisor en el header. Reusa
+// el tono del banner ya aprobado en NuevaFactura.jsx (Card danger).
+function BloqueoEmisorInactivo({emisor, onIrAEmisores}) {
+  return (
+    <Card style={{borderColor:C.danger, background:C.dangerSoft, maxWidth:520, margin:"40px auto"}}>
+      <div style={{fontSize:14, color:C.danger, fontWeight:600, marginBottom:6}}>
+        ⚠ El emisor <strong>{emisor?.razon_social}</strong> ({emisor?.rfc}) está <strong>Inactivo</strong>.
+      </div>
+      <div style={{fontSize:13, color:C.textSec, marginBottom:14}}>
+        Mientras esté inactivo, solo puedes acceder a Administración › Emisores
+        para reactivarlo, o seleccionar otro emisor activo en el menú superior.
+      </div>
+      <Btn type="button" variant="primary" onClick={onIrAEmisores}>
+        Ir a Administración › Emisores
+      </Btn>
+    </Card>
   );
 }

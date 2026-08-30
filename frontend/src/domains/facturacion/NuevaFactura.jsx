@@ -12,17 +12,13 @@ const FORM_VACIO = {clienteRfc:"",receptor:"",rfc:"",usoCfdi:"G03",domicilioFisc
 export default function NuevaFactura(){
   const toast = useToast();
   const nav = useNav();
-  const { emisores, loading:loadingEmisores, error:errorEmisores, emisorActivoRfc } = useEmisores();
+  const { emisores, loading:loadingEmisores, error:errorEmisores, emisorActivoRfc, emisorActivo:emisor, emisorInactivo } = useEmisores();
   const { clientes, loading:loadingClientes, error:errorClientes } = useClientes();
-  // emisorActivoRfc puede ser null (negocio sin ningun emisor) - find()
-  // sobre [] o sin match devuelve undefined igual que emisores[0] en ese
-  // caso, mismo placeholder/mensaje de "sin emisor" que ya existia.
-  const emisor = emisores.find(e=>e.rfc===emisorActivoRfc);
-  // Un emisor Inactivo no puede emitir CFDI nuevos - el backend ya lo rechaza
-  // (facturacion/construir_comprobante -> 409), esto es el guard de UI para
-  // que el usuario no llegue a intentarlo. Las pantallas de solo lectura
-  // (Generadas, Reporte Mensual, etc.) NO se tocan: el historico sigue.
-  const emisorInactivo = !!emisor && emisor.estado === "Inactivo";
+  // emisor y emisorInactivo vienen de useEmisores() (fuente unica). El guard
+  // de UI ahora es central en AppShell: cuando el emisor activo esta
+  // Inactivo, bloquea TODAS las vistas salvo Administracion > Emisores. El
+  // banner + boton deshabilitado de abajo quedan como defensa en profundidad
+  // (por si "nueva" dejara de estar bloqueada centralmente).
 
   const [form,setForm]=useState(FORM_VACIO);
   const [enviando,setEnviando]=useState(false);

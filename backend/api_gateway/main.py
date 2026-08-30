@@ -27,6 +27,16 @@ INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
 if not INTERNAL_API_KEY:
     raise RuntimeError("INTERNAL_API_KEY no está definido. Configúralo como variable de entorno.")
 
+# Confianza en el X-Forwarded-For entrante (30 ago 2026). La topologia
+# actual NO tiene reverse proxy real delante del Gateway (docker-compose:
+# gateway expone 8000:8000 directo, el unico nginx sirve el SPA y no hace
+# proxy) - confirmado. Sin proxy de confianza, cualquier X-Forwarded-For
+# que llegue es 100% spoof del cliente. Por defecto (env ausente) el
+# Gateway lo DESCARTA y usa solo la IP TCP real (request.client.host).
+# Solo cuando se ponga un proxy/balanceador real en produccion se pone
+# TRUST_PROXY_XFF=true y se vuelve a encadenar el salto previo.
+TRUST_PROXY_XFF = os.environ.get("TRUST_PROXY_XFF", "").lower() in ("1", "true", "yes")
+
 SERVICES = {
     "facturas": "http://facturacion:8001",
     "admin": "http://administracion:8002",
@@ -112,18 +122,23 @@ async def password_reset_request_proxy(request: Request):
     target = f"{SERVICES['auth']}/auth/password-reset/request"
     forward_headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
     client_ip = request.client.host if request.client else "desconocida"
-    # Si ya trae X-Forwarded-For (proxy/balanceador delante del Gateway en
-    # produccion), se antepone el salto conocido en vez de reemplazarlo -
-    # mismo patron estandar de cadena XFF.
-    # Fix de seguridad (26 ago 2026): mismo patron de colision de casing que
-    # el proxy generico (linea 218) - "x-forwarded-for" del cliente y
-    # "X-Forwarded-For" que este codigo calcula coexistian como llaves
-    # DISTINTAS, dejando el valor crudo del cliente (potencialmente falseado)
-    # disponible junto al valor correctamente encadenado. Se usa pop() en
-    # vez de get() para ELIMINAR la entrada existente (cualquier casing) al
-    # leerla, no solo copiar su valor - asi solo queda una llave final.
+    # Fix de seguridad (26 ago 2026): se usa pop() en vez de get() para
+    # ELIMINAR el X-Forwarded-For entrante (cualquier casing) al leerlo, no
+    # solo copiar su valor - asi no quedan dos llaves coexistiendo.
+    #
+    # Fix de seguridad (30 ago 2026): antes se reencadenaba SIEMPRE como
+    # "{xff_previo}, {client_ip}". Como auth_usuarios hace rate-limit sobre
+    # xff.split(",")[0] (el PRIMER salto), y no hay reverse proxy real
+    # delante del Gateway (topologia confirmada), un atacante que mande
+    # X-Forwarded-For: <valor rotado> se salta el limite de 10/hora de
+    # password-reset por completo. Por defecto ahora se DESCARTA el XFF
+    # entrante y se manda solo la IP TCP real. El reencadenado del salto
+    # previo solo ocurre con TRUST_PROXY_XFF=true (proxy real en prod).
     xff_previo = forward_headers.pop("x-forwarded-for", None) or forward_headers.pop("X-Forwarded-For", None)
-    forward_headers["X-Forwarded-For"] = f"{xff_previo}, {client_ip}" if xff_previo else client_ip
+    if TRUST_PROXY_XFF and xff_previo:
+        forward_headers["X-Forwarded-For"] = f"{xff_previo}, {client_ip}"
+    else:
+        forward_headers["X-Forwarded-For"] = client_ip
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.request(

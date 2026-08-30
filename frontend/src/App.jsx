@@ -27,12 +27,12 @@ import Anomalias from "./domains/ia/Anomalias";
 // NAVEGACIÓN
 // ═══════════════════════════════════════════════════════════════════════════════
 const NAV = [
-  {id:"facturas",label:"Mis Facturas",icon:"📄",children:["nueva","generadas","recibidas","reporte","costos","contador"]},
-  {id:"ia",label:"IA",icon:"🤖",children:["lector","chat","anomalias","conciliacion"]},
+  {id:"facturas",label:"Mis Facturas",icon:"📄",children:["nueva","generadas","recibidas","reporte","costos"]},
+  {id:"ia",label:"IA",icon:"🤖",children:["contador","chat","lector","anomalias","conciliacion"]},
   {id:"admin",label:"Administración",icon:"⚙️",children:["emisores","clientes","usuarios","series"]},
 ];
 const LABELS = {
-  nueva:"Nueva Factura",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",contador:"🧮 Contador Virtual",
+  nueva:"Nueva Factura",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",contador:"Contador Virtual",
   lector:"Lector de Documentos",chat:"Chat Fiscal",anomalias:"Anomalías IA",conciliacion:"Conciliación",
   emisores:"Emisores",clientes:"Clientes",usuarios:"Usuarios",series:"Series",
 };

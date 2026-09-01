@@ -119,6 +119,34 @@ class BorradorFactura(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class BorradorFacturaEliminado(Base):
+    """Auditoria de borradores eliminados. 'borradores_factura' hace DELETE
+    fisico; aqui queda una copia inmutable del borrador al momento del
+    borrado: que existio, quien lo creo, quien lo borro y por que. Mismo
+    aislamiento por negocio_id (denormalizado desde X-Negocio-Id verificado
+    en el gateway) que BorradorFactura y Factura - no es un FK real."""
+    __tablename__ = "borradores_factura_eliminados"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    negocio_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # Id que tenia la fila en borradores_factura antes del DELETE - solo
+    # referencia historica, esa fila ya no existe (no es FK).
+    borrador_id_original: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    emisor_rfc: Mapped[Optional[str]] = mapped_column(String(13), nullable=True)
+    # Copia tal cual del datos_json del borrador (form serializado de
+    # NuevaFactura.jsx) - se guarda completo para poder reconstruir que se
+    # iba a facturar, no se re-modela campo por campo.
+    datos_json: Mapped[str] = mapped_column(Text, nullable=False)
+    creado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    eliminado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # "manual" (el usuario lo borro a mano) | "post_timbrado" (limpieza
+    # automatica al timbrar la factura, ver NuevaFactura.jsx). Valor
+    # normalizado en el endpoint - cualquier otra cosa cae a "manual".
+    motivo: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    creado_en_original: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    eliminado_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 async def get_db() -> AsyncSession:  # type: ignore[misc]
     """Dependencia FastAPI para inyectar sesion de base de datos."""
     async with AsyncSessionLocal() as session:

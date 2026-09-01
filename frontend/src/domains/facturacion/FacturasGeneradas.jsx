@@ -4,7 +4,7 @@ import { useToast } from "../../shared/layout/ToastProvider";
 import { useNav } from "../../shared/layout/nav";
 import useEmisores from "../../shared/hooks/useEmisores";
 import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
-import { useFacturas, useBorradores } from "./hooks";
+import { useFacturas, useBorradores, useBorradoresEliminados } from "./hooks";
 import { SectionTitle, KPIGrid, KPI, Card, Badge } from "../../shared/components/atoms";
 import { Placeholder } from "../../shared/layout/AppShell";
 import { C, fmt } from "../../shared/utils/format";
@@ -15,12 +15,16 @@ const TD = {padding:"10px 12px",color:C.text};
 
 // Receptor "amigable" de un borrador: el form serializado guarda receptor y
 // rfc como strings sueltos - se muestra lo que haya sin asumir que exista.
+// Sirve igual para un borrador vivo o una fila de auditoria (ambos traen
+// datos_json con la misma forma).
 function receptorDeBorrador(b) {
   try {
     const d = JSON.parse(b.datos_json);
     return d.receptor || d.rfc || "—";
   } catch { return "(borrador dañado)"; }
 }
+
+const MOTIVO_LABEL = { manual: "Eliminado manualmente", post_timbrado: "Limpieza tras timbrado" };
 
 export default function FacturasGeneradas(){
   const {isMobile} = useBreakpoint();
@@ -31,13 +35,20 @@ export default function FacturasGeneradas(){
   const [q,setQ]=useState("");
   const [filtro,setFiltro]=useState("Todas");
   const esBorradores = filtro === "Borradores";
+  const esEliminados = filtro === "Eliminados";
   const { borradores, loading:loadingBorr, error:errorBorr, recargar:recargarBorr } = useBorradores(esBorradores);
+  const { eliminados, loading:loadingElim, error:errorElim, recargar:recargarElim } = useBorradoresEliminados(esEliminados);
+  const cargandoLista = esEliminados ? loadingElim : esBorradores ? loadingBorr : loading;
 
   const items=facturas.filter(f=>(filtro==="Todas"||f.estado===filtro)&&
     (f.receptor_rfc.toLowerCase().includes(q.toLowerCase())||f.folio.includes(q)));
   const borradoresFiltrados = borradores.filter(b=>{
     const t = q.toLowerCase();
     return !t || String(b.id).includes(t) || (b.emisor_rfc||"").toLowerCase().includes(t) || receptorDeBorrador(b).toLowerCase().includes(t);
+  });
+  const eliminadosFiltrados = eliminados.filter(e=>{
+    const t = q.toLowerCase();
+    return !t || String(e.borrador_id_original).includes(t) || (e.eliminado_por_rfc||"").toLowerCase().includes(t) || receptorDeBorrador(e).toLowerCase().includes(t);
   });
 
   const eliminarBorrador = async (id) => {
@@ -51,7 +62,7 @@ export default function FacturasGeneradas(){
     }
   };
 
-  if (error && !esBorradores) return <Placeholder title="Facturas generadas" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>;
+  if (error && !esBorradores && !esEliminados) return <Placeholder title="Facturas generadas" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>;
 
   return (
     <div>
@@ -66,10 +77,10 @@ export default function FacturasGeneradas(){
       <Card style={{padding:0,overflow:"hidden"}}>
         {/* Barra de búsqueda y filtros */}
         <div style={{padding:"10px 12px",borderBottom:`1px solid ${C.border}`,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-          <input value={q} onChange={e=>setQ(e.target.value)} placeholder={esBorradores?"Buscar por id, emisor o receptor…":"Buscar folio o RFC receptor…"}
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder={esEliminados?"Buscar por id, quién eliminó o receptor…":esBorradores?"Buscar por id, emisor o receptor…":"Buscar folio o RFC receptor…"}
             style={{flex:1,minWidth:100,border:`1px solid ${C.border}`,borderRadius:8,padding:"7px 11px",fontSize:13,color:C.text,background:C.surface}}/>
           <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-            {["Todas","Vigente","Vencida","Cancelada","Borradores"].map(f=>(
+            {["Todas","Vigente","Vencida","Cancelada","Borradores","Eliminados"].map(f=>(
               <button key={f} onClick={()=>setFiltro(f)}
                 style={{fontSize:11,padding:"5px 10px",borderRadius:12,border:`1px solid ${filtro===f?C.accent:C.border}`,
                   background:filtro===f?C.accentSoft:"transparent",color:filtro===f?C.accentBorder:C.textSec,cursor:"pointer",whiteSpace:"nowrap"}}>
@@ -77,15 +88,44 @@ export default function FacturasGeneradas(){
               </button>
             ))}
           </div>
-          <button onClick={esBorradores?recargarBorr:recargar} title="Recargar" disabled={esBorradores?loadingBorr:loading}
-            style={{fontSize:11,padding:"5px 10px",borderRadius:12,border:`1px solid ${C.border}`,background:"transparent",color:C.textSec,cursor:(esBorradores?loadingBorr:loading)?"not-allowed":"pointer"}}>
-            {(esBorradores?loadingBorr:loading)?"Cargando…":"↻ Recargar"}
+          <button onClick={esEliminados?recargarElim:esBorradores?recargarBorr:recargar} title="Recargar" disabled={cargandoLista}
+            style={{fontSize:11,padding:"5px 10px",borderRadius:12,border:`1px solid ${C.border}`,background:"transparent",color:C.textSec,cursor:cargandoLista?"not-allowed":"pointer"}}>
+            {cargandoLista?"Cargando…":"↻ Recargar"}
           </button>
         </div>
 
         {/* Tabla con scroll horizontal */}
         <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
-          {esBorradores ? (
+          {esEliminados ? (
+            <table style={{width:"100%",borderCollapse:"collapse",minWidth:isMobile?360:540}}>
+              <thead>
+                <tr style={{background:C.surface}}>
+                  <th style={TH}>Eliminado</th>
+                  <th style={TH}>Receptor</th>
+                  {!isMobile&&<th style={TH}>Eliminado por</th>}
+                  <th style={TH}>Motivo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {errorElim && (
+                  <tr><td colSpan={isMobile?3:4} style={{...TD,textAlign:"center",color:C.danger,padding:"20px 12px"}}>⚠ No se pudo cargar el historial: {errorElim}</td></tr>
+                )}
+                {!errorElim && !loadingElim && eliminadosFiltrados.length===0 && (
+                  <tr><td colSpan={isMobile?3:4} style={{...TD,textAlign:"center",color:C.textMuted,padding:"24px 12px"}}>
+                    {eliminados.length===0 ? "No se ha eliminado ningún borrador." : "Sin resultados para esa búsqueda."}
+                  </td></tr>
+                )}
+                {eliminadosFiltrados.map((e,i)=>(
+                  <tr key={e.id} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"#fff":C.surface}}>
+                    <td style={{...TD,color:C.textSec,fontSize:12,whiteSpace:"nowrap"}}>{new Date(e.eliminado_at).toLocaleString("es-MX")}</td>
+                    <td style={{...TD,maxWidth:isMobile?110:220}}><span style={{display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:13}}>{receptorDeBorrador(e)}</span></td>
+                    {!isMobile&&<td style={{...TD,fontSize:13,fontFamily:"monospace",whiteSpace:"nowrap"}}>{e.eliminado_por_rfc||"—"}</td>}
+                    <td style={{...TD,fontSize:12,whiteSpace:"nowrap"}}>{MOTIVO_LABEL[e.motivo]||e.motivo}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : esBorradores ? (
             <table style={{width:"100%",borderCollapse:"collapse",minWidth:isMobile?360:540}}>
               <thead>
                 <tr style={{background:C.surface}}>
@@ -169,7 +209,9 @@ export default function FacturasGeneradas(){
         </div>
       </Card>
       <div style={{fontSize:11,color:C.textMuted,marginTop:8}}>
-        {esBorradores
+        {esEliminados
+          ? "Registro de solo lectura: cada borrador eliminado queda aquí con quién lo borró y por qué. \"Limpieza tras timbrado\" es el borrado automático al timbrar una factura."
+          : esBorradores
           ? "Un borrador es el formulario de Nueva Factura guardado sin timbrar. \"Abrir\" lo carga de vuelta; al timbrarlo se elimina solo."
           : "Nota: las URLs de descarga apuntan a MinIO dentro de la red de Docker — hoy no son accesibles desde fuera de ese entorno (ver #8/#19/#20)."}
       </div>

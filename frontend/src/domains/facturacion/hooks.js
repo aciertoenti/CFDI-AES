@@ -39,6 +39,26 @@ export function useBorradores(activo) {
   return { borradores, loading, error, recargar: cargar };
 }
 
+// Auditoria de borradores eliminados: solo lectura, endpoint propio
+// (/facturas/borradores/eliminados). Mismo patron perezoso que useBorradores
+// - solo carga cuando la pestaña "Eliminados" esta abierta.
+export function useBorradoresEliminados(activo) {
+  const [eliminados, setEliminados] = useState([]);
+  const [loading,    setLoading]    = useState(false);
+  const [error,      setError]      = useState(null);
+  const cargar = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetchAuth(`${API_BASE}/facturas/borradores/eliminados`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setEliminados(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { if (activo) cargar(); }, [activo, cargar]);
+  return { eliminados, loading, error, recargar: cargar };
+}
+
 export function useCostosResumen(emisorRfc) {
   const [datos,   setDatos]   = useState([]);
   const [loading, setLoading] = useState(true);

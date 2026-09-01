@@ -93,7 +93,7 @@ export default function NuevaFactura(){
       // existe una factura real, dejarlo en la lista solo confundiria.
       // best-effort: si el DELETE falla el usuario puede borrarlo a mano.
       if (borradorId) {
-        fetchAuth(`${API_BASE}/facturas/borradores/${borradorId}`, { method: "DELETE" }).catch(() => {});
+        fetchAuth(`${API_BASE}/facturas/borradores/${borradorId}?motivo=post_timbrado`, { method: "DELETE" }).catch(() => {});
         setBorradorId(null);
       }
     }

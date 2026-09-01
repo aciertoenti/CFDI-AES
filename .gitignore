@@ -43,6 +43,8 @@ ngrok_requests.json
 
 # CSD/FIEL de prueba — nunca deben subirse a git
 certs_test/
+certs_org/
 *.cer
 *.key
 *.sdg
+experiments/sat-descarga-masiva/.env

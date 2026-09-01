@@ -32,8 +32,8 @@ const NAV = [
   {id:"admin",label:"Administración",icon:"⚙️",children:["emisores","clientes","usuarios","series"]},
 ];
 const LABELS = {
-  nueva:"Nueva Factura",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",contador:"Contador Virtual",
-  lector:"Lector de Documentos",chat:"Chat Fiscal",anomalias:"Anomalías IA",conciliacion:"Conciliación",
+  nueva:"Nueva Factura",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",contador:"Cálculo de Impuestos",
+  lector:"Lector de Documentos",chat:"Asistente de IA",anomalias:"Anomalías IA",conciliacion:"Conciliación",
   emisores:"Emisores",clientes:"Clientes",usuarios:"Usuarios",series:"Series",
 };
 const VIEWS={

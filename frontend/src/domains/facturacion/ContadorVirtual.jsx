@@ -16,13 +16,13 @@ export default function ContadorVirtual(){
   const [anio,mes] = periodo.split("-").map(Number);
   const {datos,loading,error} = useContadorVirtualISRResico(emisor?.rfc, anio, mes);
 
-  if (errorEmisores) return <Placeholder title="Contador virtual" detail={`No se pudo conectar con administracion (${ADMINISTRACION_BASE}): ${errorEmisores}`}/>;
-  if (loadingEmisores) return <Placeholder title="Contador virtual" detail="Cargando datos reales…"/>;
-  if (!emisor) return <Placeholder title="Contador virtual" detail="Todavía no hay un emisor registrado."/>;
+  if (errorEmisores) return <Placeholder title="Cálculo de impuestos" detail={`No se pudo conectar con administracion (${ADMINISTRACION_BASE}): ${errorEmisores}`}/>;
+  if (loadingEmisores) return <Placeholder title="Cálculo de impuestos" detail="Cargando datos reales…"/>;
+  if (!emisor) return <Placeholder title="Cálculo de impuestos" detail="Todavía no hay un emisor registrado."/>;
 
   return (
     <div>
-      <SectionTitle>Contador virtual — ISR provisional (RESICO PF)</SectionTitle>
+      <SectionTitle>Cálculo de impuestos — ISR provisional (RESICO PF)</SectionTitle>
       <SectionSub>Fase 1 de #40: solo RESICO Personas Físicas, solo ingresos ya facturados con pago en una sola exhibición (PUE).</SectionSub>
 
       <Card style={{marginBottom:12}}>
@@ -31,8 +31,8 @@ export default function ContadorVirtual(){
           style={{border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff"}}/>
       </Card>
 
-      {loading && <Placeholder title="Contador virtual" detail="Calculando…"/>}
-      {!loading && error && <Placeholder title="Contador virtual" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>}
+      {loading && <Placeholder title="Cálculo de impuestos" detail="Calculando…"/>}
+      {!loading && error && <Placeholder title="Cálculo de impuestos" detail={`No se pudo conectar con facturacion (${FACTURACION_BASE}): ${error}`}/>}
 
       {!loading && !error && datos && !datos.aplica && (
         <Card>

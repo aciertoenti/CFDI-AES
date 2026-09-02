@@ -317,7 +317,10 @@ async def _ejecutar_timbrado(ctx: SessionContext, wa_id: str) -> None:
         email=datos.email or "",
         ticket_id=datos.ticket_id or "",
         concepto="Producto/Servicio",
-        subtotal=1.0,  # En producción: leer del sistema de punto de venta
+        # subtotal derivado en el estado CAPTURA_MONTO (monto con IVA / 1.16),
+        # guardado como str en DatosCapturados. Pydantic (SolicitudFacturaBot)
+        # lo valida con gt=0.
+        subtotal=float(datos.subtotal or 0),
     )
 
     try:

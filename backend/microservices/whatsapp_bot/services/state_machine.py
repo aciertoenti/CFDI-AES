@@ -4,7 +4,7 @@ Máquina de estados de la conversación WhatsApp.
 Estados:
   INICIO → ESPERANDO_OPTIN → CAPTURA_RFC → CAPTURA_RAZON_SOCIAL
         → CAPTURA_CP → CAPTURA_REGIMEN → CAPTURA_USO_CFDI
-        → CAPTURA_EMAIL → CAPTURA_TICKET → CONFIRMACION
+        → CAPTURA_EMAIL → CAPTURA_TICKET → CAPTURA_MONTO → CONFIRMACION
         → TIMBRADO → ENTREGA → CERRADA
 
 Flujo de cancelación:
@@ -15,6 +15,7 @@ Timeouts: sesión expira a los 30 min sin actividad (manejado en Redis TTL).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
 from core.logging import get_logger
@@ -80,6 +81,10 @@ MENSAJES: dict[EstadoConversacion, str] = {
         "¿Cuál es el *número de ticket o folio* de tu compra?\n"
         "_(Lo encontrarás en tu comprobante de venta)_"
     ),
+    EstadoConversacion.CAPTURA_MONTO: (
+        "¿Cuál es el *total* de tu compra?\n"
+        "_(con IVA incluido, ej: 348.00)_"
+    ),
     EstadoConversacion.ESPERANDO_CSF: (
         "📎 Puedes enviarme tu *Constancia de Situación Fiscal* como imagen (JPG/PNG) o PDF "
         "para llenar los datos automáticamente, o escribe el régimen manualmente."
@@ -94,7 +99,8 @@ MSG_CONFIRMACION = (
     "• Régimen: {regimen_fiscal} – {desc_regimen}\n"
     "• Uso CFDI: {uso_cfdi} – {desc_uso}\n"
     "• Email: {email}\n"
-    "• Ticket: {ticket_id}\n\n"
+    "• Ticket: {ticket_id}\n"
+    "• Total: ${total} MXN\n\n"
     "⚠️ _Este es un ambiente de PRUEBA. Esta factura no tiene validez fiscal "
     "ante el SAT._\n\n"
     "¿Los datos son correctos?\n"
@@ -145,6 +151,12 @@ class DatosCapturados:
     uso_cfdi: Optional[str] = None
     email: Optional[str] = None
     ticket_id: Optional[str] = None
+    # Monto total (con IVA) que teclea el usuario, y el subtotal derivado
+    # (monto / 1.16). Se guardan como str, NO Decimal: to_dict() se serializa
+    # a JSON en Redis (session_store.save_session) y json.dumps no soporta
+    # Decimal - un Decimal aqui hace que la sesion no se persista.
+    monto: Optional[str] = None
+    subtotal: Optional[str] = None
     csf_procesada: bool = False
     tickets_identificados: int = 0
 
@@ -375,6 +387,44 @@ class ConversationStateMachine:
                     datos_actualizados=datos,
                 )
             datos.ticket_id = texto.strip()[:100]
+            return TransitionResult(
+                nuevo_estado=EstadoConversacion.CAPTURA_MONTO,
+                respuesta=MENSAJES[EstadoConversacion.CAPTURA_MONTO],
+                datos_actualizados=datos,
+            )
+
+        # ── MONTO ─────────────────────────────────────────────────────────────
+        if estado == EstadoConversacion.CAPTURA_MONTO:
+            # v1: IVA fijo al 16%. NO maneja la tasa 8% de zona fronteriza ni
+            # conceptos exentos / tasa 0% - limitacion conocida y documentada.
+            crudo = (
+                texto.strip()
+                .replace("$", "")
+                .replace(",", "")
+                .replace("MXN", "")
+                .replace("mxn", "")
+                .strip()
+            )
+            try:
+                monto = Decimal(crudo)
+            except InvalidOperation:
+                return TransitionResult(
+                    nuevo_estado=EstadoConversacion.CAPTURA_MONTO,
+                    respuesta="❌ No entendí el monto. Escribe solo el número, ej: 348.00",
+                    datos_actualizados=datos,
+                )
+            if monto <= 0 or monto > Decimal("999999"):
+                return TransitionResult(
+                    nuevo_estado=EstadoConversacion.CAPTURA_MONTO,
+                    respuesta="❌ El monto debe ser mayor a 0 y menor a 999,999. Intenta de nuevo:",
+                    datos_actualizados=datos,
+                )
+            subtotal = (monto / Decimal("1.16")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            # str, no Decimal - ver comentario en DatosCapturados.
+            datos.monto = f"{monto:.2f}"
+            datos.subtotal = f"{subtotal:.2f}"
             desc_regimen = CATALOGO_REGIMEN_FISCAL.get(datos.regimen_fiscal or "", "")
             desc_uso = CATALOGO_USO_CFDI.get(datos.uso_cfdi or "", {}).get("desc", "")
             confirmacion = MSG_CONFIRMACION.format(
@@ -387,6 +437,7 @@ class ConversationStateMachine:
                 desc_uso=desc_uso,
                 email=datos.email,
                 ticket_id=datos.ticket_id,
+                total=datos.monto,
             )
             return TransitionResult(
                 nuevo_estado=EstadoConversacion.CONFIRMACION,

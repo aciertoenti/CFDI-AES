@@ -71,7 +71,7 @@ MENSAJES: dict[EstadoConversacion, str] = {
         "Los más comunes:\n"
         "• *G03* – Gastos en general\n"
         "• *G01* – Adquisición de mercancías\n"
-        "• *P01* – Por definir\n\n"
+        "• *S01* – Sin efectos fiscales\n\n"
         "Escribe el código (ej: *G03*)."
     ),
     EstadoConversacion.CAPTURA_EMAIL: (

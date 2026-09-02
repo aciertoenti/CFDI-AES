@@ -37,34 +37,40 @@ CATALOGO_REGIMEN_FISCAL: dict[str, str] = {
     "626": "Régimen Simplificado de Confianza",
 }
 
-# ─── Catálogo c_UsoCFDI (SAT, vigente 2024) ──────────────────────────────────
-# "fisica": True si aplica a personas físicas, "moral": True si aplica a morales
+# ─── Catálogo c_UsoCFDI (CFDI 4.0) ──────────────────────────────────────────
+# Fuente: github.com/phpcfdi/resources-sat-catalogs, tabla cfdi_40_usos_cfdi,
+# snapshot version.txt 10.15.20260821 (espejo de dominio público del Anexo 20
+# del SAT). Extraído y verificado el 02 sep 2026. Regenerar cuando el SAT
+# republique c_UsoCFDI.
+#   "fisica"/"moral": True si aplica a ese tipo de persona.
+#   "regimenes": códigos c_RegimenFiscal del RECEPTOR válidos para este uso
+#                (columna "regimenes_fiscales_receptores" del catálogo oficial).
+# NOTA: "P01" (Por definir) NO existe en CFDI 4.0 - se removió desde 3.3.
 CATALOGO_USO_CFDI: dict[str, dict] = {
-    "G01": {"desc": "Adquisición de mercancias", "fisica": True, "moral": True},
-    "G02": {"desc": "Devoluciones, descuentos o bonificaciones", "fisica": True, "moral": True},
-    "G03": {"desc": "Gastos en general", "fisica": True, "moral": True},
-    "I01": {"desc": "Construcciones", "fisica": True, "moral": True},
-    "I02": {"desc": "Mobilario y equipo de oficina por inversiones", "fisica": True, "moral": True},
-    "I03": {"desc": "Equipo de transporte", "fisica": True, "moral": True},
-    "I04": {"desc": "Equipo de computo y accesorios", "fisica": True, "moral": True},
-    "I05": {"desc": "Dados, troqueles, moldes, matrices y herramental", "fisica": True, "moral": True},
-    "I06": {"desc": "Comunicaciones telefónicas", "fisica": True, "moral": True},
-    "I07": {"desc": "Comunicaciones satelitales", "fisica": True, "moral": True},
-    "I08": {"desc": "Otra maquinaria y equipo", "fisica": True, "moral": True},
-    "D01": {"desc": "Honorarios médicos, dentales y gastos hospitalarios", "fisica": True, "moral": False},
-    "D02": {"desc": "Gastos médicos por incapacidad o discapacidad", "fisica": True, "moral": False},
-    "D03": {"desc": "Gastos funerales", "fisica": True, "moral": False},
-    "D04": {"desc": "Donativos", "fisica": True, "moral": True},
-    "D05": {"desc": "Intereses reales efectivamente pagados por créditos hipotecarios (casa habitación)", "fisica": True, "moral": False},
-    "D06": {"desc": "Aportaciones voluntarias al SAR", "fisica": True, "moral": False},
-    "D07": {"desc": "Primas por seguros de gastos médicos", "fisica": True, "moral": False},
-    "D08": {"desc": "Gastos de transportación escolar obligatoria", "fisica": True, "moral": False},
-    "D09": {"desc": "Depósitos en cuentas para el ahorro, primas que tengan como base planes de pensiones", "fisica": True, "moral": False},
-    "D10": {"desc": "Pagos por servicios educativos (colegiaturas)", "fisica": True, "moral": False},
-    "S01": {"desc": "Sin efectos fiscales", "fisica": True, "moral": True},
-    "CP01": {"desc": "Pagos", "fisica": True, "moral": True},
-    "CN01": {"desc": "Nómina", "fisica": True, "moral": False},
-    "P01": {"desc": "Por definir", "fisica": True, "moral": True},
+    "CN01": {"desc": "Nómina", "fisica": True, "moral": False, "regimenes": ["605"]},
+    "CP01": {"desc": "Pagos", "fisica": True, "moral": True, "regimenes": ["601", "603", "605", "606", "608", "610", "611", "612", "614", "616", "620", "621", "622", "623", "624", "607", "615", "625", "626"]},
+    "D01": {"desc": "Honorarios médicos, dentales y gastos hospitalarios.", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "D02": {"desc": "Gastos médicos por incapacidad o discapacidad.", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "D03": {"desc": "Gastos funerales.", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "D04": {"desc": "Donativos.", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "D05": {"desc": "Intereses reales efectivamente pagados por créditos hipotecarios (casa habitación).", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "D06": {"desc": "Aportaciones voluntarias al SAR.", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "D07": {"desc": "Primas por seguros de gastos médicos.", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "D08": {"desc": "Gastos de transportación escolar obligatoria.", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "D09": {"desc": "Depósitos en cuentas para el ahorro, primas que tengan como base planes de pensiones.", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "D10": {"desc": "Pagos por servicios educativos (colegiaturas).", "fisica": True, "moral": False, "regimenes": ["605", "606", "608", "611", "612", "614", "607", "615", "625"]},
+    "G01": {"desc": "Adquisición de mercancías.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "G02": {"desc": "Devoluciones, descuentos o bonificaciones.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "616", "620", "621", "622", "623", "624", "625", "626"]},
+    "G03": {"desc": "Gastos en general.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "I01": {"desc": "Construcciones.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "I02": {"desc": "Mobiliario y equipo de oficina por inversiones.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "I03": {"desc": "Equipo de transporte.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "I04": {"desc": "Equipo de computo y accesorios.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "I05": {"desc": "Dados, troqueles, moldes, matrices y herramental.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "I06": {"desc": "Comunicaciones telefónicas.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "I07": {"desc": "Comunicaciones satelitales.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "I08": {"desc": "Otra maquinaria y equipo.", "fisica": True, "moral": True, "regimenes": ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"]},
+    "S01": {"desc": "Sin efectos fiscales.", "fisica": True, "moral": True, "regimenes": ["601", "603", "605", "606", "608", "610", "611", "612", "614", "616", "620", "621", "622", "623", "624", "607", "615", "625", "626"]},
 }
 
 # Regímenes de personas morales (vs físicas)
@@ -204,6 +210,18 @@ def validate_uso_cfdi(
                 error=(
                     f"El uso CFDI '{uso}' no es compatible con personas físicas "
                     f"(régimen {regimen_fiscal})."
+                ),
+            )
+        # Además de física/moral, el catálogo oficial c_UsoCFDI lista los
+        # regímenes concretos del receptor válidos para cada uso. Ej. G03 no
+        # aplica al régimen 616 (Sin obligaciones fiscales) - el SAT rechaza
+        # esa combinación con CFDI40161 (ver PVTI_..zg41BYk).
+        if regimen_fiscal not in entry["regimenes"]:
+            return ValidationResult(
+                valid=False,
+                error=(
+                    f"El uso CFDI '{uso}' no es válido para el régimen fiscal "
+                    f"{regimen_fiscal} del receptor (catálogo oficial c_UsoCFDI)."
                 ),
             )
 

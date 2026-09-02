@@ -6,8 +6,13 @@ import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
 import { useNav } from "../../shared/layout/nav";
 import { SectionTitle, SectionSub, Card, TwoCol, Btn } from "../../shared/components/atoms";
 import { C, fmt, detalleError } from "../../shared/utils/format";
+import { CATALOGO_USO_CFDI, usosValidosParaRegimen } from "./catalogoUsoCfdi";
 
 const FORM_VACIO = {clienteRfc:"",receptor:"",rfc:"",usoCfdi:"G03",domicilioFiscal:"",regimenFiscal:"",concepto:"",cantidad:"",precio:"",iva:"16"};
+// v1: solo estos 3 usos en el dropdown (el catálogo trae los 24, listos para
+// cuando se expanda). El dropdown se filtra según el régimen del receptor
+// cuando se conoce (cliente registrado); con receptor manual se muestran los 3.
+const USOS_V1 = ["G03", "G01", "S01"];
 
 export default function NuevaFactura(){
   const toast = useToast();
@@ -98,6 +103,18 @@ export default function NuevaFactura(){
       }
     }
   }, [resultado]);
+
+  // Uso CFDI válidos para el régimen del receptor. Si no hay régimen (receptor
+  // manual sin cliente), usosValidosParaRegimen regresa los 3 sin filtrar.
+  const usosDisponibles = usosValidosParaRegimen(form.regimenFiscal, USOS_V1);
+  // Si el régimen cambió y el Uso CFDI seleccionado ya no es válido para él,
+  // moverlo a la primera opción válida - no dejar un valor inválido puesto en
+  // silencio (era la causa del rechazo CFDI40161: G03 con régimen 616).
+  useEffect(() => {
+    if (usosDisponibles.length && !usosDisponibles.includes(form.usoCfdi)) {
+      setForm(f => ({ ...f, usoCfdi: usosDisponibles[0] }));
+    }
+  }, [form.regimenFiscal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sub=(parseFloat(form.cantidad)||0)*(parseFloat(form.precio)||0);
   const total=sub*(1+(parseFloat(form.iva)||0)/100);
@@ -241,10 +258,23 @@ export default function NuevaFactura(){
           {inp("Domicilio fiscal (CP)","domicilioFiscal")}
           <div style={{marginBottom:10}}>
             <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Uso CFDI</label>
-            <select value={form.usoCfdi} onChange={e=>setForm({...form,usoCfdi:e.target.value})}
-              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}>
-              <option value="G03">G03 – Gastos en general</option><option value="G01">G01 – Adquisición de mercancías</option><option value="S01">S01 – Sin efectos fiscales</option>
-            </select>
+            {usosDisponibles.length === 0 ? (
+              <div style={{fontSize:12,color:C.danger,border:`1px solid ${C.danger}`,borderRadius:8,padding:"8px 11px",background:"#fff"}}>
+                ⚠ Ninguno de los usos disponibles ({USOS_V1.join(", ")}) es válido para el régimen fiscal {form.regimenFiscal} del receptor. Elige un cliente con otro régimen o corrige el régimen del cliente.
+              </div>
+            ) : (
+              <select value={form.usoCfdi} onChange={e=>setForm({...form,usoCfdi:e.target.value})}
+                style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}>
+                {usosDisponibles.map(clave=>(
+                  <option key={clave} value={clave}>{clave} – {CATALOGO_USO_CFDI[clave].desc.replace(/\.$/,"")}</option>
+                ))}
+              </select>
+            )}
+            {!form.regimenFiscal && (
+              <div style={{fontSize:11,color:C.textMuted,marginTop:4}}>
+                Se muestran todas las opciones. Filtrar por régimen fiscal requiere elegir un cliente registrado.
+              </div>
+            )}
           </div>
         </Card>
       </TwoCol>

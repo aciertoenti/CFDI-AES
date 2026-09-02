@@ -137,6 +137,23 @@ class TestValidarUsoCFDI:
         r = validate_uso_cfdi("D01")
         assert r.valid is True
 
+    def test_uso_g03_regimen_616_invalido(self):
+        # Caso real que causó CFDI40161 (folio previo a A-0041, ver zg41BYk):
+        # G03 no aplica al régimen 616 (Sin obligaciones fiscales).
+        r = validate_uso_cfdi("G03", regimen_fiscal="616")
+        assert r.valid is False
+        assert "616" in r.error
+
+    def test_uso_g03_regimen_625_valido(self):
+        # G03 + 625 SÍ es válido - timbró en producción (folio W-0007).
+        r = validate_uso_cfdi("G03", regimen_fiscal="625")
+        assert r.valid is True
+
+    def test_uso_s01_regimen_616_valido(self):
+        # S01 acepta 616 - fue el reintento exitoso (folio A-0041).
+        r = validate_uso_cfdi("S01", regimen_fiscal="616")
+        assert r.valid is True
+
 
 class TestValidacionCompuesta:
     def test_todos_validos(self):

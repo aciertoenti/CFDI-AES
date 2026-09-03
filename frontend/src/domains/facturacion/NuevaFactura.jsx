@@ -7,6 +7,7 @@ import { useNav } from "../../shared/layout/nav";
 import { SectionTitle, SectionSub, Card, TwoCol, Btn } from "../../shared/components/atoms";
 import { C, fmt, detalleError } from "../../shared/utils/format";
 import { CATALOGO_USO_CFDI, usosValidosParaRegimen } from "./catalogoUsoCfdi";
+import { CATALOGO_REGIMEN_FISCAL } from "./catalogoRegimenFiscal";
 
 const FORM_VACIO = {clienteRfc:"",receptor:"",rfc:"",email:"",usoCfdi:"G03",domicilioFiscal:"",regimenFiscal:"",concepto:"",cantidad:"",precio:"",iva:"16"};
 // v1: solo estos 3 usos en el dropdown (el catálogo trae los 24, listos para
@@ -87,8 +88,8 @@ export default function NuevaFactura(){
       // proxima factura a ese mismo RFC. best-effort - un 409 (ya existe,
       // UNIQUE(rfc, emisor_rfc)) o cualquier otro fallo se absorbe en
       // silencio, igual que el DELETE de limpieza del borrador de abajo.
-      // regimen_fiscal va vacio hasta que exista el campo del punto (c) de
-      // zg5Lf6Q; el resto de datos si son utiles desde ya.
+      // regimen_fiscal siempre viene lleno: el submit exige form.regimenFiscal
+      // (validacion mas arriba, punto (c) de zg5Lf6Q).
       if (!form.clienteRfc && emisor?.rfc && form.rfc) {
         fetchAuth(`${API_BASE}/admin/clientes`, {
           method: "POST",
@@ -195,8 +196,8 @@ export default function NuevaFactura(){
   const timbrar = async () => {
     if (!emisor) { toast("No hay ningún emisor registrado en Administración todavía","error"); return; }
     if (emisorInactivo) { toast("El emisor activo está Inactivo y no puede timbrar. Reactívalo en Administración › Emisores.","error"); return; }
-    if (!form.receptor||!form.rfc||!form.domicilioFiscal||!form.concepto||!form.cantidad||!form.precio) {
-      toast("Completa receptor, domicilio fiscal y los datos del concepto antes de timbrar","warning"); return;
+    if (!form.receptor||!form.rfc||!form.regimenFiscal||!form.domicilioFiscal||!form.concepto||!form.cantidad||!form.precio) {
+      toast("Completa receptor, régimen fiscal, domicilio fiscal y los datos del concepto antes de timbrar","warning"); return;
     }
     if (parseFloat(form.cantidad) <= 0 || parseFloat(form.precio) <= 0) {
       toast("Cantidad y precio unitario deben ser mayores a cero", "warning");
@@ -282,6 +283,19 @@ export default function NuevaFactura(){
           {inp("Correo (opcional)","email","email")}
           {inp("Domicilio fiscal (CP)","domicilioFiscal")}
           <div style={{marginBottom:10}}>
+            <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Régimen fiscal del receptor</label>
+            {/* Editable siempre, incluso con cliente seleccionado - override
+                para esta factura, igual que receptor/rfc/domicilioFiscal.
+                Alimenta el filtro de Uso CFDI de abajo (usosValidosParaRegimen). */}
+            <select value={form.regimenFiscal} onChange={e=>setForm({...form,regimenFiscal:e.target.value})}
+              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}>
+              <option value="">— Selecciona régimen —</option>
+              {Object.entries(CATALOGO_REGIMEN_FISCAL).map(([codigo,{desc}])=>(
+                <option key={codigo} value={codigo}>{codigo} – {desc}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{marginBottom:10}}>
             <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Uso CFDI</label>
             {usosDisponibles.length === 0 ? (
               <div style={{fontSize:12,color:C.danger,border:`1px solid ${C.danger}`,borderRadius:8,padding:"8px 11px",background:"#fff"}}>
@@ -297,7 +311,7 @@ export default function NuevaFactura(){
             )}
             {!form.regimenFiscal && (
               <div style={{fontSize:11,color:C.textMuted,marginTop:4}}>
-                Se muestran todas las opciones. Filtrar por régimen fiscal requiere elegir un cliente registrado.
+                Selecciona el régimen fiscal del receptor para filtrar los usos válidos.
               </div>
             )}
           </div>

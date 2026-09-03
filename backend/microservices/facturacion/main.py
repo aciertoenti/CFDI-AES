@@ -62,6 +62,10 @@ COSTO_TIMBRE_CON_IVA = (COSTO_TIMBRE_FINKOK * (1 + IVA_TASA_COSTO_TIMBRE)).quant
 # calculo marginal como las tarifas de sueldos) - Art. 113-E LISR.
 REGIMEN_RESICO = "626"  # verificado contra el catalogo oficial C756_c_RegimenFiscal (satcfdi), no asumido
 REGIMEN_SIN_OBLIGACIONES = "616"  # verificado contra C756_c_RegimenFiscal (satcfdi), no asumido
+# Valores fijos que el SAT exige para el receptor "Publico en General"
+# (RFC XAXX010101000) - ver construir_comprobante y zg5UciU (03 sep 2026).
+NOMBRE_PUBLICO_EN_GENERAL = "PUBLICO EN GENERAL"  # EXACTO en mayusculas; otra capitalizacion -> CFDI40130
+USO_CFDI_SIN_EFECTOS = "S01"  # unico UsoCFDI valido con regimen 616 (c_UsoCFDI); otro -> CFDI40161
 RFC_LEN_PERSONA_FISICA = 13  # 12 = Persona Moral - el codigo 626 aplica a ambas, hay que distinguir por RFC
 TABLA_ISR_RESICO_PF = [
     (Decimal("25000.00"), Decimal("0.0100")),
@@ -431,20 +435,30 @@ async def construir_comprobante(factura: FacturaCreate, signer: Signer, x_negoci
         domicilio_fiscal_receptor = datos_emisor["codigo_postal"]
 
     # Mismo criterio que DomicilioFiscalReceptor: si el receptor es Publico
-    # en General, su RegimenFiscalReceptor debe ser 616 (Sin obligaciones
-    # fiscales) - el SAT lo exige y el default "601" de ReceptorCFDI no debe
-    # llegar nunca al CFDI para XAXX010101000. Se fuerza aqui, no se confia
-    # en que el caller lo mande bien.
+    # en General, el SAT exige valores fijos que el caller no siempre manda
+    # bien (el front puede dejar el nombre en minusculas, un regimen 601 por
+    # default, o un UsoCFDI que no aplica a regimen 616). Se fuerzan aqui, no
+    # se confia en el caller:
+    #   - RegimenFiscalReceptor = 616 (Sin obligaciones fiscales).
+    #   - Nombre = "PUBLICO EN GENERAL" EXACTO en mayusculas: con otra
+    #     capitalizacion el PAC rechaza con CFDI40130 ("falta InformacionGlobal")
+    #     aunque el nodo si exista - confirmado contra el sandbox de Finkok
+    #     (zg5UciU, 03 sep 2026).
+    #   - UsoCFDI = S01, el unico valido con regimen 616; cualquier otro da CFDI40161.
     regimen_fiscal_receptor = factura.receptor.regimen_fiscal
+    nombre_receptor = factura.receptor.nombre
+    uso_cfdi_receptor = factura.receptor.uso_cfdi
     if factura.receptor.rfc == RFC_PUBLICO_EN_GENERAL:
         regimen_fiscal_receptor = REGIMEN_SIN_OBLIGACIONES
+        nombre_receptor = NOMBRE_PUBLICO_EN_GENERAL
+        uso_cfdi_receptor = USO_CFDI_SIN_EFECTOS
 
     receptor = Receptor(
         rfc=factura.receptor.rfc,
-        nombre=factura.receptor.nombre,
+        nombre=nombre_receptor,
         domicilio_fiscal_receptor=domicilio_fiscal_receptor,
         regimen_fiscal_receptor=regimen_fiscal_receptor,
-        uso_cfdi=factura.receptor.uso_cfdi,
+        uso_cfdi=uso_cfdi_receptor,
     )
     conceptos = [
         ConceptoCFDI(

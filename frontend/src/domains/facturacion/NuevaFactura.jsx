@@ -8,7 +8,7 @@ import { SectionTitle, SectionSub, Card, TwoCol, Btn } from "../../shared/compon
 import { C, fmt, detalleError } from "../../shared/utils/format";
 import { CATALOGO_USO_CFDI, usosValidosParaRegimen } from "./catalogoUsoCfdi";
 
-const FORM_VACIO = {clienteRfc:"",receptor:"",rfc:"",usoCfdi:"G03",domicilioFiscal:"",regimenFiscal:"",concepto:"",cantidad:"",precio:"",iva:"16"};
+const FORM_VACIO = {clienteRfc:"",receptor:"",rfc:"",email:"",usoCfdi:"G03",domicilioFiscal:"",regimenFiscal:"",concepto:"",cantidad:"",precio:"",iva:"16"};
 // v1: solo estos 3 usos en el dropdown (el catálogo trae los 24, listos para
 // cuando se expanda). El dropdown se filtra según el régimen del receptor
 // cuando se conoce (cliente registrado); con receptor manual se muestran los 3.
@@ -82,11 +82,34 @@ export default function NuevaFactura(){
   // la alternativa de "limpiar al vaciar el campo".
   useEffect(() => {
     if (resultado) {
+      // Guardado automatico del receptor capturado manualmente (zg5Lf6Q): si
+      // NO se eligio un cliente registrado, persistirlo para autocompletar la
+      // proxima factura a ese mismo RFC. best-effort - un 409 (ya existe,
+      // UNIQUE(rfc, emisor_rfc)) o cualquier otro fallo se absorbe en
+      // silencio, igual que el DELETE de limpieza del borrador de abajo.
+      // regimen_fiscal va vacio hasta que exista el campo del punto (c) de
+      // zg5Lf6Q; el resto de datos si son utiles desde ya.
+      if (!form.clienteRfc && emisor?.rfc && form.rfc) {
+        fetchAuth(`${API_BASE}/admin/clientes`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            emisor_rfc: emisor.rfc,
+            rfc: form.rfc,
+            nombre: form.receptor,
+            email: form.email || null,
+            regimen_fiscal: form.regimenFiscal,
+            uso_cfdi_default: form.usoCfdi,
+            domicilio_fiscal: form.domicilioFiscal,
+          }),
+        }).catch(() => {});
+      }
       setForm(f => ({
         ...f,
         clienteRfc: "",
         receptor: "",
         rfc: "",
+        email: "",
         domicilioFiscal: "",
         regimenFiscal: "",
         concepto: "",
@@ -121,7 +144,7 @@ export default function NuevaFactura(){
 
   const seleccionarCliente = rfc => {
     setResultado(null); setErrorTimbrado(null);
-    if (!rfc) { setForm(f=>({...f,clienteRfc:"",receptor:"",rfc:"",domicilioFiscal:"",regimenFiscal:""})); return; }
+    if (!rfc) { setForm(f=>({...f,clienteRfc:"",receptor:"",rfc:"",email:"",domicilioFiscal:"",regimenFiscal:""})); return; }
     const c = clientes.find(c=>c.rfc===rfc);
     if (!c) return;
     setForm(f=>({
@@ -129,6 +152,7 @@ export default function NuevaFactura(){
       clienteRfc:rfc,
       receptor:c.nombre,
       rfc:c.rfc,
+      email:c.email||"",
       usoCfdi:c.uso_cfdi_default||f.usoCfdi,
       domicilioFiscal:c.domicilio_fiscal||"",
       regimenFiscal:c.regimen_fiscal||"",
@@ -255,6 +279,7 @@ export default function NuevaFactura(){
           </div>
           {inp("Nombre / Razón social","receptor")}
           {inp("RFC","rfc")}
+          {inp("Correo (opcional)","email","email")}
           {inp("Domicilio fiscal (CP)","domicilioFiscal")}
           <div style={{marginBottom:10}}>
             <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Uso CFDI</label>

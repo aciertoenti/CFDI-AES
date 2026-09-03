@@ -15,7 +15,17 @@ export function EmisoresProvider({ children }) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setEmisores(data);
-      setEmisorActivoRfc(prev => (prev && data.some(e => e.rfc === prev)) ? prev : (data[0]?.rfc ?? null));
+      // Al inicializar (sin seleccion previa valida) preferir el primer emisor
+      // Activo, no data[0] a ciegas: si la API devuelve un emisor Inactivo
+      // primero (ej. uno viejo dado de baja, por orden de id), el usuario caia
+      // en la pantalla de bloqueo de "Emisor Inactivo" en cada login aunque
+      // tuviera un emisor Activo. data[0] queda solo como ultimo recurso: si
+      // no hay ninguno Activo, el bloqueo si es correcto (no hay con que facturar).
+      setEmisorActivoRfc(prev =>
+        (prev && data.some(e => e.rfc === prev))
+          ? prev
+          : (data.find(e => e.estado === "Activo")?.rfc ?? data[0]?.rfc ?? null)
+      );
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }, []);

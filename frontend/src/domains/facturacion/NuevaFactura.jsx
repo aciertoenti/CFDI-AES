@@ -63,14 +63,41 @@ export default function NuevaFactura(){
   // fallar un intento.
   const [idempotencyKey,setIdempotencyKey]=useState(() => crypto.randomUUID());
 
-  // Receptor generico (Publico en General): el SAT exige que su domicilio
-  // fiscal sea igual al LugarExpedicion del emisor activo (regla ya aplicada
-  // en facturacion/main.py al armar el CFDI). Si el usuario cambia de emisor
-  // con el generico ya seleccionado, este CP debe seguir al emisor - un
-  // cliente real conserva su propio domicilio fiscal, sin tocarlo aqui.
+  // Receptor generico (Publico en General, RFC XAXX010101000): el SAT exige
+  // valores fijos para este receptor y el backend ya los fuerza al armar el
+  // CFDI (facturacion/main.py: NOMBRE_PUBLICO_EN_GENERAL / USO_CFDI_SIN_EFECTOS
+  // / REGIMEN_SIN_OBLIGACIONES). Aqui se espejan en el form y se dejan
+  // readOnly/disabled, para que lo que ve el usuario coincida con lo que se
+  // timbra y para que la validacion pre-timbrar no bloquee por campos "vacios".
+  // El CP sigue al emisor activo si este cambia; un cliente real conserva su
+  // propio domicilio fiscal, sin tocarlo aqui.
   useEffect(() => {
-    if (form.rfc === "XAXX010101000" && emisor?.codigo_postal) {
-      setForm(f => f.domicilioFiscal === emisor.codigo_postal ? f : {...f, domicilioFiscal: emisor.codigo_postal});
+    if (form.rfc === "XAXX010101000") {
+      setForm(f => {
+        const next = {
+          ...f,
+          receptor: "PUBLICO EN GENERAL",
+          regimenFiscal: "616",
+          usoCfdi: "S01",
+          // Descripcion sugerida, solo si el usuario no escribio nada aun - a
+          // diferencia de los demas no se fuerza ni queda readOnly (el concepto
+          // real de la venta puede variar). No se limpia al salir de XAXX.
+          ...(f.concepto ? {} : {concepto: "Venta al público en general"}),
+          ...(emisor?.codigo_postal ? {domicilioFiscal: emisor.codigo_postal} : {}),
+        };
+        return (f.receptor === next.receptor && f.regimenFiscal === next.regimenFiscal
+          && f.usoCfdi === next.usoCfdi && f.concepto === next.concepto
+          && f.domicilioFiscal === next.domicilioFiscal) ? f : next;
+      });
+    } else {
+      // Al dejar de ser Publico en General, limpiar los campos forzados - pero
+      // SOLO si siguen con los valores sentinela (transicion XAXX -> RFC real).
+      // Sin este guard, corregir un digito del RFC durante una captura manual
+      // normal borraria nombre/regimen/uso que el usuario ya habia llenado,
+      // porque este else corre en CADA cambio de form.rfc a un valor != XAXX,
+      // no solo en la transicion desde el generico.
+      setForm(f => (f.receptor === "PUBLICO EN GENERAL" && f.regimenFiscal === "616" && f.usoCfdi === "S01")
+        ? {...f, receptor: "", regimenFiscal: "", usoCfdi: "G03"} : f);
     }
   }, [emisor?.codigo_postal, form.rfc]);
 
@@ -171,11 +198,15 @@ export default function NuevaFactura(){
     if (c && c.rfc !== form.clienteRfc) seleccionarCliente(c.rfc);
   };
 
+  // Publico en General: nombre/regimen/uso/domicilio quedan fijos (ver el
+  // useEffect de arriba) y los campos se rendean readOnly/disabled.
+  const esPublicoEnGeneral = form.rfc === "XAXX010101000";
+
   const inp=(lbl,k,type="text",extra={})=>(
     <div style={{marginBottom:10}}>
       <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>{lbl}</label>
       <input type={type} value={form[k]} onChange={e=>setForm({...form,[k]:e.target.value})} placeholder={lbl} {...extra}
-        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}/>
+        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:(extra.readOnly||extra.disabled)?"#f4f4f5":"#fff",boxSizing:"border-box"}}/>
     </div>
   );
 
@@ -288,17 +319,17 @@ export default function NuevaFactura(){
             </select>
             {errorClientes && <div style={{fontSize:11,color:C.danger,marginTop:4}}>⚠ No se pudieron cargar los clientes: {errorClientes}</div>}
           </div>
-          {inp("Nombre / Razón social","receptor")}
+          {inp("Nombre / Razón social","receptor","text",{readOnly:esPublicoEnGeneral})}
           {inp("RFC","rfc","text",{onBlur:autocompletarPorRfc})}
           {inp("Correo (opcional)","email","email")}
-          {inp("Domicilio fiscal (CP)","domicilioFiscal")}
+          {inp("Domicilio fiscal (CP)","domicilioFiscal","text",{readOnly:esPublicoEnGeneral})}
           <div style={{marginBottom:10}}>
             <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Régimen fiscal del receptor</label>
             {/* Editable siempre, incluso con cliente seleccionado - override
                 para esta factura, igual que receptor/rfc/domicilioFiscal.
                 Alimenta el filtro de Uso CFDI de abajo (usosValidosParaRegimen). */}
-            <select value={form.regimenFiscal} onChange={e=>setForm({...form,regimenFiscal:e.target.value})}
-              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}>
+            <select value={form.regimenFiscal} onChange={e=>setForm({...form,regimenFiscal:e.target.value})} disabled={esPublicoEnGeneral}
+              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:esPublicoEnGeneral?"#f4f4f5":"#fff",boxSizing:"border-box"}}>
               <option value="">— Selecciona régimen —</option>
               {Object.entries(CATALOGO_REGIMEN_FISCAL).map(([codigo,{desc}])=>(
                 <option key={codigo} value={codigo}>{codigo} – {desc}</option>
@@ -312,8 +343,8 @@ export default function NuevaFactura(){
                 ⚠ Ninguno de los usos disponibles ({USOS_V1.join(", ")}) es válido para el régimen fiscal {form.regimenFiscal} del receptor. Elige un cliente con otro régimen o corrige el régimen del cliente.
               </div>
             ) : (
-              <select value={form.usoCfdi} onChange={e=>setForm({...form,usoCfdi:e.target.value})}
-                style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}>
+              <select value={form.usoCfdi} onChange={e=>setForm({...form,usoCfdi:e.target.value})} disabled={esPublicoEnGeneral}
+                style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:esPublicoEnGeneral?"#f4f4f5":"#fff",boxSizing:"border-box"}}>
                 {usosDisponibles.map(clave=>(
                   <option key={clave} value={clave}>{clave} – {CATALOGO_USO_CFDI[clave].desc.replace(/\.$/,"")}</option>
                 ))}

@@ -19,7 +19,7 @@ export default function NuevaFactura(){
   const toast = useToast();
   const nav = useNav();
   const { emisores, loading:loadingEmisores, error:errorEmisores, emisorActivoRfc, emisorActivo:emisor, emisorInactivo } = useEmisores();
-  const { clientes, loading:loadingClientes, error:errorClientes } = useClientes();
+  const { clientes, loading:loadingClientes, error:errorClientes, recargar:recargarClientes } = useClientes();
   // emisor y emisorInactivo vienen de useEmisores() (fuente unica). El guard
   // de UI ahora es central en AppShell: cuando el emisor activo esta
   // Inactivo, bloquea TODAS las vistas salvo Administracion > Emisores. El
@@ -103,7 +103,7 @@ export default function NuevaFactura(){
             uso_cfdi_default: form.usoCfdi,
             domicilio_fiscal: form.domicilioFiscal,
           }),
-        }).catch(() => {});
+        }).then(() => recargarClientes()).catch(() => {});
       }
       setForm(f => ({
         ...f,
@@ -159,6 +159,16 @@ export default function NuevaFactura(){
       regimenFiscal:c.regimen_fiscal||"",
       concepto: (c.rfc === "XAXX010101000" && !f.concepto) ? "Venta al público en general" : f.concepto,
     }));
+  };
+
+  // Punto (d) de zg5Lf6Q: si el RFC tecleado a mano coincide con un cliente
+  // ya guardado, autocompletar igual que al elegirlo del <select>. En onBlur,
+  // no onChange, para no dispararlo con RFCs a medio escribir. Case-insensitive
+  // porque el usuario puede teclear minusculas.
+  const autocompletarPorRfc = () => {
+    const rfc = form.rfc.trim().toUpperCase();
+    const c = clientes.find(x => x.rfc.toUpperCase() === rfc);
+    if (c && c.rfc !== form.clienteRfc) seleccionarCliente(c.rfc);
   };
 
   const inp=(lbl,k,type="text",extra={})=>(
@@ -279,7 +289,7 @@ export default function NuevaFactura(){
             {errorClientes && <div style={{fontSize:11,color:C.danger,marginTop:4}}>⚠ No se pudieron cargar los clientes: {errorClientes}</div>}
           </div>
           {inp("Nombre / Razón social","receptor")}
-          {inp("RFC","rfc")}
+          {inp("RFC","rfc","text",{onBlur:autocompletarPorRfc})}
           {inp("Correo (opcional)","email","email")}
           {inp("Domicilio fiscal (CP)","domicilioFiscal")}
           <div style={{marginBottom:10}}>

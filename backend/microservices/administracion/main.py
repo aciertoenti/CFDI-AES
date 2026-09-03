@@ -173,7 +173,10 @@ class ClienteCreate(BaseModel):
     emisor_rfc: str
     nombre: str
     rfc: str
-    email: str
+    # email opcional: el guardado automatico de receptores desde
+    # NuevaFactura.jsx (zg5Lf6Q) no captura correo. La columna se relajo
+    # a nullable en la migracion c176eed5fc42.
+    email: Optional[str] = None
     telefono: Optional[str] = None
     regimen_fiscal: str = "601"
     uso_cfdi_default: str = "G03"
@@ -185,7 +188,7 @@ class ClienteResponse(BaseModel):
     emisor_rfc: str
     nombre: str
     rfc: str
-    email: str
+    email: Optional[str] = None
     telefono: Optional[str] = None
     regimen_fiscal: str
     uso_cfdi_default: str

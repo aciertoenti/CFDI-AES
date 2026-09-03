@@ -138,7 +138,9 @@ class Cliente(Base):
     # facturacion (string, no FK dura), porque no existe modelo de tenants aun.
     emisor_rfc: Mapped[str] = mapped_column(String(13), nullable=False, index=True)
     nombre: Mapped[str] = mapped_column(String(300), nullable=False)
-    email: Mapped[str] = mapped_column(String(254), nullable=False)
+    # nullable: el guardado automatico de receptores desde NuevaFactura.jsx
+    # (zg5Lf6Q) no captura correo. Migracion c176eed5fc42.
+    email: Mapped[Optional[str]] = mapped_column(String(254), nullable=True)
     telefono: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     regimen_fiscal: Mapped[str] = mapped_column(String(10), nullable=False, default="601")
     uso_cfdi_default: Mapped[str] = mapped_column(String(10), nullable=False, default="G03")

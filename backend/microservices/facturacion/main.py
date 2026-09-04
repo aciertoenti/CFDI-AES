@@ -895,6 +895,44 @@ async def crear_ticket(
     )
 
 
+class TicketPublicoResponse(BaseModel):
+    emisor_rfc: str
+    folio: str
+    fecha_hora: datetime
+    conceptos: List[Concepto]
+    total: float
+    rfc_receptor: Optional[str] = None
+    estado: str
+
+# Publico de cara al usuario final: sin JWT de sesion (ver la ruta dedicada
+# en api_gateway/main.py, que se registra antes de la ruta generica para no
+# chocar con verify_token) - pero SI exige require_internal_key. Defensa en
+# profundidad: la autorizacion real de negocio es el qr_token en si (uuid4,
+# 122 bits de aleatoriedad), require_internal_key evita ademas que alguien
+# le pegue directo al puerto interno de facturacion sin pasar por el Gateway.
+# Response reducido a proposito (TicketPublicoResponse, no TicketResponse):
+# SIN id/negocio_id/creado_por_rfc/qr_token/created_at/updated_at - datos
+# internos que no le importan (o no debe ver) a quien escaneo el QR.
+@app.get("/facturas/tickets/{qr_token}", response_model=TicketPublicoResponse, dependencies=[Depends(require_internal_key)])
+async def obtener_ticket_publico(qr_token: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(TicketVenta).where(TicketVenta.qr_token == qr_token))
+    ticket = result.scalar_one_or_none()
+    # 404 generico sin importar si qr_token esta mal formado o simplemente
+    # no existe - no hay validacion de formato por separado del lookup, para
+    # no filtrar esa distincion a quien esta adivinando tokens.
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    return TicketPublicoResponse(
+        emisor_rfc=ticket.emisor_rfc,
+        folio=ticket.folio,
+        fecha_hora=ticket.fecha_hora,
+        conceptos=[Concepto(**c) for c in json.loads(ticket.conceptos)],
+        total=float(ticket.total),
+        rfc_receptor=ticket.rfc_receptor,
+        estado=ticket.estado,
+    )
+
+
 @app.get("/facturas", response_model=List[FacturaResponse], dependencies=[Depends(require_internal_key)])
 async def listar_facturas(
     tipo: str = Query("generadas", enum=["generadas", "recibidas"]),

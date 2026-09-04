@@ -222,6 +222,35 @@ async def ia_chat_stream_proxy(request: Request, token=Depends(verify_token)):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@app.get("/facturas/tickets/{qr_token}")
+async def ticket_publico_proxy(qr_token: str):
+    """
+    Publica a proposito (zg5b-ZE, POS ligero) - mismo motivo que
+    /auth/login: quien escanea el QR de un ticket no tiene (ni deberia
+    necesitar) sesion iniciada, asi que no puede exigir verify_token. Debe
+    registrarse ANTES de la ruta generica /{service}/{path:path} - Starlette
+    empata por orden de registro, verify_token de esa ruta la rechazaria
+    primero.
+
+    A diferencia de /auth/login: SI inyecta X-Internal-Key al reenviar.
+    facturacion exige require_internal_key en este endpoint aunque sea
+    publico de cara al usuario final - defensa en profundidad: la
+    autorizacion real de negocio es el qr_token en si (uuid4, 122 bits de
+    aleatoriedad), pero ademas evita que alguien le pegue directo al puerto
+    interno de facturacion sin pasar por este Gateway.
+    """
+    target = f"{SERVICES['facturas']}/facturas/tickets/{qr_token}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(target, headers={"X-Internal-Key": INTERNAL_API_KEY})
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo conectar con facturas: {e}")
+    try:
+        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
+
+
 @app.api_route("/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 @app.api_route("/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy(service: str, request: Request, path: str = "", token=Depends(verify_token)):

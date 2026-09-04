@@ -198,6 +198,13 @@ class TicketVenta(Base):
     # BorradorFactura: el estado del ticket muta (pendiente -> facturado_
     # individual/consolidado), asi que necesita onupdate.
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    # Nullable a proposito: la generacion del PDF (weasyprint + QR) es
+    # best-effort dentro de crear_ticket, nunca debe tumbar la creacion del
+    # ticket si falla (mismo principio que timbrar_factura con el guardado
+    # en BD tras un timbrado real exitoso). None = nunca se genero o fallo -
+    # distingue eso de "si existe" antes de que un futuro GET .../pdf
+    # regenere una URL firmada hacia un objeto que podria no estar en MinIO.
+    pdf_generado_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("emisor_rfc", "folio", name="uq_ticket_venta_emisor_folio"),

@@ -1,0 +1,79 @@
+<!--
+Template del PDF de un TicketVenta (POS ligero, zg5b-ZE, 04 sep 2026).
+Recibo angosto tipo ticket de mostrador (no una factura de pagina
+completa), diseno confirmado en 37_diseno_pdf_qr.txt. Renderizado con
+Jinja2 + convertido a PDF con weasyprint (crear_ticket en main.py) - NO
+requiere CSS externo ni assets fuera de este archivo (el QR llega ya
+como data URI base64 embebido, generado en Python con la libreria
+qrcode antes de renderizar).
+-->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: 80mm auto; margin: 4mm; }
+  body {
+    font-family: 'DejaVu Sans', Arial, sans-serif;
+    font-size: 10pt;
+    color: #111;
+    width: 72mm;
+    margin: 0;
+  }
+  .centro { text-align: center; }
+  .emisor { font-weight: bold; font-size: 12pt; margin-bottom: 2px; }
+  .rfc { font-size: 9pt; color: #444; margin-bottom: 8px; }
+  .meta { font-size: 9pt; margin-bottom: 2px; }
+  hr { border: none; border-top: 1px dashed #999; margin: 8px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+  th { text-align: left; border-bottom: 1px solid #333; padding-bottom: 3px; }
+  td { padding: 3px 0; vertical-align: top; }
+  .num { text-align: right; white-space: nowrap; }
+  .total-row { font-weight: bold; font-size: 12pt; text-align: right; padding-top: 8px; }
+  .qr-wrap { text-align: center; margin-top: 12px; }
+  .qr-wrap img { width: 120px; height: 120px; }
+  .qr-leyenda { font-size: 8pt; color: #555; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <div class="centro">
+    <div class="emisor">{{ razon_social }}</div>
+    <div class="rfc">RFC: {{ emisor_rfc }}</div>
+  </div>
+
+  <div class="meta">Folio: <strong>{{ folio }}</strong></div>
+  <div class="meta">Fecha: {{ fecha_hora.strftime('%d/%m/%Y %H:%M') }}</div>
+
+  <hr>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Descripción</th>
+        <th class="num">Cant.</th>
+        <th class="num">Precio</th>
+        <th class="num">Importe</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in conceptos %}
+      <tr>
+        <td>{{ c.descripcion }}</td>
+        <td class="num">{{ c.cantidad }}</td>
+        <td class="num">${{ "%.2f"|format(c.precio_unitario) }}</td>
+        <td class="num">${{ "%.2f"|format(c.cantidad * c.precio_unitario) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <hr>
+
+  <div class="total-row">TOTAL: ${{ "%.2f"|format(total) }}</div>
+
+  <div class="qr-wrap">
+    <img src="{{ qr_data_uri }}" alt="Codigo QR">
+    <div class="qr-leyenda">Escanea para tu factura</div>
+  </div>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import io
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Depends, Query
@@ -16,6 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from datetime import date, datetime
 import httpx
+import jinja2
+import qrcode
+import weasyprint
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -180,6 +185,18 @@ class ContadorVirtualISRResicoResponse(BaseModel):
 # El regimen fiscal y el CP de expedicion ya NO son constantes de prueba -
 # se consultan a administracion, que persiste emisores reales desde #4.
 ADMINISTRACION_URL = os.environ.get("ADMINISTRACION_URL", "http://administracion:8002")
+
+# Base publica para el QR del ticket de venta (POS ligero, zg5b-ZE, 04 sep
+# 2026) - codifica f"{PUBLIC_APP_URL}/facturas/tickets/{qr_token}". Config,
+# no secreto: default de desarrollo (localhost, inutil fuera de esta red).
+# Cuando exista un dominio real de produccion, solo cambia esta variable de
+# entorno - el codigo no se toca (ver docker-compose.yml y .env).
+PUBLIC_APP_URL = os.environ.get("PUBLIC_APP_URL", "http://localhost:8000")
+
+# Entorno Jinja2 para el PDF del ticket (templates/ticket_pdf.html) -
+# FileSystemLoader relativo a este archivo, no al cwd del proceso, para que
+# funcione sin importar desde donde se lance uvicorn.
+_jinja_env = jinja2.Environment(loader=jinja2.FileSystemLoader(Path(__file__).resolve().parent / "templates"))
 # Clave servicio-a-servicio (#42), extraida a backend/shared/internal_key.py
 # (14 ago 2026, refactor/shared-internal-key, ver import arriba) - antes
 # vivia copiada aqui, identica a la de administracion/ia. La misma
@@ -874,6 +891,44 @@ async def crear_ticket(
     db.add(nuevo)
     await db.commit()
     await db.refresh(nuevo)
+
+    # Generacion de PDF con QR - best-effort (POS ligero, zg5b-ZE, punto 3).
+    # Mismo principio que timbrar_factura con el guardado en BD tras un
+    # timbrado real exitoso: el ticket YA existe (dato real, folio ya
+    # consumido) - un fallo aqui (weasyprint, qrcode, o la subida a MinIO)
+    # NO debe tumbar la respuesta ni el ticket ya creado. pdf_generado_at
+    # queda en None si algo falla, para que un futuro GET .../pdf sepa
+    # distinguir eso de "si se genero" antes de regenerar una URL firmada
+    # hacia un objeto que podria no existir en MinIO.
+    try:
+        qr_url = f"{PUBLIC_APP_URL}/facturas/tickets/{nuevo.qr_token}"
+        qr_buffer = io.BytesIO()
+        qrcode.make(qr_url).save(qr_buffer, format="PNG")
+        qr_data_uri = "data:image/png;base64," + base64.b64encode(qr_buffer.getvalue()).decode("ascii")
+
+        template = _jinja_env.get_template("ticket_pdf.html")
+        html_renderizado = template.render(
+            razon_social=datos_emisor.get("razon_social", ticket.emisor_rfc),
+            emisor_rfc=nuevo.emisor_rfc,
+            folio=nuevo.folio,
+            fecha_hora=nuevo.fecha_hora,
+            conceptos=ticket.conceptos,
+            total=float(nuevo.total),
+            qr_data_uri=qr_data_uri,
+        )
+        pdf_bytes = weasyprint.HTML(string=html_renderizado).write_pdf()
+        storage_client.subir_pdf(nuevo.qr_token, pdf_bytes)
+
+        nuevo.pdf_generado_at = datetime.now()
+        await db.commit()
+        await db.refresh(nuevo)
+    except Exception as e:
+        logger.error("crear_ticket.pdf_fallo qr_token=%s error=%s", nuevo.qr_token, e)
+        # Deja la sesion limpia: el ticket (commit anterior) ya es durable:
+        # esto solo revierte el intento sin terminar de pdf_generado_at, para
+        # que el commit ambiental de get_db() al final de la request no
+        # tropiece con una transaccion a medias.
+        await db.rollback()
 
     # Eco de ticket.conceptos (lo que mando el cliente), no un re-parseo del
     # JSON recien guardado en DB - evita un round-trip innecesario, mismo

@@ -8,3 +8,11 @@ sqlalchemy==2.0.36
 asyncpg==0.30.0
 alembic==1.18.5
 minio
+# weasyprint/jinja2/qrcode (04 sep 2026, zg5b-ZE PDF de ticket con QR):
+# ya llegaban instaladas como dependencia transitiva de satcfdi (que las usa
+# para su propio render de PDF de CFDI), pero main.py ahora las importa
+# directo (import weasyprint/jinja2/qrcode) - declaradas aqui explicitas
+# para no depender de que satcfdi las siga requiriendo en el futuro.
+weasyprint
+jinja2
+qrcode

@@ -109,6 +109,10 @@ services:
       # no define INTERNAL_API_KEY, cualquiera que lea este repo lo conoce.
       # Aqui se falla el arranque en vez de aceptar ese default en silencio.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
+      # Base publica para el QR del ticket de venta (POS ligero, zg5b-ZE, 04
+      # sep 2026) - config, no secreto, default seguro para dev (a diferencia
+      # de INTERNAL_API_KEY arriba, que falla el arranque si falta).
+      PUBLIC_APP_URL: "${PUBLIC_APP_URL:-http://localhost:8000}"
     depends_on:
       postgres_facturas: {condition: service_healthy}
       redis: {condition: service_started}

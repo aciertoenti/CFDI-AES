@@ -18,7 +18,7 @@ from typing import Optional
 from alembic import command
 from alembic.config import Config
 from dotenv import load_dotenv
-from sqlalchemy import DateTime, Integer, Numeric, String, Text, func, inspect
+from sqlalchemy import DateTime, Integer, Numeric, String, Text, UniqueConstraint, func, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -145,6 +145,63 @@ class BorradorFacturaEliminado(Base):
     motivo: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
     creado_en_original: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     eliminado_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TicketVenta(Base):
+    """Ticket de venta del POS ligero (zg5b-ZE) - existe ANTES de facturar,
+    igual que BorradorFactura existe antes de timbrar. No es un documento
+    fiscal: no tiene uuid/xml/firma. folio via SerieFolio (administracion,
+    serie="TICKET") - misma fila UniqueConstraint(emisor_rfc, serie) separa
+    esta secuencia de la de Factura (serie="A") sin tabla ni codigo nuevo."""
+    __tablename__ = "tickets_venta"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Mismo patron que Factura/BorradorFactura.negocio_id - denormalizado,
+    # poblado desde X-Negocio-Id verificado en el gateway, no un FK real
+    # (Negocio vive en otra BD, cfdi_admin).
+    negocio_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # No nullable (a diferencia de BorradorFactura.emisor_rfc): el ticket
+    # del POS siempre nace con un emisor activo conocido.
+    emisor_rfc: Mapped[str] = mapped_column(String(13), nullable=False, index=True)
+    # String, no Integer: se guarda folio_formateado tal cual lo devuelve
+    # administracion (ej. "TICKET-0001"), via SerieFolio serie="TICKET" -
+    # mismo patron que Factura.folio (tambien String).
+    folio: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Momento de la venta en el POS - distinto de created_at (auditoria de
+    # la fila) aunque coincidan en la practica; mismo patron dual que
+    # Factura.fecha_timbrado + Factura.created_at.
+    fecha_hora: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # Mismo tipo de columna que BorradorFactura.datos_json: Text, no un
+    # tipo JSON nativo de Postgres (el proyecto no usa JSON/JSONB en
+    # ningun modelo activo - unico uso existente es whatsapp_bot/models/
+    # schemas.py, codigo muerto). Serializado/deserializado en la app
+    # (json.dumps/json.loads). Solo la lista de conceptos, no el form
+    # completo como en el borrador - TicketVenta ya tiene folio/total/
+    # estado como columnas reales propias.
+    conceptos: Mapped[str] = mapped_column(Text, nullable=False)
+    total: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    # "no se captura nada del cliente" (decision v1, ver zg5b-ZE) - existe
+    # para cuando el cliente pida su factura individual via el QR.
+    rfc_receptor: Mapped[Optional[str]] = mapped_column(String(13), nullable=True)
+    # pendiente | facturado_individual | consolidado - enum controlado por
+    # la app, no proxy de texto externo (a diferencia de Factura.estado).
+    estado: Mapped[str] = mapped_column(String(30), nullable=False, default="pendiente")
+    # Token opaco para el link publico del portal de autofacturacion -
+    # NUNCA el folio real en la URL. unique+index: se busca por este
+    # valor, no por id/folio, desde una ruta publica sin autenticacion.
+    qr_token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    # Auditoria (no control de seguridad) - mismo criterio que en Factura/
+    # BorradorFactura: nullable, no se inventa retroactivamente.
+    creado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # A diferencia de Factura (inmutable tras timbrar) pero igual que
+    # BorradorFactura: el estado del ticket muta (pendiente -> facturado_
+    # individual/consolidado), asi que necesita onupdate.
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("emisor_rfc", "folio", name="uq_ticket_venta_emisor_folio"),
+    )
 
 
 async def get_db() -> AsyncSession:  # type: ignore[misc]

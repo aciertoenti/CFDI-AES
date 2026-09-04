@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import json
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -34,7 +36,7 @@ from satcfdi.create.cfd.cfdi40 import (
 
 import finkok_client
 import storage_client
-from database import BorradorFactura, BorradorFacturaEliminado, Factura, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import BorradorFactura, BorradorFacturaEliminado, Factura, TicketVenta, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 
@@ -791,6 +793,106 @@ async def eliminar_borrador(
     await db.delete(b)
     await db.commit()
     return {"id": borrador_id, "eliminado": True}
+
+
+# ─── Tickets de venta (POS ligero, zg5b-ZE) ─────────────────────────────────
+# Existen ANTES de facturar - mismo espiritu que BorradorFactura, pero con
+# validacion real de emisor (a diferencia de un borrador) porque el ticket
+# si consume un folio real (SerieFolio serie="TICKET") y es lo que el
+# cliente ve/escanea.
+
+class TicketCreate(BaseModel):
+    emisor_rfc: str
+    conceptos: List[Concepto]
+
+class TicketResponse(BaseModel):
+    id: int
+    negocio_id: int
+    emisor_rfc: str
+    folio: str
+    fecha_hora: datetime
+    conceptos: List[Concepto]
+    total: float
+    rfc_receptor: Optional[str] = None
+    estado: str
+    qr_token: str
+    creado_por_rfc: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+@app.post("/facturas/tickets", response_model=TicketResponse, status_code=201, dependencies=[Depends(require_internal_key)])
+async def crear_ticket(
+    ticket: TicketCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+
+    # Mismo guard que timbrar_factura: obtener_datos_emisor ya valida que
+    # el emisor exista Y pertenezca a este negocio (400 si no, resuelto en
+    # administracion). Extra: exige Activo (409 si no) - mismo criterio que
+    # bloquea timbrado y todas las vistas del frontend, aplicado tambien a
+    # la creacion de tickets del POS.
+    datos_emisor = await obtener_datos_emisor(ticket.emisor_rfc, x_negocio_id)
+    if datos_emisor.get("estado") != "Activo":
+        raise HTTPException(
+            status_code=409,
+            detail=f"El emisor {ticket.emisor_rfc} esta Inactivo - no puede generar tickets.",
+        )
+
+    # Total SIEMPRE calculado en el servidor desde los conceptos, nunca
+    # aceptado del cliente - mismo principio que Factura (satcfdi recalcula
+    # el Total real desde los conceptos via construir_comprobante, no usa
+    # nada que mande el frontend). TicketCreate no tiene campo total.
+    total = sum(
+        (Decimal(str(c.cantidad)) * Decimal(str(c.precio_unitario)) for c in ticket.conceptos),
+        start=Decimal("0"),
+    )
+
+    # Folio propio, secuencia separada de Factura.folio via serie="TICKET"
+    # (misma fila SerieFolio en administracion, UniqueConstraint(emisor_rfc,
+    # serie) las separa sin tabla ni codigo nuevo) - wrapper ya existente,
+    # mismo patron que usa timbrar_factura.
+    folio = await obtener_siguiente_folio(ticket.emisor_rfc, "TICKET", x_negocio_id)
+
+    # uuid4: aleatoriedad criptografica (122 bits), no secuencial - no debe
+    # ser adivinable desde la URL publica del portal de autofacturacion
+    # individual (a diferencia del folio, que si es predecible/secuencial).
+    qr_token = uuid.uuid4().hex
+
+    nuevo = TicketVenta(
+        negocio_id=negocio_id,
+        emisor_rfc=ticket.emisor_rfc,
+        folio=folio,
+        conceptos=json.dumps([c.dict() for c in ticket.conceptos]),
+        total=total,
+        estado="pendiente",
+        qr_token=qr_token,
+        creado_por_rfc=x_usuario_rfc,
+    )
+    db.add(nuevo)
+    await db.commit()
+    await db.refresh(nuevo)
+
+    # Eco de ticket.conceptos (lo que mando el cliente), no un re-parseo del
+    # JSON recien guardado en DB - evita un round-trip innecesario, mismo
+    # contenido de todas formas.
+    return TicketResponse(
+        id=nuevo.id,
+        negocio_id=nuevo.negocio_id,
+        emisor_rfc=nuevo.emisor_rfc,
+        folio=nuevo.folio,
+        fecha_hora=nuevo.fecha_hora,
+        conceptos=ticket.conceptos,
+        total=float(nuevo.total),
+        rfc_receptor=nuevo.rfc_receptor,
+        estado=nuevo.estado,
+        qr_token=nuevo.qr_token,
+        creado_por_rfc=nuevo.creado_por_rfc,
+        created_at=nuevo.created_at,
+        updated_at=nuevo.updated_at,
+    )
 
 
 @app.get("/facturas", response_model=List[FacturaResponse], dependencies=[Depends(require_internal_key)])

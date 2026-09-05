@@ -251,6 +251,31 @@ async def ticket_publico_proxy(qr_token: str):
         raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
 
 
+@app.post("/facturas/tickets/{qr_token}/facturar")
+async def facturar_ticket_publico_proxy(qr_token: str, request: Request):
+    """
+    Portal publico de autofacturacion individual (zg5b-ZE pieza 5) - mismo
+    par que ticket_publico_proxy de arriba: sin verify_token (quien escaneo
+    el QR no tiene sesion) pero SI inyecta X-Internal-Key al reenviar, y
+    debe ir registrada ANTES de la ruta generica /{service}/{path:path}
+    (Starlette empata por orden de registro). El timbrado real puede tardar
+    varios segundos (Finkok + CSD + PDF/XML + MinIO), de ahi el timeout mas
+    largo que el GET.
+    """
+    target = f"{SERVICES['facturas']}/facturas/tickets/{qr_token}/facturar"
+    body = await request.body()
+    forward_headers = {"Content-Type": "application/json", "X-Internal-Key": INTERNAL_API_KEY}
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            resp = await client.post(target, content=body, headers=forward_headers)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo conectar con facturas: {e}")
+    try:
+        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
+
+
 @app.api_route("/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 @app.api_route("/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy(service: str, request: Request, path: str = "", token=Depends(verify_token)):

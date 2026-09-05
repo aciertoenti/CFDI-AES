@@ -46,6 +46,15 @@ qrcode antes de renderizar).
 
   <hr>
 
+  <!-- Publico en General: el unico receptor posible en un ticket hoy (no
+       se captura receptor real en el POS, ver zg5b-ZE) - valores fijos,
+       no vienen del contexto de renderizado salvo numero_cliente. -->
+  <div class="meta">Cliente: PUBLICO EN GENERAL</div>
+  <div class="meta">RFC: XAXX010101000</div>
+  <div class="meta">Número de cliente: {{ numero_cliente }}</div>
+
+  <hr>
+
   <table>
     <thead>
       <tr>

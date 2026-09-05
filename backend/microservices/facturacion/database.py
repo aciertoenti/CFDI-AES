@@ -205,6 +205,16 @@ class TicketVenta(Base):
     # distingue eso de "si existe" antes de que un futuro GET .../pdf
     # regenere una URL firmada hacia un objeto que podria no estar en MinIO.
     pdf_generado_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Numero de cliente mostrado en el PDF para el receptor generico
+    # (Publico en General, unico receptor posible en un ticket hoy - ver
+    # zg5b-ZE). "NC" + 12 digitos (ej. NC000000000001), secuencial POR
+    # EMISOR via SerieFolio serie="NC" (mismo mecanismo que folio, no un
+    # contador nuevo). Nullable: se asigna en el mismo bloque best-effort
+    # que genera el PDF - si ese bloque falla, queda en None igual que
+    # pdf_generado_at (su unico consumidor es el PDF, no tiene otro uso).
+    # String(20): "NC" + 12 digitos = 14 chars exactos, margen igual que
+    # TicketVenta.estado (no ajustado al limite exacto).
+    numero_cliente: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("emisor_rfc", "folio", name="uq_ticket_venta_emisor_folio"),

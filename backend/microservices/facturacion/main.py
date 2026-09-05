@@ -15,7 +15,7 @@ from fastapi import FastAPI, Header, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional, List
+from typing import Optional, List, Union
 from datetime import date, datetime
 import httpx
 import jinja2
@@ -251,13 +251,19 @@ async def obtener_plan_negocio(negocio_id: int) -> str:
     return resp.json().get("plan", "basico").lower()
 
 
-async def obtener_siguiente_folio(rfc: str, serie: str, x_negocio_id: Optional[str] = None) -> str:
+async def obtener_siguiente_folio(rfc: str, serie: str, x_negocio_id: Optional[str] = None, crudo: bool = False) -> Union[str, int]:
     """Pide a administracion el siguiente folio consecutivo real para este
     emisor+serie (#12) - el conteo atomico vive alla, no aqui. Reemplaza el
     identificador pseudoaleatorio que se usaba antes.
 
     x_negocio_id (#15) se reenvia igual que en obtener_datos_emisor - evita
-    que un Negocio incremente el folio de otro adivinando su emisor_rfc."""
+    que un Negocio incremente el folio de otro adivinando su emisor_rfc.
+
+    crudo=False (default, comportamiento sin cambios - timbrar_factura
+    sigue igual): retorna folio_formateado, ej. "TICKET-0001". crudo=True
+    (zg5b-ZE, numero de cliente): retorna el folio entero SIN formatear,
+    ej. 1, para construir un formato propio distinto al de administracion
+    (ej. NC{folio:012d}) - administracion solo sabe formatear "serie-NNNN"."""
     headers = {"X-Negocio-Id": x_negocio_id} if x_negocio_id else {}
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
@@ -272,7 +278,8 @@ async def obtener_siguiente_folio(rfc: str, serie: str, x_negocio_id: Optional[s
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"administracion respondio {resp.status_code}: {resp.text}")
 
-    return resp.json()["folio_formateado"]
+    data = resp.json()
+    return data["folio"] if crudo else data["folio_formateado"]
 
 
 @dataclass
@@ -905,6 +912,18 @@ async def crear_ticket(
     # distinguir eso de "si se genero" antes de regenerar una URL firmada
     # hacia un objeto que podria no existir en MinIO.
     try:
+        # Numero de cliente para el receptor generico (Publico en General -
+        # el unico receptor posible en un ticket hoy, zg5b-ZE) - mismo
+        # mecanismo atomico que el folio (SerieFolio en administracion),
+        # serie="NC" propia (secuencia independiente de "TICKET"), crudo=True
+        # para obtener el entero y formatearlo distinto ("NC"+12 digitos, no
+        # el "serie-NNNN" que arma administracion). DENTRO del mismo
+        # try/except que el PDF a proposito (ver PASO 5): su unico consumidor
+        # es el PDF, mismo criterio best-effort - no debe bloquear la venta
+        # real si administracion esta caida, igual que weasyprint/MinIO.
+        folio_nc = await obtener_siguiente_folio(ticket.emisor_rfc, "NC", x_negocio_id, crudo=True)
+        numero_cliente = f"NC{folio_nc:012d}"
+
         qr_url = f"{PUBLIC_APP_URL}/facturas/tickets/{nuevo.qr_token}"
         qr_buffer = io.BytesIO()
         qrcode.make(qr_url).save(qr_buffer, format="PNG")
@@ -919,10 +938,12 @@ async def crear_ticket(
             conceptos=ticket.conceptos,
             total=float(nuevo.total),
             qr_data_uri=qr_data_uri,
+            numero_cliente=numero_cliente,
         )
         pdf_bytes = weasyprint.HTML(string=html_renderizado).write_pdf()
         storage_client.subir_pdf(nuevo.qr_token, pdf_bytes)
 
+        nuevo.numero_cliente = numero_cliente
         nuevo.pdf_generado_at = datetime.now()
         await db.commit()
         await db.refresh(nuevo)

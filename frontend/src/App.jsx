@@ -28,7 +28,7 @@ import Anomalias from "./domains/ia/Anomalias";
 // NAVEGACIÓN
 // ═══════════════════════════════════════════════════════════════════════════════
 const NAV = [
-  {id:"facturas",label:"Mis Facturas",icon:"📄",children:["nueva","ticket","generadas","recibidas","reporte","costos"]},
+  {id:"facturas",label:"Mis Facturas",icon:"📄",children:["ticket","nueva","generadas","recibidas","reporte","costos"]},
   {id:"ia",label:"IA",icon:"🤖",children:["contador","chat","lector","anomalias","conciliacion"]},
   {id:"admin",label:"Administración",icon:"⚙️",children:["emisores","clientes","usuarios","series"]},
 ];

@@ -8,7 +8,7 @@ import { createContext, useContext, useState } from "react";
 // de elementos JSX).
 const NavCtx = createContext(null);
 
-export function NavProvider({ children, initial = "nueva" }) {
+export function NavProvider({ children, initial = "ticket" }) {
   const [active, setActive] = useState(initial);
   const [payload, setPayload] = useState(null);
   // navigate(id) navega y limpia cualquier payload viejo; navigate(id, data)

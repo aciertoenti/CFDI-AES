@@ -16,13 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Union
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import httpx
 import jinja2
 import qrcode
 import weasyprint
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cryptography.hazmat.primitives.serialization import Encoding
@@ -41,6 +41,7 @@ from satcfdi.create.cfd.cfdi40 import (
 
 import finkok_client
 import storage_client
+import redis_client
 from fiscal_catalogo import validate_regimen_fiscal, validate_uso_cfdi
 from database import BorradorFactura, BorradorFacturaEliminado, Factura, TicketVenta, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from shared.negocio_id import requerir_negocio_id
@@ -577,6 +578,7 @@ async def _ejecutar_timbrado(
     x_usuario_rfc: Optional[str],
     db: AsyncSession,
     x_idempotency_key: Optional[str] = None,
+    ticket_id: Optional[int] = None,
 ) -> FacturaResponse:
     """
     Cuerpo real del timbrado - extraido de timbrar_factura (05 sep 2026,
@@ -603,6 +605,15 @@ async def _ejecutar_timbrado(
         defecto None preserva el comportamiento actual para
         timbrar_factura sin forzar al caller nuevo a inventar una clave
         que no necesita.
+      - ticket_id (agregado 05 sep 2026, revision de seguridad de la
+        pieza 5): id del TicketVenta origen, se escribe en Factura.ticket_id
+        en el MISMO INSERT. Default None = timbrado manual, comportamiento
+        sin cambios. facturar_ticket lo pasa para que, ante un ticket
+        atascado en 'procesando', se pueda consultar con certeza si ese
+        ticket YA genero una factura (huerfano falso: NO re-facturar) o
+        no (huerfano real: seguro reintentar). Escribirlo aqui y no en un
+        UPDATE posterior evita la ventana en que la factura existe pero
+        aun no se sabe de que ticket vino.
 
     Refactor puramente mecanico (sin cambio de comportamiento) en todo lo
     demas: las 2 llamadas que antes reenviaban el header crudo
@@ -660,6 +671,13 @@ async def _ejecutar_timbrado(
             metodo_pago=factura.metodo_pago,
             creado_por_rfc=x_usuario_rfc,
             idempotency_key=x_idempotency_key,
+            # None para timbrado manual (timbrar_factura); el id del
+            # TicketVenta origen cuando viene de facturar_ticket (pieza 5).
+            # Se escribe en el MISMO INSERT que la Factura - sin ventana
+            # entre "existe la factura" y "se sabe de que ticket vino",
+            # justo lo que necesita la consulta de seguridad ante un
+            # ticket atascado en 'procesando'.
+            ticket_id=ticket_id,
         ))
         await db.commit()
     except Exception:
@@ -667,9 +685,9 @@ async def _ejecutar_timbrado(
         logger.error(
             "FACTURA TIMBRADA EN FINKOK PERO NO SE PUDO GUARDAR EN BD - "
             "recuperar manualmente: uuid=%s folio=%s emisor_rfc=%s receptor_rfc=%s "
-            "total=%s fecha_timbrado=%s no_certificado_sat=%s",
+            "total=%s fecha_timbrado=%s no_certificado_sat=%s ticket_id=%s",
             resultado["uuid"], folio, factura.emisor_rfc, factura.receptor.rfc,
-            total, fecha_timbrado, resultado["no_certificado_sat"],
+            total, fecha_timbrado, resultado["no_certificado_sat"], ticket_id,
             exc_info=True,
         )
 
@@ -1064,6 +1082,14 @@ class TicketPublicoResponse(BaseModel):
 # Response reducido a proposito (TicketPublicoResponse, no TicketResponse):
 # SIN id/negocio_id/creado_por_rfc/qr_token/created_at/updated_at - datos
 # internos que no le importan (o no debe ver) a quien escaneo el QR.
+# Un claim de facturacion (estado='procesando') que lleva mas de esto sin
+# avanzar se considera huerfano: el proceso que lo tomo se cayo a mitad
+# (worker reiniciado, deploy, crash) sin liberar el claim ni completar el
+# timbrado. 2 min es holgado - un timbrado real (Finkok + CSD + PDF/XML +
+# MinIO) tarda segundos, no minutos.
+CLAIM_FACTURAR_HUERFANO = timedelta(minutes=2)
+
+
 @app.get("/facturas/tickets/{qr_token}", response_model=TicketPublicoResponse, dependencies=[Depends(require_internal_key)])
 async def obtener_ticket_publico(qr_token: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(TicketVenta).where(TicketVenta.qr_token == qr_token))
@@ -1073,6 +1099,35 @@ async def obtener_ticket_publico(qr_token: str, db: AsyncSession = Depends(get_d
     # no filtrar esa distincion a quien esta adivinando tokens.
     if ticket is None:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
+
+    # Auto-recuperacion de claims huerfanos (zg5b-ZE pieza 5): si el ticket
+    # quedo en 'procesando' hace mas de CLAIM_FACTURAR_HUERFANO, se reporta
+    # como 'pendiente' para que el frontend vuelva a mostrar el formulario
+    # de "Solicitar mi factura".
+    #
+    # INCONSISTENCIA APARENTE, INTENCIONAL: este GET es de solo lectura y NO
+    # cambia el estado real en BD - el ticket sigue en 'procesando' en la
+    # tabla. El cambio real a 'pendiente' solo ocurre cuando el proximo
+    # intento de facturar hace su propio claim atomico
+    # (UPDATE ... WHERE estado='pendiente'). O sea: el frontend "miente" un
+    # poco (muestra el formulario) para dar la opcion de reintentar, pero el
+    # backend sigue siendo la fuente de verdad via el claim:
+    #   - Si el timbrado original SI estaba realmente en curso (no huerfano),
+    #     ese segundo intento choca con estado='procesando' en BD y recibe
+    #     409 limpio - nunca una doble factura.
+    #   - Si de verdad era huerfano, el claim del segundo intento tampoco
+    #     encontrara 'pendiente'... salvo que otro proceso ya lo haya
+    #     liberado. Por eso el endpoint de facturar, ademas del claim,
+    #     libera el claim (estado='pendiente') en su except - ver
+    #     facturar_ticket. Este GET solo adelanta la UI, no repara nada.
+    estado_efectivo = ticket.estado
+    if (
+        ticket.estado == "procesando"
+        and ticket.updated_at is not None
+        and datetime.now() - ticket.updated_at > CLAIM_FACTURAR_HUERFANO
+    ):
+        estado_efectivo = "pendiente"
+
     return TicketPublicoResponse(
         emisor_rfc=ticket.emisor_rfc,
         folio=ticket.folio,
@@ -1080,8 +1135,213 @@ async def obtener_ticket_publico(qr_token: str, db: AsyncSession = Depends(get_d
         conceptos=[Concepto(**c) for c in json.loads(ticket.conceptos)],
         total=float(ticket.total),
         rfc_receptor=ticket.rfc_receptor,
-        estado=ticket.estado,
+        estado=estado_efectivo,
     )
+
+
+class FacturarTicketRequest(BaseModel):
+    """Datos fiscales del receptor que teclea la persona en el portal
+    publico de autofacturacion - los 5 campos que ReceptorCFDI exige. Sin
+    autocompletado por RFC a proposito (ver diseno pieza 5, zg5b-ZE):
+    exponer una busqueda de clientes a un anonimo filtraria la cartera del
+    negocio."""
+    rfc: str
+    nombre: str
+    regimen_fiscal: str
+    uso_cfdi: str
+    domicilio_fiscal: str
+
+
+async def _liberar_claim_facturar(db: AsyncSession, ticket_id: int) -> None:
+    """Devuelve el ticket a 'pendiente' para que se pueda reintentar. Se
+    llama en el except de facturar_ticket - su propio fallo NUNCA debe
+    tapar la excepcion original, por eso todo va envuelto en try/except que
+    solo loggea.
+
+    RUNBOOK - ticket atascado en 'procesando' por mas de 2 min:
+    Antes de resetear a 'pendiente', verificar EN ESTE ORDEN (las 2, no
+    solo la primera):
+      1. SELECT 1 FROM facturas WHERE ticket_id = :id
+         Si existe -> el CFDI YA se genero Y se guardo correctamente.
+         NO resetear. Arreglar solo el ticket (UPDATE tickets_venta SET
+         estado='facturado_individual', rfc_receptor=... WHERE id=:id).
+      2. Buscar en logs de aplicacion (facturacion) por "ticket_id=:id"
+         las lineas "FACTURA TIMBRADA EN FINKOK PERO NO SE PUDO GUARDAR"
+         y "marca_final_fallo". Si aparece CUALQUIERA de las dos, el CFDI
+         YA existe en Finkok/SAT aunque NO haya fila en facturas (commit
+         fallido) - buscar el uuid/folio en esos logs y reinsertar
+         manualmente la fila Factura, o verificar contra el portal de
+         Finkok directamente, ANTES de resetear el ticket.
+      Solo si AMBAS busquedas (1 y 2) vienen vacias es seguro resetear a
+      'pendiente' y dejar que la persona reintente - un reseteo sin este
+      chequeo doble puede generar un CFDI duplicado real ante el SAT.
+    (El log del punto 2 lleva ticket_id=%s desde 05 sep 2026 justo para
+    que esta busqueda sea posible - ver _ejecutar_timbrado.)"""
+    try:
+        await db.rollback()  # limpia cualquier transaccion abortada antes del UPDATE
+        await db.execute(
+            update(TicketVenta)
+            .where(TicketVenta.id == ticket_id)
+            .values(estado="pendiente", updated_at=func.now())
+        )
+        await db.commit()
+    except Exception:
+        logger.error(
+            "facturar_ticket.liberar_claim_fallo ticket_id=%s - el ticket puede "
+            "quedar atascado en 'procesando' hasta que el GET publico lo trate "
+            "como huerfano (2 min) y alguien reintente",
+            ticket_id,
+            exc_info=True,
+        )
+
+
+# Publico de cara al usuario final (sin JWT), mismas 2 capas que el GET de
+# arriba: ruta dedicada en el Gateway registrada antes de la generica +
+# require_internal_key aqui. La autorizacion de negocio es el qr_token
+# (uuid4) y, sobre todo, la fila del ticket: emisor_rfc/negocio_id salen
+# de la fila, NUNCA de un header (un anonimo no tiene X-Negocio-Id).
+@app.post(
+    "/facturas/tickets/{qr_token}/facturar",
+    response_model=FacturaResponse,
+    status_code=201,
+    dependencies=[Depends(require_internal_key)],
+)
+async def facturar_ticket(
+    qr_token: str,
+    datos: FacturarTicketRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    # 1. Buscar el ticket. 404 generico (mismo criterio que el GET publico).
+    result = await db.execute(select(TicketVenta).where(TicketVenta.qr_token == qr_token))
+    ticket = result.scalar_one_or_none()
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+
+    # 2. Rate limiting por qr_token ANTES del claim y de Finkok - 5 intentos
+    # / 10 min (redis_client, mismo patron TTL que auth_usuarios). Fail-closed:
+    # si Redis no responde, redis_client deja subir la excepcion -> 500.
+    if not await redis_client.permitir_intento_facturar(qr_token):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos, espera unos minutos.",
+        )
+
+    # 3. Claim atomico: solo UNA request puede pasar de 'pendiente' a
+    # 'procesando'. Postgres serializa el UPDATE sobre la fila - dos requests
+    # casi simultaneas nunca ganan ambas. 0 filas -> ya reclamado / facturado.
+    claim = await db.execute(
+        update(TicketVenta)
+        .where(TicketVenta.id == ticket.id, TicketVenta.estado == "pendiente")
+        .values(estado="procesando", updated_at=func.now())
+        .returning(TicketVenta.id)
+    )
+    if claim.scalar_one_or_none() is None:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Este ticket ya fue facturado o está en proceso.",
+        )
+    await db.commit()
+
+    # A partir de aqui el ticket esta en 'procesando'. TODO camino de salida
+    # debe dejarlo en 'facturado_individual' (exito) o de vuelta en
+    # 'pendiente' (cualquier fallo) - nunca atascado en 'procesando'.
+    try:
+        # 4. FacturaCreate equivalente - emisor y conceptos SALEN DE LA FILA,
+        # receptor viene del body. serie="T" para distinguir de un vistazo
+        # las facturas derivadas de un ticket de POS de las manuales
+        # (serie "A"). administracion crea la serie "T" al primer uso
+        # (SerieFolio hace UPSERT), igual que paso con "TICKET" y "NC".
+        factura_create = FacturaCreate(
+            emisor_rfc=ticket.emisor_rfc,
+            receptor=ReceptorCFDI(
+                nombre=datos.nombre,
+                rfc=datos.rfc,
+                uso_cfdi=datos.uso_cfdi,
+                regimen_fiscal=datos.regimen_fiscal,
+                domicilio_fiscal=datos.domicilio_fiscal,
+            ),
+            conceptos=[Concepto(**c) for c in json.loads(ticket.conceptos)],
+            serie="T",
+        )
+
+        # 5. Limite de plan mensual del negocio - misma logica que
+        # timbrar_factura, pero con negocio_id de la fila (no de un header).
+        # Una factura derivada de ticket consume cuota fiscal real igual que
+        # cualquier otra.
+        plan = await obtener_plan_negocio(ticket.negocio_id)
+        limites_facturas = {"emprendedor": 25, "basico": 50, "contador": 100, "despacho": 500}
+        limite_mensual = limites_facturas.get(plan, limites_facturas["basico"])
+        inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        facturas_mes = await db.scalar(
+            select(func.count(Factura.id)).where(
+                Factura.negocio_id == ticket.negocio_id,
+                Factura.fecha_timbrado >= inicio_mes,
+            )
+        ) or 0
+        if facturas_mes >= limite_mensual:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"El plan {plan} permite hasta {limite_mensual} factura(s) por mes. "
+                    "Actualiza tu plan para continuar."
+                ),
+            )
+
+        # 6. Timbrado real - MISMA funcion que timbrar_factura. x_usuario_rfc
+        # None (un anonimo no tiene RFC de usuario) y sin idempotency key (el
+        # claim atomico de arriba ya previene el doble timbrado). ticket_id
+        # se pasa para que la Factura quede vinculada a este ticket en el
+        # mismo INSERT (Factura.ticket_id) - permite responder con certeza
+        # "este ticket YA tiene factura" ante un claim atascado.
+        respuesta = await _ejecutar_timbrado(
+            factura_create, ticket.negocio_id, None, db, None, ticket.id
+        )
+    except HTTPException:
+        # Errores esperados (limite de plan, Finkok 502, regimen/uso
+        # invalido) - libera el claim y re-lanza tal cual.
+        await _liberar_claim_facturar(db, ticket.id)
+        raise
+    except Exception as e:
+        # Cualquier otra cosa (bug, error de red no envuelto, etc.) - libera
+        # el claim IGUAL, y convierte a 500 generico sin filtrar el detalle.
+        logger.error(
+            "facturar_ticket.error_inesperado qr_token=%s error=%s",
+            qr_token, e, exc_info=True,
+        )
+        await _liberar_claim_facturar(db, ticket.id)
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo generar la factura. Intenta de nuevo en unos minutos.",
+        )
+
+    # 7. Exito: marca final. _ejecutar_timbrado YA hizo commit de la Factura
+    # (dato fiscal irreversible en Finkok). Si esta marca final falla, NO se
+    # libera el claim - liberar habilitaria una doble factura. Se deja en
+    # 'procesando' y se loggea critico para arreglo manual; el GET publico
+    # lo tratara como huerfano a los 2 min, pero el proximo claim fallara
+    # con 409 (estado != 'pendiente' en BD) - sin doble timbrado.
+    try:
+        await db.execute(
+            update(TicketVenta)
+            .where(TicketVenta.id == ticket.id)
+            .values(
+                estado="facturado_individual",
+                rfc_receptor=datos.rfc,
+                updated_at=func.now(),
+            )
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.critical(
+            "facturar_ticket.marca_final_fallo CFDI YA TIMBRADO uuid=%s ticket_id=%s "
+            "qr_token=%s - ticket queda en 'procesando', arreglar manualmente "
+            "(estado='facturado_individual', rfc_receptor=%s)",
+            respuesta.uuid, ticket.id, qr_token, datos.rfc,
+        )
+
+    return respuesta
 
 
 @app.get("/facturas", response_model=List[FacturaResponse], dependencies=[Depends(require_internal_key)])

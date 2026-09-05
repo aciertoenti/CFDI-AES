@@ -16,3 +16,8 @@ minio
 weasyprint
 jinja2
 qrcode
+# redis (05 sep 2026, zg5b-ZE pieza 5): rate limiting por qr_token del
+# endpoint publico de autofacturacion individual. Mismo mecanismo (TTL
+# nativo, sin tabla ni migracion) y mismo patron de modulo singleton que
+# auth_usuarios/redis_client.py - ver redis_client.py en este servicio.
+redis

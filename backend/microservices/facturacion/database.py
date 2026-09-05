@@ -98,6 +98,20 @@ class Factura(Base):
     idempotency_key: Mapped[Optional[str]] = mapped_column(
         String(64), unique=True, nullable=True, index=True
     )
+    # Vinculo al TicketVenta que origino esta factura (POS ligero, zg5b-ZE
+    # pieza 5 - endpoint publico de autofacturacion individual). Nullable a
+    # proposito: las facturas manuales (NuevaFactura.jsx / timbrar_factura)
+    # y todas las filas previas a esta columna NO nacen de un ticket.
+    # Referencia "blanda" dentro de la MISMA BD (cfdi_facturas) - NO un
+    # ForeignKey de Postgres, por consistencia con el resto de esta tabla
+    # (negocio_id/creado_por_rfc tampoco lo son) y para no acoplar el ciclo
+    # de vida de tickets_venta al de facturas. Indexada para el unico uso
+    # previsto: ante un ticket atascado en 'procesando', consultar
+    # "SELECT 1 FROM facturas WHERE ticket_id = :id" ANTES de liberar el
+    # claim - si YA existe una factura para ese ticket, volver a facturar
+    # generaria un CFDI duplicado real (huerfano falso); si no existe, es
+    # seguro reintentar (huerfano real).
+    ticket_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

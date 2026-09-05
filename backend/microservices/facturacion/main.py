@@ -836,6 +836,10 @@ class TicketResponse(BaseModel):
     creado_por_rfc: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    # None si el PDF nunca se genero o fallo (best-effort, ver crear_ticket) -
+    # el frontend debe ocultar/deshabilitar el boton de descarga en ese caso,
+    # no asumir que siempre existe.
+    pdf_url: Optional[str] = None
 
 @app.post("/facturas/tickets", response_model=TicketResponse, status_code=201, dependencies=[Depends(require_internal_key)])
 async def crear_ticket(
@@ -947,6 +951,10 @@ async def crear_ticket(
         creado_por_rfc=nuevo.creado_por_rfc,
         created_at=nuevo.created_at,
         updated_at=nuevo.updated_at,
+        # storage_client.url_pdf ya existe (mismo patron que Factura) -
+        # solo regenera una URL firmada, no vuelve a subir nada. None si
+        # el bloque de arriba fallo (pdf_generado_at sigue en None).
+        pdf_url=storage_client.url_pdf(nuevo.qr_token) if nuevo.pdf_generado_at else None,
     )
 
 

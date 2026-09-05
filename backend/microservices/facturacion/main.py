@@ -41,6 +41,7 @@ from satcfdi.create.cfd.cfdi40 import (
 
 import finkok_client
 import storage_client
+from fiscal_catalogo import validate_regimen_fiscal, validate_uso_cfdi
 from database import BorradorFactura, BorradorFacturaEliminado, Factura, TicketVenta, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
@@ -479,6 +480,24 @@ async def construir_comprobante(factura: FacturaCreate, signer: Signer, x_negoci
         nombre_receptor = NOMBRE_PUBLICO_EN_GENERAL
         uso_cfdi_receptor = USO_CFDI_SIN_EFECTOS
 
+    # Validacion contra el catalogo real del SAT (fiscal_catalogo.py, copia
+    # intencional de whatsapp_bot/services/fiscal_validator.py - ver ese
+    # archivo para el porque de la copia) - corre DESPUES del override de
+    # arriba, sobre los valores YA normalizados: para Publico en General
+    # siempre valida 616/S01 (que sabemos validos), nunca lo que mando el
+    # caller original. Antes de construir el Comprobante/XML y de tocar
+    # Finkok - un receptor con una combinacion invalida se rechaza aqui con
+    # 400, sin gastar la llamada real al PAC (pieza 5, zg5b-ZE - el
+    # portal publico de autofacturacion es el primer caller que puede
+    # mandar un regimen/uso arbitrario sin pasar por el frontend, que hoy
+    # ya restringe las opciones mostradas via usosValidosParaRegimen).
+    resultado_regimen = validate_regimen_fiscal(regimen_fiscal_receptor)
+    if not resultado_regimen.valid:
+        raise HTTPException(status_code=400, detail=resultado_regimen.error)
+    resultado_uso = validate_uso_cfdi(uso_cfdi_receptor, regimen_fiscal_receptor)
+    if not resultado_uso.valid:
+        raise HTTPException(status_code=400, detail=resultado_uso.error)
+
     receptor = Receptor(
         rfc=factura.receptor.rfc,
         nombre=nombre_receptor,
@@ -552,49 +571,53 @@ def _factura_to_response(f: Factura) -> FacturaResponse:
     )
 
 
-@app.post("/facturas/timbrar", response_model=FacturaResponse, status_code=201, dependencies=[Depends(require_internal_key)])
-async def timbrar_factura(
+async def _ejecutar_timbrado(
     factura: FacturaCreate,
-    db: AsyncSession = Depends(get_db),
-    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
-    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
-    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
-):
-    negocio_id = requerir_negocio_id(x_negocio_id)
+    negocio_id: int,
+    x_usuario_rfc: Optional[str],
+    db: AsyncSession,
+    x_idempotency_key: Optional[str] = None,
+) -> FacturaResponse:
+    """
+    Cuerpo real del timbrado - extraido de timbrar_factura (05 sep 2026,
+    pieza 5 del epic POS ligero, zg5b-ZE) para que el futuro endpoint
+    publico de autofacturacion individual (POST
+    /facturas/tickets/{qr_token}/facturar) pueda reusarlo sin duplicar la
+    logica de Finkok/CSD/PDF/XML. Recibe negocio_id ya resuelto (int) en
+    vez de leer un header X-Negocio-Id - el caller nuevo (portal publico)
+    no tiene ese header (es anonimo, usa TicketVenta.negocio_id como
+    fuente de verdad), asi que esta funcion no puede depender de el.
 
-    if x_idempotency_key:
-        existente = await db.execute(
-            select(Factura).where(Factura.idempotency_key == x_idempotency_key)
-        )
-        factura_existente = existente.scalar_one_or_none()
-        if factura_existente:
-            logger.info("facturacion.idempotencia.hit idempotency_key=%s", x_idempotency_key)
-            return JSONResponse(
-                status_code=200,
-                content=_factura_to_response(factura_existente).model_dump(mode="json"),
-            )
+    NOTA sobre la firma: el pedido original omitia 2 parametros que el
+    cuerpo extraido si usa - sin ellos la funcion no compila (NameError
+    en tiempo de ejecucion):
+      - db: usado en db.add/db.commit/db.rollback para persistir la
+        Factura. El caller nuevo (portal publico) tendra su propia
+        sesion via Depends(get_db) igual que timbrar_factura, asi que no
+        es una dependencia nueva, solo explicita en vez de implicita.
+      - x_idempotency_key: usado al construir la fila Factura (columna
+        idempotency_key). Default None - el portal publico no necesita
+        una idempotency key propia (el claim atomico del ticket, PASO 1
+        del diseno de la pieza 5, ya previene el doble timbrado por otra
+        via), pero la columna sigue siendo nullable y el valor por
+        defecto None preserva el comportamiento actual para
+        timbrar_factura sin forzar al caller nuevo a inventar una clave
+        que no necesita.
 
-    plan = await obtener_plan_negocio(negocio_id)
-    limites_facturas = {"emprendedor": 25, "basico": 50, "contador": 100, "despacho": 500}
-    limite_mensual = limites_facturas.get(plan, limites_facturas["basico"])
-    inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    facturas_mes = await db.scalar(
-        select(func.count(Factura.id)).where(
-            Factura.negocio_id == negocio_id,
-            Factura.fecha_timbrado >= inicio_mes,
-        )
-    ) or 0
-    if facturas_mes >= limite_mensual:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"El plan {plan} permite hasta {limite_mensual} factura(s) por mes. "
-                "Actualiza tu plan para continuar."
-            ),
-        )
+    Refactor puramente mecanico (sin cambio de comportamiento) en todo lo
+    demas: las 2 llamadas que antes reenviaban el header crudo
+    (construir_comprobante, obtener_siguiente_folio - ambas solo lo usan
+    para reenviarlo tal cual como "X-Negocio-Id" a administracion, ver
+    obtener_datos_emisor) ahora reciben str(negocio_id) - identico en la
+    practica: negocio_id ya sale de int(x_negocio_id) via
+    requerir_negocio_id (shared/negocio_id.py) antes de llegar aqui, y el
+    Gateway siempre manda un entero plano sin ceros a la izquierda ni
+    signos.
+    """
+    x_negocio_id_str = str(negocio_id)
 
     signer = await get_signer_para_negocio(factura.emisor_rfc, negocio_id)
-    comprobante = await construir_comprobante(factura, signer, x_negocio_id)
+    comprobante = await construir_comprobante(factura, signer, x_negocio_id_str)
 
     cert_bytes, key_bytes, csd_password = await obtener_csd_bytes_para_negocio(factura.emisor_rfc, negocio_id)
     try:
@@ -607,7 +630,7 @@ async def timbrar_factura(
     # Folio consecutivo real por emisor+serie, contado atomicamente en
     # administracion (#12). Se pide DESPUES de que Finkok ya confirmo el
     # timbrado, para no quemar folios en intentos que fallan en el PAC.
-    folio = await obtener_siguiente_folio(factura.emisor_rfc, factura.serie, x_negocio_id)
+    folio = await obtener_siguiente_folio(factura.emisor_rfc, factura.serie, x_negocio_id_str)
     subtotal = Decimal(str(comprobante["SubTotal"]))
     total_iva = Decimal(str(impuestos.get("TotalImpuestosTrasladados") or 0))
     total = Decimal(str(comprobante["Total"]))
@@ -676,6 +699,50 @@ async def timbrar_factura(
         noCertificadoSAT=resultado["no_certificado_sat"],
         creado_por_rfc=x_usuario_rfc,
     )
+
+
+@app.post("/facturas/timbrar", response_model=FacturaResponse, status_code=201, dependencies=[Depends(require_internal_key)])
+async def timbrar_factura(
+    factura: FacturaCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+
+    if x_idempotency_key:
+        existente = await db.execute(
+            select(Factura).where(Factura.idempotency_key == x_idempotency_key)
+        )
+        factura_existente = existente.scalar_one_or_none()
+        if factura_existente:
+            logger.info("facturacion.idempotencia.hit idempotency_key=%s", x_idempotency_key)
+            return JSONResponse(
+                status_code=200,
+                content=_factura_to_response(factura_existente).model_dump(mode="json"),
+            )
+
+    plan = await obtener_plan_negocio(negocio_id)
+    limites_facturas = {"emprendedor": 25, "basico": 50, "contador": 100, "despacho": 500}
+    limite_mensual = limites_facturas.get(plan, limites_facturas["basico"])
+    inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    facturas_mes = await db.scalar(
+        select(func.count(Factura.id)).where(
+            Factura.negocio_id == negocio_id,
+            Factura.fecha_timbrado >= inicio_mes,
+        )
+    ) or 0
+    if facturas_mes >= limite_mensual:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"El plan {plan} permite hasta {limite_mensual} factura(s) por mes. "
+                "Actualiza tu plan para continuar."
+            ),
+        )
+
+    return await _ejecutar_timbrado(factura, negocio_id, x_usuario_rfc, db, x_idempotency_key)
 
 @app.get("/facturas/count", dependencies=[Depends(require_internal_key)])
 async def contar_facturas_por_emisor(

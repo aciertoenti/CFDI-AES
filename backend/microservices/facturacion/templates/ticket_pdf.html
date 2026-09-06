@@ -30,6 +30,11 @@ qrcode antes de renderizar).
   td { padding: 3px 0; vertical-align: top; }
   .num { text-align: right; white-space: nowrap; }
   .total-row { font-weight: bold; font-size: 12pt; text-align: right; padding-top: 8px; }
+  /* Aclaracion de IVA: mismo mensaje que la pantalla "Nueva Venta (Ticket)"
+     del frontend (NuevoTicket.jsx, commit a0c6180) - el precio del ticket
+     es base y el CFDI del cliente lleva +16%. Solo texto, no toca el
+     calculo de {{ total }}. */
+  .total-nota { font-size: 8pt; color: #555; text-align: right; margin-top: 2px; }
   .qr-wrap { text-align: center; margin-top: 12px; }
   .qr-wrap img { width: 120px; height: 120px; }
   .qr-leyenda { font-size: 8pt; color: #555; margin-top: 4px; }
@@ -78,7 +83,8 @@ qrcode antes de renderizar).
 
   <hr>
 
-  <div class="total-row">TOTAL: ${{ "%.2f"|format(total) }}</div>
+  <div class="total-row">TOTAL (sin IVA): ${{ "%.2f"|format(total) }}</div>
+  <div class="total-nota">Se factura + IVA 16%</div>
 
   <div class="qr-wrap">
     <img src="{{ qr_data_uri }}" alt="Codigo QR">

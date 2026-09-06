@@ -48,3 +48,10 @@ certs_org/
 *.key
 *.sdg
 experiments/sat-descarga-masiva/.env
+
+# Evidencia/scratch de sesiones de trabajo (Claude Code) - nunca
+# debe vivir en la raiz del repo, solo en Downloads/CFDI local.
+# Anclado a la raiz (/) para no afectar .txt/.json legitimos en
+# subcarpetas (fixtures de test, catalogos, migraciones, etc.).
+/*.txt
+/*.json

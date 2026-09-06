@@ -16,6 +16,7 @@ import Series from "./domains/administracion/Series";
 import Usuarios from "./domains/administracion/Usuarios";
 import NuevaFactura from "./domains/facturacion/NuevaFactura";
 import NuevoTicket from "./domains/facturacion/NuevoTicket";
+import PortalAutofacturacion from "./domains/facturacion/PortalAutofacturacion";
 import FacturasGeneradas from "./domains/facturacion/FacturasGeneradas";
 import ReporteMensual from "./domains/facturacion/ReporteMensual";
 import DashboardCostos from "./domains/facturacion/DashboardCostos";
@@ -104,10 +105,31 @@ function AuthGate(){
   return <EmisoresProvider><NavProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></NavProvider></EmisoresProvider>;
 }
 
+// Ruta PUBLICA sin sesion (zg5b-ZE pieza 5): el QR impreso en un ticket de
+// venta abre el portal de autofacturacion individual. Se resuelve por
+// window.location.pathname ANTES de AuthGate - no requiere JWT, useAuth ni
+// los providers de sesion. Mismo criterio de "un unico lugar lee la URL"
+// que AuthGate, pero por path en vez de ?vista (nginx.conf ya hace SPA
+// fallback a index.html para cualquier ruta). Se aceptan dos formas:
+//   /factura/<qr_token>            (URL canonica, corta)
+//   /facturas/tickets/<qr_token>   (por si el QR del backend, que hoy
+//                                   codifica PUBLIC_APP_URL + esa ruta,
+//                                   llega a apuntar al front en produccion)
+// qr_token = uuid4().hex -> 32 hex; el rango 8..64 [A-Za-z0-9-] es holgado.
+function qrTokenDeRutaPublica(){
+  const m = window.location.pathname.match(
+    /^\/(?:factura|facturas\/tickets)\/([A-Za-z0-9-]{8,64})\/?$/
+  );
+  return m ? m[1] : null;
+}
+
 export default function App(){
+  const qrTokenPublico = qrTokenDeRutaPublica();
   return (
     <ToastProvider>
-      <AuthGate/>
+      {qrTokenPublico
+        ? <PortalAutofacturacion qrToken={qrTokenPublico}/>
+        : <AuthGate/>}
     </ToastProvider>
   );
 }

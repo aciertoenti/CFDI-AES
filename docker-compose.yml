@@ -112,7 +112,7 @@ services:
       # Base publica para el QR del ticket de venta (POS ligero, zg5b-ZE, 04
       # sep 2026) - config, no secreto, default seguro para dev (a diferencia
       # de INTERNAL_API_KEY arriba, que falla el arranque si falta).
-      PUBLIC_APP_URL: "${PUBLIC_APP_URL:-http://localhost:8000}"
+      PUBLIC_APP_URL: "${PUBLIC_APP_URL:-http://localhost:3000}"
     depends_on:
       postgres_facturas: {condition: service_healthy}
       redis: {condition: service_started}

@@ -1133,6 +1133,90 @@ class TicketPublicoResponse(BaseModel):
 CLAIM_FACTURAR_HUERFANO = timedelta(minutes=2)
 
 
+class TicketListItem(BaseModel):
+    """Fila del listado autenticado de tickets del POS (GET /facturas/tickets).
+    Deliberadamente SIN el array `conceptos` completo (es Text/JSON, pesado
+    para un listado) - en su lugar n_conceptos, el largo del JSON parseado.
+    Tampoco expone qr_token/negocio_id/created_at/updated_at: el listado es
+    para el operador dentro de su sesion, no una vista publica."""
+    id: int
+    folio: str
+    fecha_hora: datetime
+    emisor_rfc: str
+    estado: str
+    total: float
+    rfc_receptor: Optional[str] = None
+    numero_cliente: Optional[str] = None
+    n_conceptos: int
+    creado_por_rfc: Optional[str] = None
+
+
+# IMPORTANTE - orden de registro: esta ruta ('/facturas/tickets') va
+# declarada ANTES de '/facturas/tickets/{qr_token}' (abajo) y de
+# '/facturas/{uuid}' (mucho mas abajo). Starlette empata por orden de
+# registro, no por especificidad: si fuera despues, un GET /facturas/tickets
+# lo capturaria la ruta {uuid} (con uuid='tickets'). Mismo cuidado ya
+# documentado para /facturas/count y /facturas/borradores.
+#
+# NO se agrega aqui un companion GET /facturas/tickets/count: a nivel Gateway
+# esa ruta quedaria capturada por el proxy PUBLICO /facturas/tickets/{qr_token}
+# (api_gateway/main.py, con qr_token='count'), que no inyecta X-Negocio-Id ->
+# siempre 400. Hacerlo alcanzable requiere una ruta dedicada en el Gateway;
+# se pospone a la pieza de frontend (Sesion B), junto con el contrato real
+# de "N de M" que la UI necesite.
+@app.get("/facturas/tickets", response_model=List[TicketListItem], dependencies=[Depends(require_internal_key)])
+async def listar_tickets(
+    estado: Optional[str] = None,
+    fecha_desde: Optional[date] = None,
+    fecha_hasta: Optional[date] = None,
+    emisor_rfc: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Listado autenticado de tickets del POS ligero, aislado por negocio.
+    Mismo patron que listar_facturas (GET /facturas): filtros AND opcionales,
+    orden por fecha de venta desc, paginacion offset. A diferencia de
+    listar_facturas, page/size SI validan limites (Query ge=1 / le=200) - este
+    endpoint nace sin el bug latente de size gigante / page negativa.
+
+    OJO: la columna de fecha de la venta es TicketVenta.fecha_hora, NO
+    fecha_timbrado (esa es de Factura)."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    # Mismo anti-enumeracion cross-tenant que listar_facturas: si piden un
+    # emisor_rfc concreto, primero se valida que sea de este negocio (400 si
+    # es de otro o no existe) antes de tocar la lista.
+    if emisor_rfc:
+        await obtener_datos_emisor(emisor_rfc, x_negocio_id)
+    stmt = select(TicketVenta).where(TicketVenta.negocio_id == negocio_id)
+    if emisor_rfc:
+        stmt = stmt.where(TicketVenta.emisor_rfc == emisor_rfc)
+    if estado:
+        stmt = stmt.where(TicketVenta.estado == estado)
+    if fecha_desde:
+        stmt = stmt.where(TicketVenta.fecha_hora >= fecha_desde)
+    if fecha_hasta:
+        stmt = stmt.where(TicketVenta.fecha_hora <= fecha_hasta)
+    stmt = stmt.order_by(TicketVenta.fecha_hora.desc()).offset((page - 1) * size).limit(size)
+    result = await db.execute(stmt)
+    return [
+        TicketListItem(
+            id=t.id,
+            folio=t.folio,
+            fecha_hora=t.fecha_hora,
+            emisor_rfc=t.emisor_rfc,
+            estado=t.estado,
+            total=float(t.total),
+            rfc_receptor=t.rfc_receptor,
+            numero_cliente=t.numero_cliente,
+            n_conceptos=len(json.loads(t.conceptos)),
+            creado_por_rfc=t.creado_por_rfc,
+        )
+        for t in result.scalars().all()
+    ]
+
+
 @app.get("/facturas/tickets/{qr_token}", response_model=TicketPublicoResponse, dependencies=[Depends(require_internal_key)])
 async def obtener_ticket_publico(qr_token: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(TicketVenta).where(TicketVenta.qr_token == qr_token))

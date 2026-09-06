@@ -122,10 +122,18 @@ export default function NuevoTicket(){
           );
         })}
         <Btn variant="secondary" type="button" onClick={agregarFila}>+ Agregar concepto</Btn>
+        {/* "sin IVA" explicito: precio_unitario se captura como base y el
+            timbrado (facturar_ticket) SIEMPRE suma 16% - el operador de
+            mostrador debe saber que el CFDI del cliente sera mayor que este
+            total. La aclaracion va SOLO en el total general, no en la
+            columna "Importe" por concepto: todos los precios son base por
+            igual (no hay ambiguedad por fila), y repetir "sin IVA" en cada
+            renglon es ruido visual y aprieta el grid de 5 columnas en movil. */}
         <div style={{display:"flex",justifyContent:"flex-end",paddingTop:16,marginTop:16,borderTop:`1px solid ${C.border}`}}>
           <div style={{textAlign:"right"}}>
-            <div style={{fontSize:11,color:C.textMuted}}>Total</div>
+            <div style={{fontSize:11,color:C.textMuted}}>Total (sin IVA)</div>
             <div style={{fontSize:22,fontWeight:700,color:C.accent}}>{fmt(total)}</div>
+            <div style={{fontSize:11,color:C.textMuted,marginTop:2}}>Se factura + IVA 16%</div>
           </div>
         </div>
       </Card>
@@ -137,7 +145,7 @@ export default function NuevoTicket(){
         <Card style={{marginTop:12,borderColor:C.accentBorder,background:C.accentSoft}}>
           <div style={{fontSize:11,fontWeight:700,color:"#0A6B4A",letterSpacing:"0.08em",marginBottom:12,textTransform:"uppercase"}}>✓ Ticket generado</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginBottom:12}}>
-            {[["Folio",resultado.folio],["Total",fmt(resultado.total)],["Token QR",resultado.qr_token]].map(([l,v])=>(
+            {[["Folio",resultado.folio],["Total (sin IVA)",fmt(resultado.total)],["Token QR",resultado.qr_token]].map(([l,v])=>(
               <div key={l} style={{background:"#fff",borderRadius:8,padding:"10px 12px"}}>
                 <div style={{fontSize:10,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>{l}</div>
                 <div style={{fontSize:13,fontWeight:600,color:C.text,wordBreak:"break-all"}}>{v}</div>

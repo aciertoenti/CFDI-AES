@@ -7,7 +7,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -59,6 +59,23 @@ logger = logging.getLogger("facturacion")
 
 RFC_PUBLICO_EN_GENERAL = "XAXX010101000"
 TASA_IVA_DECIMALES = Decimal("0.000000")
+
+# Back-out de IVA (05 sep 2026, zg5njsY): NuevaFactura.jsx y NuevoTicket.jsx
+# capturan "precio con IVA incluido" (lo que el operador realmente cobra).
+# El precio BASE para el XML se obtiene dividiendo entre (1 + iva_tasa), a 6
+# decimales - el maximo que admite ValorUnitario en CFDI 4.0. NO se redondea
+# a 2 decimales: satcfdi hace el redondeo fino por linea con su RoundTracker;
+# redondear a 2 aqui descuadra centavos con cantidad>1 (verificado, ver
+# 69_investigacion_precio_con_iva_incluido.txt - caso D: $300.01 en vez de
+# $300.00). iva_tasa=0 (exento) -> divisor 1 -> el precio ya es final.
+IVA_BACKOUT_DECIMALES = Decimal("0.000001")
+
+
+def _precio_sin_iva(precio_con_iva, iva_tasa) -> Decimal:
+    divisor = Decimal("1") + Decimal(str(iva_tasa))
+    return (Decimal(str(precio_con_iva)) / divisor).quantize(
+        IVA_BACKOUT_DECIMALES, rounding=ROUND_HALF_UP
+    )
 
 # Costo real por timbre exitoso, cotizado con Finkok (#6). Cambia el
 # precio de Finkok, cambia esta linea - nada mas.
@@ -760,6 +777,18 @@ async def timbrar_factura(
             ),
         )
 
+    # NuevaFactura.jsx captura "precio con IVA incluido" (05 sep 2026,
+    # zg5njsY). El back-out (precio / (1 + iva_tasa), 6 decimales) se hace
+    # AQUI, en el punto de entrada del flujo manual - construir_comprobante
+    # sigue recibiendo precios BASE, contrato sin cambio. El flujo de
+    # tickets hace su propio back-out en crear_ticket (guarda precio_base en
+    # el JSON), asi que facturar_ticket ya entrega base y NO pasa por aqui.
+    # Se hace despues del check de idempotencia (que puede retornar temprano
+    # sin timbrar) y del limite de plan.
+    factura.conceptos = [
+        Concepto(**{**c.dict(), "precio_unitario": float(_precio_sin_iva(c.precio_unitario, c.iva_tasa))})
+        for c in factura.conceptos
+    ]
     return await _ejecutar_timbrado(factura, negocio_id, x_usuario_rfc, db, x_idempotency_key)
 
 @app.get("/facturas/count", dependencies=[Depends(require_internal_key)])
@@ -955,9 +984,12 @@ async def crear_ticket(
         )
 
     # Total SIEMPRE calculado en el servidor desde los conceptos, nunca
-    # aceptado del cliente - mismo principio que Factura (satcfdi recalcula
-    # el Total real desde los conceptos via construir_comprobante, no usa
-    # nada que mande el frontend). TicketCreate no tiene campo total.
+    # aceptado del cliente - mismo principio que Factura. precio_unitario
+    # aqui es "con IVA incluido" (lo que el operador cobra) - este total es
+    # ese monto real (cantidad x precio capturado), y es lo que el ticket
+    # impreso muestra como "TOTAL". NO es la suma de las bases; el CFDI que
+    # salga despues puede diferir en centavos (redondeo fino por linea de
+    # satcfdi), lo cual es normal y esperado.
     total = sum(
         (Decimal(str(c.cantidad)) * Decimal(str(c.precio_unitario)) for c in ticket.conceptos),
         start=Decimal("0"),
@@ -974,11 +1006,22 @@ async def crear_ticket(
     # individual (a diferencia del folio, que si es predecible/secuencial).
     qr_token = uuid.uuid4().hex
 
+    # JSON de conceptos: se guarda cada concepto tal cual lo mando el
+    # operador (precio_unitario = con IVA incluido, para que el GET publico
+    # del portal muestre los mismos precios que el ticket de papel) MAS un
+    # campo precio_base con el back-out ya calculado a 6 decimales - eso es
+    # lo que facturar_ticket usara como ValorUnitario del CFDI, sin volver a
+    # dividir (evita el doble back-out).
+    conceptos_json = [
+        {**c.dict(), "precio_base": float(_precio_sin_iva(c.precio_unitario, c.iva_tasa))}
+        for c in ticket.conceptos
+    ]
+
     nuevo = TicketVenta(
         negocio_id=negocio_id,
         emisor_rfc=ticket.emisor_rfc,
         folio=folio,
-        conceptos=json.dumps([c.dict() for c in ticket.conceptos]),
+        conceptos=json.dumps(conceptos_json),
         total=total,
         estado="pendiente",
         qr_token=qr_token,
@@ -1252,6 +1295,11 @@ async def facturar_ticket(
         # las facturas derivadas de un ticket de POS de las manuales
         # (serie "A"). administracion crea la serie "T" al primer uso
         # (SerieFolio hace UPSERT), igual que paso con "TICKET" y "NC".
+        # ValorUnitario del CFDI = precio_base (back-out de IVA ya hecho en
+        # crear_ticket, 6 decimales). Se usa .get con fallback al
+        # precio_unitario por si algun ticket viejo no trae precio_base -
+        # no hay migracion, esos tickets se descartan, pero el fallback
+        # evita un KeyError si alguno se cuela.
         factura_create = FacturaCreate(
             emisor_rfc=ticket.emisor_rfc,
             receptor=ReceptorCFDI(
@@ -1261,7 +1309,10 @@ async def facturar_ticket(
                 regimen_fiscal=datos.regimen_fiscal,
                 domicilio_fiscal=datos.domicilio_fiscal,
             ),
-            conceptos=[Concepto(**c) for c in json.loads(ticket.conceptos)],
+            conceptos=[
+                Concepto(**{**c, "precio_unitario": c.get("precio_base", c["precio_unitario"])})
+                for c in json.loads(ticket.conceptos)
+            ],
             serie="T",
         )
 

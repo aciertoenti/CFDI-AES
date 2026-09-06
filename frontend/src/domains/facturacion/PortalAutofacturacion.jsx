@@ -28,6 +28,117 @@ const POLL_LENTO_TRAS = 10; // ~60s -> cambia el mensaje, NO detiene el polling
 //   error_ticket | exito | error_submit
 const FORM_VACIO = { rfc: "", nombre: "", regimenFiscal: "", usoCfdi: "", domicilioFiscal: "" };
 
+// ── Estilos estaticos (no dependen de estado) a nivel de modulo ──────────────
+const wrap = { maxWidth: 480, margin: "0 auto", padding: 16, minWidth: 0, boxSizing: "border-box" };
+const brand = { fontSize: 12, fontWeight: 700, color: C.accent, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 };
+const h1 = { fontSize: 20, fontWeight: 700, color: C.text, margin: "0 0 4px" };
+const p = { color: C.textSec, fontSize: 13, margin: "0 0 16px" };
+const label = { fontSize: 12, color: C.textSec, display: "block", marginBottom: 4, fontWeight: 600 };
+const field = { width: "100%", border: `1px solid ${C.border}`, borderRadius: 8, padding: "11px 12px", fontSize: 14, color: C.text, background: "#fff", boxSizing: "border-box", minHeight: 44 };
+const fieldGroup = { marginBottom: 14 };
+const msgBox = (kind) => ({
+  borderRadius: 10, padding: "12px 14px", fontSize: 13, lineHeight: 1.45,
+  background: kind === "error" ? C.dangerSoft : kind === "ok" ? C.accentSoft : C.infoSoft,
+  color: kind === "error" ? C.danger : kind === "ok" ? "#0A6B4A" : C.info,
+  border: `1px solid ${kind === "error" ? "#FEB2B2" : kind === "ok" ? C.accentBorder : "#BEE3F8"}`,
+});
+
+// ── ResumenTicket y Formulario: A NIVEL DE MODULO, no dentro del cuerpo de ────
+// PortalAutofacturacion. Si se declaran dentro (const Formulario = () => ...),
+// cada re-render - y hay uno por CADA TECLA, porque onChange actualiza `form` -
+// crea una funcion NUEVA. React ve <Formulario/> como un tipo de componente
+// distinto al del render anterior, DESMONTA el <input> y monta uno nuevo: el
+// foco se pierde en cada pulsacion (bug real, confirmado en teclado de celular
+// Android/Chrome). A nivel de modulo la referencia del componente es estable,
+// asi que un re-render solo actualiza el value del mismo <input> y el foco se
+// conserva. Reciben por props todo lo que antes leian del closure.
+function ResumenTicket({ ticket }) {
+  if (!ticket) return null;
+  return (
+    <Card style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Ticket de venta</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8, marginBottom: 10 }}>
+        {[["Folio", ticket.folio], ["Fecha", new Date(ticket.fecha_hora).toLocaleString("es-MX")], ["Emisor (RFC)", ticket.emisor_rfc]].map(([l, v]) => (
+          <div key={l} style={{ background: C.surface, borderRadius: 8, padding: "8px 10px" }}>
+            <div style={{ fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>{l}</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text, wordBreak: "break-word" }}>{v}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+        {(ticket.conceptos || []).map((c, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13, color: C.textSec, padding: "3px 0" }}>
+            <span style={{ minWidth: 0, wordBreak: "break-word" }}>{c.cantidad} × {c.descripcion}</span>
+            <span style={{ whiteSpace: "nowrap" }}>{fmt((parseFloat(c.cantidad) || 0) * (parseFloat(c.precio_unitario) || 0))}</span>
+          </div>
+        ))}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 8, fontSize: 16, fontWeight: 700, color: C.accent }}>
+          <span style={{ color: C.textMuted, fontSize: 12, alignSelf: "center" }}>Total</span>{fmt(ticket.total)}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function Formulario({ form, setCampo, usosDisponibles, formCompleto, enviando, errorMsg, fase, onSubmit }) {
+  return (
+    <form onSubmit={onSubmit} noValidate>
+      <div style={fieldGroup}>
+        <label htmlFor="pa-rfc" style={label}>RFC</label>
+        <input id="pa-rfc" style={field} value={form.rfc} autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+          onChange={(e) => setCampo("rfc", e.target.value.toUpperCase())} placeholder="XAXX010101000" />
+      </div>
+      <div style={fieldGroup}>
+        <label htmlFor="pa-nombre" style={label}>Nombre / Razón social</label>
+        <input id="pa-nombre" style={field} value={form.nombre}
+          onChange={(e) => setCampo("nombre", e.target.value)} placeholder="Como aparece en tu Constancia de Situación Fiscal" />
+      </div>
+      <div style={fieldGroup}>
+        <label htmlFor="pa-regimen" style={label}>Régimen fiscal</label>
+        <select id="pa-regimen" style={field} value={form.regimenFiscal}
+          onChange={(e) => setCampo("regimenFiscal", e.target.value)}>
+          <option value="">Elige tu régimen…</option>
+          {Object.entries(CATALOGO_REGIMEN_FISCAL).map(([cod, { desc }]) => (
+            <option key={cod} value={cod}>{cod} — {desc}</option>
+          ))}
+        </select>
+      </div>
+      <div style={fieldGroup}>
+        <label htmlFor="pa-uso" style={label}>Uso de CFDI</label>
+        <select id="pa-uso" style={field} value={form.usoCfdi} disabled={!form.regimenFiscal}
+          onChange={(e) => setCampo("usoCfdi", e.target.value)}>
+          <option value="">{form.regimenFiscal ? "Elige el uso…" : "Elige primero tu régimen"}</option>
+          {usosDisponibles.map((clave) => (
+            <option key={clave} value={clave}>{clave} — {CATALOGO_USO_CFDI[clave].desc}</option>
+          ))}
+        </select>
+        {form.regimenFiscal && usosDisponibles.length === 0 && (
+          <div style={{ fontSize: 12, color: C.warn, marginTop: 4 }}>
+            Ninguno de los usos disponibles ({USOS_V1.join(", ")}) aplica a tu régimen fiscal. Verifica el régimen.
+          </div>
+        )}
+      </div>
+      <div style={fieldGroup}>
+        <label htmlFor="pa-cp" style={label}>Código Postal (domicilio fiscal)</label>
+        <input id="pa-cp" style={field} value={form.domicilioFiscal} inputMode="numeric" maxLength={5}
+          onChange={(e) => setCampo("domicilioFiscal", e.target.value.replace(/\D/g, ""))} placeholder="00000" />
+      </div>
+
+      {fase === "error_submit" && errorMsg && (
+        <div style={{ ...msgBox("error"), marginBottom: 14 }} role="alert" aria-live="assertive">{errorMsg}</div>
+      )}
+
+      <Btn type="submit" variant="accent" disabled={!formCompleto || enviando}
+        style={{ width: "100%", padding: "13px 18px", fontSize: 15, minHeight: 48 }}>
+        {enviando ? "Generando factura…" : "Solicitar mi factura"}
+      </Btn>
+      <div style={{ fontSize: 11, color: C.textMuted, marginTop: 10, textAlign: "center" }}>
+        Tus datos solo se usan para timbrar esta factura ante el SAT.
+      </div>
+    </form>
+  );
+}
+
 export default function PortalAutofacturacion({ qrToken }) {
   const [fase, setFase] = useState("cargando");
   const [ticket, setTicket] = useState(null);     // respuesta del GET
@@ -174,103 +285,14 @@ export default function PortalAutofacturacion({ qrToken }) {
     }
   };
 
+  // Props comunes del formulario - se arman una vez por render, pero Formulario
+  // es un componente de modulo (tipo estable) asi que esto NO lo remonta.
+  const formularioProps = {
+    form, setCampo, usosDisponibles, formCompleto, enviando, errorMsg, fase,
+    onSubmit: enviarFactura,
+  };
+
   // ── UI ───────────────────────────────────────────────────────────────────
-  const wrap = { maxWidth: 480, margin: "0 auto", padding: 16, minWidth: 0, boxSizing: "border-box" };
-  const brand = { fontSize: 12, fontWeight: 700, color: C.accent, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 };
-  const h1 = { fontSize: 20, fontWeight: 700, color: C.text, margin: "0 0 4px" };
-  const p = { color: C.textSec, fontSize: 13, margin: "0 0 16px" };
-  const label = { fontSize: 12, color: C.textSec, display: "block", marginBottom: 4, fontWeight: 600 };
-  const field = { width: "100%", border: `1px solid ${C.border}`, borderRadius: 8, padding: "11px 12px", fontSize: 14, color: C.text, background: "#fff", boxSizing: "border-box", minHeight: 44 };
-  const fieldGroup = { marginBottom: 14 };
-  const msgBox = (kind) => ({
-    borderRadius: 10, padding: "12px 14px", fontSize: 13, lineHeight: 1.45,
-    background: kind === "error" ? C.dangerSoft : kind === "ok" ? C.accentSoft : C.infoSoft,
-    color: kind === "error" ? C.danger : kind === "ok" ? "#0A6B4A" : C.info,
-    border: `1px solid ${kind === "error" ? "#FEB2B2" : kind === "ok" ? C.accentBorder : "#BEE3F8"}`,
-  });
-
-  const ResumenTicket = () => ticket && (
-    <Card style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Ticket de venta</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8, marginBottom: 10 }}>
-        {[["Folio", ticket.folio], ["Fecha", new Date(ticket.fecha_hora).toLocaleString("es-MX")], ["Emisor (RFC)", ticket.emisor_rfc]].map(([l, v]) => (
-          <div key={l} style={{ background: C.surface, borderRadius: 8, padding: "8px 10px" }}>
-            <div style={{ fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>{l}</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: C.text, wordBreak: "break-word" }}>{v}</div>
-          </div>
-        ))}
-      </div>
-      <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-        {(ticket.conceptos || []).map((c, i) => (
-          <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13, color: C.textSec, padding: "3px 0" }}>
-            <span style={{ minWidth: 0, wordBreak: "break-word" }}>{c.cantidad} × {c.descripcion}</span>
-            <span style={{ whiteSpace: "nowrap" }}>{fmt((parseFloat(c.cantidad) || 0) * (parseFloat(c.precio_unitario) || 0))}</span>
-          </div>
-        ))}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 8, fontSize: 16, fontWeight: 700, color: C.accent }}>
-          <span style={{ color: C.textMuted, fontSize: 12, alignSelf: "center" }}>Total</span>{fmt(ticket.total)}
-        </div>
-      </div>
-    </Card>
-  );
-
-  const Formulario = () => (
-    <form onSubmit={enviarFactura} noValidate>
-      <div style={fieldGroup}>
-        <label htmlFor="pa-rfc" style={label}>RFC</label>
-        <input id="pa-rfc" style={field} value={form.rfc} autoCapitalize="characters" autoCorrect="off" spellCheck={false}
-          onChange={(e) => setCampo("rfc", e.target.value.toUpperCase())} placeholder="XAXX010101000" />
-      </div>
-      <div style={fieldGroup}>
-        <label htmlFor="pa-nombre" style={label}>Nombre / Razón social</label>
-        <input id="pa-nombre" style={field} value={form.nombre}
-          onChange={(e) => setCampo("nombre", e.target.value)} placeholder="Como aparece en tu Constancia de Situación Fiscal" />
-      </div>
-      <div style={fieldGroup}>
-        <label htmlFor="pa-regimen" style={label}>Régimen fiscal</label>
-        <select id="pa-regimen" style={field} value={form.regimenFiscal}
-          onChange={(e) => setCampo("regimenFiscal", e.target.value)}>
-          <option value="">Elige tu régimen…</option>
-          {Object.entries(CATALOGO_REGIMEN_FISCAL).map(([cod, { desc }]) => (
-            <option key={cod} value={cod}>{cod} — {desc}</option>
-          ))}
-        </select>
-      </div>
-      <div style={fieldGroup}>
-        <label htmlFor="pa-uso" style={label}>Uso de CFDI</label>
-        <select id="pa-uso" style={field} value={form.usoCfdi} disabled={!form.regimenFiscal}
-          onChange={(e) => setCampo("usoCfdi", e.target.value)}>
-          <option value="">{form.regimenFiscal ? "Elige el uso…" : "Elige primero tu régimen"}</option>
-          {usosDisponibles.map((clave) => (
-            <option key={clave} value={clave}>{clave} — {CATALOGO_USO_CFDI[clave].desc}</option>
-          ))}
-        </select>
-        {form.regimenFiscal && usosDisponibles.length === 0 && (
-          <div style={{ fontSize: 12, color: C.warn, marginTop: 4 }}>
-            Ninguno de los usos disponibles ({USOS_V1.join(", ")}) aplica a tu régimen fiscal. Verifica el régimen.
-          </div>
-        )}
-      </div>
-      <div style={fieldGroup}>
-        <label htmlFor="pa-cp" style={label}>Código Postal (domicilio fiscal)</label>
-        <input id="pa-cp" style={field} value={form.domicilioFiscal} inputMode="numeric" maxLength={5}
-          onChange={(e) => setCampo("domicilioFiscal", e.target.value.replace(/\D/g, ""))} placeholder="00000" />
-      </div>
-
-      {fase === "error_submit" && errorMsg && (
-        <div style={{ ...msgBox("error"), marginBottom: 14 }} role="alert" aria-live="assertive">{errorMsg}</div>
-      )}
-
-      <Btn type="submit" variant="accent" disabled={!formCompleto || enviando}
-        style={{ width: "100%", padding: "13px 18px", fontSize: 15, minHeight: 48 }}>
-        {enviando ? "Generando factura…" : "Solicitar mi factura"}
-      </Btn>
-      <div style={{ fontSize: 11, color: C.textMuted, marginTop: 10, textAlign: "center" }}>
-        Tus datos solo se usan para timbrar esta factura ante el SAT.
-      </div>
-    </form>
-  );
-
   return (
     <div style={{ background: C.surface, minHeight: "100vh" }}>
       {/* Spinner keyframes: contenido propio, no toca index.css */}
@@ -298,8 +320,8 @@ export default function PortalAutofacturacion({ qrToken }) {
           <>
             <h1 style={h1}>Solicita tu factura</h1>
             <p style={p}>Completa tus datos fiscales para generar la factura de esta compra.</p>
-            <ResumenTicket />
-            <Card><Formulario /></Card>
+            <ResumenTicket ticket={ticket} />
+            <Card><Formulario {...formularioProps} /></Card>
           </>
         )}
 
@@ -307,8 +329,8 @@ export default function PortalAutofacturacion({ qrToken }) {
           <>
             <h1 style={h1}>Solicita tu factura</h1>
             <p style={p}>Revisa el mensaje y vuelve a intentarlo. Tus datos siguen aquí.</p>
-            <ResumenTicket />
-            <Card><Formulario /></Card>
+            <ResumenTicket ticket={ticket} />
+            <Card><Formulario {...formularioProps} /></Card>
           </>
         )}
 

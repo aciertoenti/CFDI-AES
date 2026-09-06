@@ -167,8 +167,17 @@ export default function NuevaFactura(){
     }
   }, [form.regimenFiscal]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const sub=(parseFloat(form.cantidad)||0)*(parseFloat(form.precio)||0);
-  const total=sub*(1+(parseFloat(form.iva)||0)/100);
+  // "precio" ahora es CON IVA INCLUIDO (05 sep 2026, zg5njsY): es el precio
+  // final que se le cobra al cliente. El Total es ese precio x cantidad;
+  // Subtotal e IVA se derivan HACIA ATRAS solo como referencia visual - el
+  // calculo fiscal real lo hace satcfdi al timbrar (el backend hace el
+  // back-out a 6 decimales y el CFDI puede diferir en centavos por el
+  // redondeo por linea). El campo "IVA %" se mantiene: la franja fronteriza
+  // usa 8% y el campo ya era editable antes de este cambio.
+  const total=(parseFloat(form.cantidad)||0)*(parseFloat(form.precio)||0);
+  const tasaIva=(parseFloat(form.iva)||0)/100;
+  const sub= tasaIva ? total/(1+tasaIva) : total;
+  const ivaMonto= total - sub;
 
   const seleccionarCliente = rfc => {
     setResultado(null); setErrorTimbrado(null);
@@ -257,6 +266,10 @@ export default function NuevaFactura(){
       conceptos: [{
         descripcion: form.concepto,
         cantidad: parseFloat(form.cantidad),
+        // precio_unitario se manda CON IVA INCLUIDO tal cual lo capturo el
+        // operador; el backend (timbrar_factura) hace el back-out /
+        // (1 + iva_tasa) a 6 decimales antes de construir el CFDI. El
+        // contrato del POST no cambia - solo la semantica del numero.
         precio_unitario: parseFloat(form.precio),
         iva_tasa: (parseFloat(form.iva)||0)/100,
       }],
@@ -363,16 +376,19 @@ export default function NuevaFactura(){
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:10}}>
           {inp("Descripción","concepto")}
           {inp("Cantidad","cantidad","number",{min:"0"})}
-          {inp("Precio unitario","precio","number",{min:"0"})}
-          {inp("IVA %","iva","number")}
+          {inp("Precio unitario (IVA incluido)","precio","number",{min:"0"})}
+          {inp("IVA % incluido","iva","number")}
         </div>
         <div style={{display:"flex",justifyContent:"flex-end",gap:20,paddingTop:12,borderTop:`1px solid ${C.border}`,flexWrap:"wrap"}}>
-          {[["Subtotal",sub],["IVA",sub*(parseFloat(form.iva)||0)/100],["Total",total]].map(([l,v])=>(
+          {[["Subtotal",sub,false],[`IVA ${parseFloat(form.iva)||0}%`,ivaMonto,false],["Total (IVA incluido)",total,true]].map(([l,v,esTotal])=>(
             <div key={l} style={{textAlign:"right"}}>
               <div style={{fontSize:11,color:C.textMuted}}>{l}</div>
-              <div style={{fontSize:l==="Total"?18:13,fontWeight:l==="Total"?700:500,color:l==="Total"?C.accent:C.text}}>{fmt(v)}</div>
+              <div style={{fontSize:esTotal?18:13,fontWeight:esTotal?700:500,color:esTotal?C.accent:C.text}}>{fmt(v)}</div>
             </div>
           ))}
+          <div style={{width:"100%",fontSize:10,color:C.textMuted,textAlign:"right",marginTop:4}}>
+            Subtotal e IVA son una referencia — el CFDI se calcula exacto al timbrar.
+          </div>
         </div>
       </Card>
       <div style={{marginTop:12,display:"flex",gap:10,flexWrap:"wrap"}}>
@@ -389,7 +405,7 @@ export default function NuevaFactura(){
         <Card style={{marginTop:12,borderColor:C.accentBorder,background:C.accentSoft}}>
           <div style={{fontSize:11,fontWeight:700,color:"#0A6B4A",letterSpacing:"0.08em",marginBottom:12,textTransform:"uppercase"}}>✓ Timbrado exitoso</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginBottom:12}}>
-            {[["UUID",resultado.uuid],["Folio",resultado.folio],["Estado",resultado.estado],["Total",fmt(resultado.total)]].map(([l,v])=>(
+            {[["UUID",resultado.uuid],["Folio",resultado.folio],["Estado",resultado.estado],["Total (IVA incluido)",fmt(resultado.total)]].map(([l,v])=>(
               <div key={l} style={{background:"#fff",borderRadius:8,padding:"10px 12px"}}>
                 <div style={{fontSize:10,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>{l}</div>
                 <div style={{fontSize:13,fontWeight:600,color:C.text,wordBreak:"break-all"}}>{v}</div>

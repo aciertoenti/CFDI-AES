@@ -29,14 +29,19 @@ export default function NuevoTicket(){
   // disabled desde el render, esto es la segunda barrera.
   const quitarFila = i => setConceptos(cs => (cs.length === 1 ? cs : cs.filter((_, idx) => idx !== i)));
 
-  // Total en vivo solo para mostrar - el backend recalcula igual y es la
-  // fuente de verdad real (mismo principio que timbrar_factura/Factura).
-  // Sin desglose de IVA: TicketVenta.total es una suma flat, un ticket no
-  // es un documento fiscal.
+  // precio_unitario se captura CON IVA INCLUIDO (05 sep 2026, zg5njsY): es
+  // el precio real que el operador le cobra al cliente. Este total es ese
+  // monto (cantidad x precio capturado) - lo que el ticket impreso muestra
+  // y lo que el cliente paga. El backend hace el back-out (precio / 1.16) a
+  // 6 decimales para el CFDI; el CFDI final puede diferir en centavos por
+  // el redondeo por linea de satcfdi, es normal.
   const total = conceptos.reduce(
     (acc, c) => acc + (parseFloat(c.cantidad) || 0) * (parseFloat(c.precio_unitario) || 0),
     0,
   );
+  // Desglose informativo (solo display, IVA fijo 16% en el POS): cuanto de
+  // ese total es IVA ya incluido. El calculo real lo hace satcfdi.
+  const ivaIncluido = total - total / 1.16;
 
   const crearTicket = async () => {
     if (!emisor) { toast("No hay ningún emisor registrado en Administración todavía", "error"); return; }
@@ -122,18 +127,17 @@ export default function NuevoTicket(){
           );
         })}
         <Btn variant="secondary" type="button" onClick={agregarFila}>+ Agregar concepto</Btn>
-        {/* "sin IVA" explicito: precio_unitario se captura como base y el
-            timbrado (facturar_ticket) SIEMPRE suma 16% - el operador de
-            mostrador debe saber que el CFDI del cliente sera mayor que este
-            total. La aclaracion va SOLO en el total general, no en la
-            columna "Importe" por concepto: todos los precios son base por
-            igual (no hay ambiguedad por fila), y repetir "sin IVA" en cada
-            renglon es ruido visual y aprieta el grid de 5 columnas en movil. */}
+        {/* precio_unitario se captura CON IVA INCLUIDO: el total mostrado ES
+            el monto final que paga el cliente, no hace falta advertir que se
+            sumara algo. Debajo, desglose informativo de cuanto de ese total
+            ya es IVA (solo referencia - el calculo fiscal exacto lo hace
+            satcfdi al timbrar). No se pone por concepto: aprieta el grid de
+            5 columnas en movil y no aporta (todos llevan 16% igual). */}
         <div style={{display:"flex",justifyContent:"flex-end",paddingTop:16,marginTop:16,borderTop:`1px solid ${C.border}`}}>
           <div style={{textAlign:"right"}}>
-            <div style={{fontSize:11,color:C.textMuted}}>Total (sin IVA)</div>
+            <div style={{fontSize:11,color:C.textMuted}}>Total (IVA incluido)</div>
             <div style={{fontSize:22,fontWeight:700,color:C.accent}}>{fmt(total)}</div>
-            <div style={{fontSize:11,color:C.textMuted,marginTop:2}}>Se factura + IVA 16%</div>
+            <div style={{fontSize:11,color:C.textMuted,marginTop:2}}>Incluye {fmt(ivaIncluido)} de IVA (16%)</div>
           </div>
         </div>
       </Card>
@@ -145,7 +149,7 @@ export default function NuevoTicket(){
         <Card style={{marginTop:12,borderColor:C.accentBorder,background:C.accentSoft}}>
           <div style={{fontSize:11,fontWeight:700,color:"#0A6B4A",letterSpacing:"0.08em",marginBottom:12,textTransform:"uppercase"}}>✓ Ticket generado</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginBottom:12}}>
-            {[["Folio",resultado.folio],["Total (sin IVA)",fmt(resultado.total)],["Token QR",resultado.qr_token]].map(([l,v])=>(
+            {[["Folio",resultado.folio],["Total (IVA incluido)",fmt(resultado.total)],["Token QR",resultado.qr_token]].map(([l,v])=>(
               <div key={l} style={{background:"#fff",borderRadius:8,padding:"10px 12px"}}>
                 <div style={{fontSize:10,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>{l}</div>
                 <div style={{fontSize:13,fontWeight:600,color:C.text,wordBreak:"break-all"}}>{v}</div>

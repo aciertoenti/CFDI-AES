@@ -555,6 +555,37 @@ async def actualizar_emisor_parcial(
     datos = emisor.model_dump(exclude_unset=True)
     if datos.get("estado") and datos["estado"] not in ("Activo", "Inactivo"):
         raise HTTPException(status_code=422, detail="estado debe ser 'Activo' o 'Inactivo'")
+
+    # Reactivar un emisor (Inactivo -> Activo) vuelve a consumir un cupo del
+    # plan: aplica la MISMA validacion de limite que crear_emisor (mismo
+    # PLAN_LIMITS, mismo 409). Sin esto el plan se podia exceder por la puerta
+    # de atras: inactivar A -> alta de B -> reactivar A (bug zg5sS8g). Solo se
+    # valida en la transicion REAL hacia "Activo": inactivar, un no-op
+    # Activo->Activo, o tocar cualquier otro campo NO se bloquea. El COUNT va
+    # ANTES del setattr (para leer el estado real en BD, sin el cambio
+    # propuesto) y excluye explicitamente este mismo emisor.
+    if datos.get("estado") == "Activo" and existente.estado != "Activo":
+        negocio_result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
+        negocio = negocio_result.scalar_one_or_none()
+        if negocio is None:
+            raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+        limite_emisores = PLAN_LIMITS.get(negocio.plan, PLAN_LIMITS["basico"])["emisores"]
+        emisores_activos = await db.scalar(
+            select(func.count(Emisor.id)).where(
+                Emisor.negocio_id == negocio_id,
+                Emisor.estado == "Activo",
+                Emisor.rfc != rfc,
+            )
+        ) or 0
+        if emisores_activos >= limite_emisores:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"El plan {negocio.plan} permite hasta {limite_emisores} emisor(es). "
+                    "Actualiza tu plan para continuar."
+                ),
+            )
+
     for campo, valor in datos.items():
         setattr(existente, campo, valor)
     existente.modificado_por_rfc = x_usuario_rfc

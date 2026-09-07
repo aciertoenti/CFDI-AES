@@ -172,7 +172,7 @@ export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views
           </div>
         )}
         <div style={{flex:1,overflowY:"auto",padding:isMobile?"14px 12px":"22px 26px",WebkitOverflowScrolling:"touch",order:0}}>
-          {emisorInactivo && active !== "emisores"
+          {emisorInactivo && active !== "emisores" && active !== "perfil"
             ? <BloqueoEmisorInactivo emisor={emisorGuard} onIrAEmisores={()=>navegarA("emisores")}/>
             : (views[active]||<Placeholder title={labels[active]}/>)}
         </div>

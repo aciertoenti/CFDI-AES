@@ -14,6 +14,7 @@ import Clientes from "./domains/administracion/Clientes";
 import Emisores from "./domains/administracion/Emisores";
 import Series from "./domains/administracion/Series";
 import Usuarios from "./domains/administracion/Usuarios";
+import Perfil from "./domains/administracion/Perfil";
 import NuevaFactura from "./domains/facturacion/NuevaFactura";
 import NuevoTicket from "./domains/facturacion/NuevoTicket";
 import PortalAutofacturacion from "./domains/facturacion/PortalAutofacturacion";
@@ -34,11 +35,16 @@ const NAV = [
   {id:"admin",label:"Administración",icon:"⚙️",children:["emisores","clientes","usuarios","series"]},
 ];
 const LABELS = {
+  perfil:"Mi perfil",
   nueva:"Nueva Factura",ticket:"Nueva Venta (Ticket)",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",contador:"Cálculo de Impuestos",
   lector:"Lector de Documentos",chat:"Asistente de IA",anomalias:"Anomalías IA",conciliacion:"Conciliación",
   emisores:"Emisores",clientes:"Clientes",usuarios:"Usuarios",series:"Series",
 };
+// "perfil" NO va en NAV a proposito: es solo la vista de aterrizaje para
+// admins (zg5z04A). El camino de vuelta es el resto del menu; si mas
+// adelante se quiere un acceso directo, se agrega ahi.
 const VIEWS={
+  perfil:<Perfil/>,
   nueva:<NuevaFactura/>,ticket:<NuevoTicket/>,generadas:<FacturasGeneradas/>,recibidas:<Placeholder title="Facturas recibidas"/>,
   reporte:<ReporteMensual/>,costos:<DashboardCostos/>,contador:<ContadorVirtual/>,lector:<LectorDocumentos/>,chat:<ChatFiscal/>,
   anomalias:<Anomalias/>,conciliacion:<Placeholder title="Conciliación bancaria"/>,
@@ -51,6 +57,9 @@ const VIEWS={
 // ═══════════════════════════════════════════════════════════════════════════════
 function AuthGate(){
   const auth = useAuth();
+  // Admins aterrizan en "Mi perfil" (vista neutral, no ligada a un emisor)
+  // en vez de "Nueva Venta"; el resto sigue cayendo en "ticket" (zg5z04A).
+  const isAdmin = auth.usuarioActual?.roles?.includes("admin") ?? false;
   // Si la URL trae ?token=... (link del correo de recuperacion, ver
   // email_sender.py), arranca directo en "reset" sin pasar por "login" -
   // window.location.search se lee UNA vez al montar (useState con
@@ -110,7 +119,7 @@ function AuthGate(){
     window.history.pushState({}, "", `${window.location.pathname}?vista=landing`);
     setVista("landing");
   };
-  return <EmisoresProvider rfcPersonal={auth.usuarioActual?.sub}><NavProvider><AppShell onLogout={onLogout} onCambiarPassword={auth.cambiarPassword} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></NavProvider></EmisoresProvider>;
+  return <EmisoresProvider rfcPersonal={auth.usuarioActual?.sub}><NavProvider initial={isAdmin ? "perfil" : "ticket"}><AppShell onLogout={onLogout} onCambiarPassword={auth.cambiarPassword} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></NavProvider></EmisoresProvider>;
 }
 
 // Ruta PUBLICA sin sesion (zg5b-ZE pieza 5): el QR impreso en un ticket de

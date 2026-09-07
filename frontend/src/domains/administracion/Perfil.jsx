@@ -1,17 +1,20 @@
+import { useEffect, useState } from "react";
 import useAuth from "../../shared/hooks/useAuth";
 import useEmisores from "../../shared/hooks/useEmisores";
 import { useNav } from "../../shared/layout/nav";
+import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
 import { Card, Btn, SectionTitle, SectionSub } from "../../shared/components/atoms";
 import { C } from "../../shared/utils/format";
 
-// Vista de aterrizaje post-login para usuarios admin (zg5z04A, Parte A):
-// una vista NEUTRAL, no ligada a un emisor concreto. Placeholder: solo
-// muestra datos que el frontend YA tiene sin llamadas nuevas
-//   - usuarioActual (claims del JWT via useAuth)
+// Vista de aterrizaje post-login para usuarios admin (zg5z04A):
+// una vista NEUTRAL, no ligada a un emisor concreto.
+//   - usuarioActual (claims del JWT via useAuth): nombre/RFC/correo/rol
 //   - emisores + su estado (contexto de useEmisores, ya cargado por AppShell)
-// El plan del negocio y el limite de emisores del plan NO se muestran aqui:
-// requieren consumir GET /admin/negocios/{id} (existe) y exponer PLAN_LIMITS
-// desde el backend (no expuesto hoy) - queda para una iteracion posterior.
+//   - plan del negocio + limites del plan (Parte B): GET /admin/negocios/{id}
+//     - endpoint self-only (compara el id del path contra X-Negocio-Id que el
+//       Gateway inyecta desde el JWT), asi que se pide con el propio
+//       usuarioActual.negocio_id. limite_emisores / limite_facturas_mes salen
+//       de PLAN_LIMITS del backend, no se duplica la tabla aqui.
 const fila = { display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 0", borderTop: `1px solid ${C.border}`, fontSize: 13 };
 const etiqueta = { color: C.textMuted };
 const valor = { color: C.text, fontWeight: 600, textAlign: "right", wordBreak: "break-word" };
@@ -30,10 +33,40 @@ export default function Perfil() {
   const { emisores, loading, error, emisorActivoRfc } = useEmisores();
   const { navigate } = useNav();
 
+  const negocioId = usuarioActual?.negocio_id;
+  const [negocio, setNegocio] = useState(null);
+  const [negocioLoading, setNegocioLoading] = useState(true);
+  const [negocioError, setNegocioError] = useState(null);
+
+  useEffect(() => {
+    if (!negocioId) {
+      setNegocioLoading(false);
+      setNegocioError("No se pudo determinar el negocio del usuario.");
+      return;
+    }
+    let cancelado = false;
+    (async () => {
+      setNegocioLoading(true);
+      setNegocioError(null);
+      try {
+        const res = await fetchAuth(`${API_BASE}/admin/negocios/${negocioId}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelado) setNegocio(data);
+      } catch (e) {
+        if (!cancelado) setNegocioError(e.message);
+      } finally {
+        if (!cancelado) setNegocioLoading(false);
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [negocioId]);
+
   const nombre = usuarioActual?.nombre || "—";
   const rfcPersonal = usuarioActual?.sub || "—";
   const email = usuarioActual?.email || "—";
   const roles = Array.isArray(usuarioActual?.roles) ? usuarioActual.roles.join(", ") : "—";
+  const emisoresActivos = emisores.filter((e) => e.estado === "Activo").length;
 
   return (
     <div>
@@ -50,6 +83,25 @@ export default function Perfil() {
           <div style={fila}><span style={etiqueta}>RFC personal</span><span style={{ ...valor, fontFamily: "monospace" }}>{rfcPersonal}</span></div>
           <div style={fila}><span style={etiqueta}>Correo</span><span style={valor}>{email}</span></div>
           <div style={fila}><span style={etiqueta}>Rol</span><span style={valor}>{roles}</span></div>
+        </Card>
+
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 4 }}>Plan del negocio</div>
+          {negocioLoading && <div style={{ fontSize: 13, color: C.textMuted, padding: "8px 0" }}>Cargando plan…</div>}
+          {negocioError && <div style={{ fontSize: 13, color: C.danger, padding: "8px 0" }}>No se pudo cargar el plan: {negocioError}</div>}
+          {!negocioLoading && !negocioError && negocio && (
+            <>
+              <div style={fila}><span style={etiqueta}>Plan</span><span style={{ ...valor, textTransform: "capitalize" }}>{negocio.plan}</span></div>
+              <div style={fila}>
+                <span style={etiqueta}>Emisores</span>
+                <span style={valor}>{emisoresActivos} de {negocio.limite_emisores}</span>
+              </div>
+              <div style={fila}>
+                <span style={etiqueta}>Facturas al mes (límite del plan)</span>
+                <span style={valor}>{negocio.limite_facturas_mes}</span>
+              </div>
+            </>
+          )}
         </Card>
 
         <Card>

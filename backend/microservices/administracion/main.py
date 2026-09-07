@@ -168,6 +168,13 @@ class NegocioResponse(BaseModel):
     plan: str
     fecha_alta: datetime
     estado: str
+    # Derivados de PLAN_LIMITS[plan], no columnas de BD: se calculan en
+    # _negocio_to_response. Los expone el GET para que el frontend (Mi perfil,
+    # zg5z04A) los muestre sin duplicar la tabla PLAN_LIMITS. Consumidores
+    # previos (facturacion.obtener_plan_negocio) solo leen .plan, campos
+    # nuevos no los afectan.
+    limite_emisores: int
+    limite_facturas_mes: int
 
 class ClienteCreate(BaseModel):
     emisor_rfc: str
@@ -231,7 +238,11 @@ def _emisor_to_response(e: Emisor, cache_invalidado: Optional[bool] = None) -> E
 
 
 def _negocio_to_response(n: Negocio) -> NegocioResponse:
-    return NegocioResponse(id=n.id, nombre=n.nombre, plan=n.plan, fecha_alta=n.fecha_alta, estado=n.estado)
+    limites = PLAN_LIMITS.get(n.plan, PLAN_LIMITS["basico"])
+    return NegocioResponse(
+        id=n.id, nombre=n.nombre, plan=n.plan, fecha_alta=n.fecha_alta, estado=n.estado,
+        limite_emisores=limites["emisores"], limite_facturas_mes=limites["facturas_mes"],
+    )
 
 
 def _cliente_to_response(c: Cliente) -> ClienteResponse:

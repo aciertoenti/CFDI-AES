@@ -110,7 +110,7 @@ function AuthGate(){
     window.history.pushState({}, "", `${window.location.pathname}?vista=landing`);
     setVista("landing");
   };
-  return <EmisoresProvider rfcPersonal={auth.usuarioActual?.sub}><NavProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></NavProvider></EmisoresProvider>;
+  return <EmisoresProvider rfcPersonal={auth.usuarioActual?.sub}><NavProvider><AppShell onLogout={onLogout} onCambiarPassword={auth.cambiarPassword} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></NavProvider></EmisoresProvider>;
 }
 
 // Ruta PUBLICA sin sesion (zg5b-ZE pieza 5): el QR impreso en un ticket de

@@ -1,7 +1,7 @@
 // ─── App.jsx ── CFDI-AES · Responsive + Toast + Table fix ─────────────────────
 import { useEffect, useState } from "react";
 import useAuth from "./shared/hooks/useAuth";
-import { EmisoresProvider } from "./shared/hooks/useEmisores";
+import { EmisoresProvider, limpiarEmisoresPersistidos } from "./shared/hooks/useEmisores";
 import { ToastProvider } from "./shared/layout/ToastProvider";
 import AppShell, { Placeholder } from "./shared/layout/AppShell";
 import { NavProvider } from "./shared/layout/nav";
@@ -101,8 +101,16 @@ function AuthGate(){
   // resetea aqui, no dentro de auth.logout() (useAuth no tiene ni debe
   // tener conocimiento del concepto de "vista", que es puramente de
   // AuthGate).
-  const onLogout = () => { auth.logout(); window.history.pushState({}, "", `${window.location.pathname}?vista=landing`); setVista("landing"); };
-  return <EmisoresProvider><NavProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></NavProvider></EmisoresProvider>;
+  const onLogout = () => {
+    // Lee el RFC del usuario que se va ANTES de borrar el token (auth.logout
+    // lo invalida). Conserva solo su preferencia de emisor, barre las de
+    // otros usuarios de este navegador (ver limpiarEmisoresPersistidos).
+    limpiarEmisoresPersistidos(auth.usuarioActual?.sub);
+    auth.logout();
+    window.history.pushState({}, "", `${window.location.pathname}?vista=landing`);
+    setVista("landing");
+  };
+  return <EmisoresProvider rfcPersonal={auth.usuarioActual?.sub}><NavProvider><AppShell onLogout={onLogout} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></NavProvider></EmisoresProvider>;
 }
 
 // Ruta PUBLICA sin sesion (zg5b-ZE pieza 5): el QR impreso en un ticket de

@@ -120,3 +120,31 @@ export function useContadorVirtualISRResico(emisorRfc, anio, mes) {
   }, [emisorRfc, anio, mes]);
   return { datos, loading, error };
 }
+
+// Tickets del POS ligero para la pantalla "Ventas del dia" (zg5sPJI). Mismo
+// patron que useFacturas: GET autenticado, scopeado por emisor, sin
+// paginacion (size=200, el maximo del backend). fechaDesde se manda tal
+// cual como fecha_desde -> el backend trae los tickets con fecha_hora >= ese
+// dia ("de ese dia en adelante"), NUNCA se usa fecha_hasta: hoy fecha_hasta
+// se coerce a las 00:00 del dia y excluiria las horas de ese mismo dia
+// (bug heredado de GET /facturas, documentado - se arreglaria en ambos a la
+// vez). Para el caso comun "ver hoy" con solo fecha_desde alcanza.
+export function useTickets(emisorRfc, fechaDesde) {
+  const [tickets, setTickets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState(null);
+  const cargar = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      let url = `${API_BASE}/facturas/tickets?size=200`;
+      if (emisorRfc)  url += `&emisor_rfc=${encodeURIComponent(emisorRfc)}`;
+      if (fechaDesde) url += `&fecha_desde=${fechaDesde}`;
+      const res = await fetchAuth(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setTickets(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, [emisorRfc, fechaDesde]);
+  useEffect(() => { cargar(); }, [cargar]);
+  return { tickets, loading, error, recargar: cargar };
+}

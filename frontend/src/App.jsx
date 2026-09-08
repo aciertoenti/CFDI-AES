@@ -17,6 +17,7 @@ import Usuarios from "./domains/administracion/Usuarios";
 import Perfil from "./domains/administracion/Perfil";
 import NuevaFactura from "./domains/facturacion/NuevaFactura";
 import NuevoTicket from "./domains/facturacion/NuevoTicket";
+import VentaDiaria from "./domains/facturacion/VentaDiaria";
 import PortalAutofacturacion from "./domains/facturacion/PortalAutofacturacion";
 import FacturasGeneradas from "./domains/facturacion/FacturasGeneradas";
 import ReporteMensual from "./domains/facturacion/ReporteMensual";
@@ -30,13 +31,13 @@ import Anomalias from "./domains/ia/Anomalias";
 // NAVEGACIÓN
 // ═══════════════════════════════════════════════════════════════════════════════
 const NAV = [
-  {id:"facturas",label:"Mis Facturas",icon:"📄",children:["ticket","nueva","generadas","recibidas","reporte","costos"]},
+  {id:"facturas",label:"Mis Facturas",icon:"📄",children:["ticket","ventasdia","nueva","generadas","recibidas","reporte","costos"]},
   {id:"ia",label:"IA",icon:"🤖",children:["contador","chat","lector","anomalias","conciliacion"]},
   {id:"admin",label:"Administración",icon:"⚙️",children:["emisores","clientes","usuarios","series"]},
 ];
 const LABELS = {
   perfil:"Mi perfil",
-  nueva:"Nueva Factura",ticket:"Nueva Venta (Ticket)",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",contador:"Cálculo de Impuestos",
+  nueva:"Nueva Factura",ticket:"Nueva Venta (Ticket)",ventasdia:"Ventas del día",generadas:"Generadas",recibidas:"Recibidas",reporte:"Reporte Mensual",costos:"Dashboard de Costos",contador:"Cálculo de Impuestos",
   lector:"Lector de Documentos",chat:"Asistente de IA",anomalias:"Anomalías IA",conciliacion:"Conciliación",
   emisores:"Emisores",clientes:"Clientes",usuarios:"Usuarios",series:"Series",
 };
@@ -45,7 +46,7 @@ const LABELS = {
 // adelante se quiere un acceso directo, se agrega ahi.
 const VIEWS={
   perfil:<Perfil/>,
-  nueva:<NuevaFactura/>,ticket:<NuevoTicket/>,generadas:<FacturasGeneradas/>,recibidas:<Placeholder title="Facturas recibidas"/>,
+  nueva:<NuevaFactura/>,ticket:<NuevoTicket/>,ventasdia:<VentaDiaria/>,generadas:<FacturasGeneradas/>,recibidas:<Placeholder title="Facturas recibidas"/>,
   reporte:<ReporteMensual/>,costos:<DashboardCostos/>,contador:<ContadorVirtual/>,lector:<LectorDocumentos/>,chat:<ChatFiscal/>,
   anomalias:<Anomalias/>,conciliacion:<Placeholder title="Conciliación bancaria"/>,
   emisores:<Emisores/>,clientes:<Clientes/>,

@@ -37,6 +37,17 @@ function BadgeTicket({ estado }) {
   );
 }
 
+// Link al portal publico de autofacturacion de un ticket (zg6DPGc). Mismo
+// formato de ruta que codifica el QR impreso del backend
+// (PUBLIC_APP_URL + "/facturas/tickets/{qr_token}", ver facturacion/main.py) -
+// y que el router publico del front tambien acepta (App.jsx: /factura/<tok> o
+// /facturas/tickets/<tok>). El host es window.location.origin: el operador
+// esta en el mismo dominio donde el SPA sirve el portal, asi que ese link
+// funciona tal cual al pegarlo (el front no puede -ni debe- leer la env
+// PUBLIC_APP_URL del backend).
+const linkPortalTicket = (qrToken) =>
+  `${window.location.origin}/facturas/tickets/${qrToken}`;
+
 // Chips: etiqueta visible -> valor de estado en la API (o null = "Todos").
 const CHIPS = [
   ["Todos", null],
@@ -55,6 +66,22 @@ export default function VentaDiaria() {
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState(null);
   const esHoy = fecha === hoyLocal();
+
+  // id del ticket cuyo link se acaba de copiar -> feedback "¡Copiado!" breve.
+  const [copiadoId, setCopiadoId] = useState(null);
+  const copiarLinkPortal = async (tk) => {
+    const url = linkPortalTicket(tk.qr_token);
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      // clipboard bloqueado (http sin localhost, permiso denegado, browser
+      // viejo) -> el prompt deja copiar manual con Ctrl+C.
+      window.prompt("Copia este link y compártelo con el cliente:", url);
+      return;
+    }
+    setCopiadoId(tk.id);
+    setTimeout(() => setCopiadoId((cur) => (cur === tk.id ? null : cur)), 1600);
+  };
 
   const items = useMemo(() => {
     const t = q.trim().toLowerCase();
@@ -120,12 +147,13 @@ export default function VentaDiaria() {
                 {!isMobile && <th style={TH}>RFC receptor</th>}
                 {!isMobile && <th style={{ ...TH, textAlign: "center" }}>Conceptos</th>}
                 {!isMobile && <th style={TH}>N° cliente</th>}
+                <th style={{ ...TH, textAlign: "center" }}>Portal</th>
               </tr>
             </thead>
             <tbody>
               {!loading && items.length === 0 && (
                 <tr>
-                  <td colSpan={isMobile ? 4 : 7} style={{ ...TD, textAlign: "center", color: C.textMuted, padding: "24px 12px" }}>
+                  <td colSpan={isMobile ? 5 : 8} style={{ ...TD, textAlign: "center", color: C.textMuted, padding: "24px 12px" }}>
                     {tickets.length === 0
                       ? (esHoy ? "Todavía no hay tickets generados hoy." : "No hay tickets desde ese día.")
                       : "Sin resultados para ese filtro."}
@@ -145,6 +173,24 @@ export default function VentaDiaria() {
                   {!isMobile && (
                     <td style={{ ...TD, fontSize: 12, fontFamily: "monospace", color: C.textSec, whiteSpace: "nowrap" }}>{tk.numero_cliente || "—"}</td>
                   )}
+                  <td style={{ ...TD, textAlign: "center", whiteSpace: "nowrap" }}>
+                    {tk.estado === "pendiente" ? (
+                      <button
+                        onClick={() => copiarLinkPortal(tk)}
+                        title="Copiar el link del portal de autofacturación para enviárselo al cliente"
+                        style={{
+                          fontSize: 11, padding: "4px 10px", borderRadius: 12, cursor: "pointer", whiteSpace: "nowrap",
+                          border: `1px solid ${copiadoId === tk.id ? C.accentBorder : C.border}`,
+                          background: copiadoId === tk.id ? C.accentSoft : "transparent",
+                          color: copiadoId === tk.id ? C.accentBorder : C.textSec,
+                        }}
+                      >
+                        {copiadoId === tk.id ? "¡Copiado!" : "🔗 Copiar link"}
+                      </button>
+                    ) : (
+                      <span style={{ color: C.textMuted, fontSize: 12 }}>—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

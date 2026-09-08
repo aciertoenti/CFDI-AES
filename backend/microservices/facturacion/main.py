@@ -1194,8 +1194,16 @@ class TicketListItem(BaseModel):
     """Fila del listado autenticado de tickets del POS (GET /facturas/tickets).
     Deliberadamente SIN el array `conceptos` completo (es Text/JSON, pesado
     para un listado) - en su lugar n_conceptos, el largo del JSON parseado.
-    Tampoco expone qr_token/negocio_id/created_at/updated_at: el listado es
-    para el operador dentro de su sesion, no una vista publica."""
+    Sigue sin exponer negocio_id/created_at/updated_at (ruido interno para
+    el listado).
+
+    qr_token SI se expone (zg6DPGc): la pantalla "Ventas del dia" ofrece un
+    boton para copiar el link del portal de autofacturacion de un ticket
+    Pendiente. El consumidor es el mismo operador autenticado que ya ve
+    folio/total/RFC receptor del ticket - el qr_token no le agrega
+    superficie de ataque (de hecho ES la credencial que abre ese portal
+    publico, y el operador es el dueno del ticket). No es una vista publica:
+    GET /facturas/tickets exige X-Negocio-Id via el Gateway."""
     id: int
     folio: str
     fecha_hora: datetime
@@ -1206,6 +1214,7 @@ class TicketListItem(BaseModel):
     numero_cliente: Optional[str] = None
     n_conceptos: int
     creado_por_rfc: Optional[str] = None
+    qr_token: str
 
 
 # IMPORTANTE - orden de registro: esta ruta ('/facturas/tickets') va
@@ -1269,6 +1278,7 @@ async def listar_tickets(
             numero_cliente=t.numero_cliente,
             n_conceptos=len(json.loads(t.conceptos)),
             creado_por_rfc=t.creado_por_rfc,
+            qr_token=t.qr_token,
         )
         for t in result.scalars().all()
     ]

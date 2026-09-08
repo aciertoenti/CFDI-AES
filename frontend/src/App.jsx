@@ -5,6 +5,7 @@ import { EmisoresProvider, limpiarEmisoresPersistidos } from "./shared/hooks/use
 import { ToastProvider } from "./shared/layout/ToastProvider";
 import AppShell, { Placeholder } from "./shared/layout/AppShell";
 import { NavProvider } from "./shared/layout/nav";
+import ModalPrivacidadPruebas from "./shared/components/ModalPrivacidadPruebas";
 import Login from "./domains/auth/Login";
 import OlvideContrasena from "./domains/auth/OlvideContrasena";
 import ResetPassword from "./domains/auth/ResetPassword";
@@ -120,7 +121,7 @@ function AuthGate(){
     window.history.pushState({}, "", `${window.location.pathname}?vista=landing`);
     setVista("landing");
   };
-  return <EmisoresProvider rfcPersonal={auth.usuarioActual?.sub}><NavProvider initial={isAdmin ? "perfil" : "ticket"}><AppShell onLogout={onLogout} onCambiarPassword={auth.cambiarPassword} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/></NavProvider></EmisoresProvider>;
+  return <EmisoresProvider rfcPersonal={auth.usuarioActual?.sub}><NavProvider initial={isAdmin ? "perfil" : "ticket"}><AppShell onLogout={onLogout} onCambiarPassword={auth.cambiarPassword} usuarioActual={auth.usuarioActual} views={VIEWS} labels={LABELS} nav={NAV}/>{auth.mostrarAvisoPruebas && <ModalPrivacidadPruebas onCerrar={auth.cerrarAvisoPruebas}/>}</NavProvider></EmisoresProvider>;
 }
 
 // Ruta PUBLICA sin sesion (zg5b-ZE pieza 5): el QR impreso en un ticket de

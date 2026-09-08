@@ -14,6 +14,12 @@ function decodeJwtClaims(token) {
 
 export default function useAuth() {
   const [token, setToken] = useState(getToken);
+  // Aviso de Privacidad + Acuerdo de Confidencialidad (ambiente de pruebas).
+  // Se dispara SOLO en login() -> ver ahi. Default false y nunca se siembra
+  // desde storage: una recarga (F5) con token ya en sessionStorage NO lo
+  // vuelve a mostrar, solo un login/registro real lo hace (registro() llama
+  // internamente a login(), asi que ese unico punto cubre ambos casos).
+  const [mostrarAvisoPruebas, setMostrarAvisoPruebas] = useState(false);
   useEffect(() => {
     const onExpired = () => setToken(null);
     window.addEventListener("cfdi-auth-expired", onExpired);
@@ -29,6 +35,7 @@ export default function useAuth() {
       if (!res.ok) return { ok: false, error: detalleError(data, res) };
       setStoredToken(data.access_token);
       setToken(data.access_token);
+      setMostrarAvisoPruebas(true);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e.message };
@@ -90,6 +97,7 @@ export default function useAuth() {
       return { ok: false, error: e.message };
     }
   }, []);
+  const cerrarAvisoPruebas = useCallback(() => setMostrarAvisoPruebas(false), []);
   const usuarioActual = useMemo(() => decodeJwtClaims(token), [token]);
-  return { token, isAuthenticated: !!token, usuarioActual, login, registro, logout, solicitarReset, confirmarReset, cambiarPassword };
+  return { token, isAuthenticated: !!token, usuarioActual, login, registro, logout, solicitarReset, confirmarReset, cambiarPassword, mostrarAvisoPruebas, cerrarAvisoPruebas };
 }

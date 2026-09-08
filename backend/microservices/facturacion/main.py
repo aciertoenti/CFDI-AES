@@ -42,7 +42,7 @@ from satcfdi.create.cfd.cfdi40 import (
 import finkok_client
 import storage_client
 import redis_client
-from fiscal_catalogo import validate_regimen_fiscal, validate_uso_cfdi
+from shared.fiscal_validator import validate_regimen_fiscal, validate_uso_cfdi
 from database import BorradorFactura, BorradorFacturaEliminado, Factura, TicketVenta, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
@@ -498,9 +498,9 @@ async def construir_comprobante(factura: FacturaCreate, signer: Signer, x_negoci
         nombre_receptor = NOMBRE_PUBLICO_EN_GENERAL
         uso_cfdi_receptor = USO_CFDI_SIN_EFECTOS
 
-    # Validacion contra el catalogo real del SAT (fiscal_catalogo.py, copia
-    # intencional de whatsapp_bot/services/fiscal_validator.py - ver ese
-    # archivo para el porque de la copia) - corre DESPUES del override de
+    # Validacion contra el catalogo real del SAT (backend/shared/fiscal_validator.py,
+    # modulo compartido con whatsapp_bot desde zg5nT_8 - antes era una copia
+    # recortada local, fiscal_catalogo.py) - corre DESPUES del override de
     # arriba, sobre los valores YA normalizados: para Publico en General
     # siempre valida 616/S01 (que sabemos validos), nunca lo que mando el
     # caller original. Antes de construir el Comprobante/XML y de tocar

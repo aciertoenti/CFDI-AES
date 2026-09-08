@@ -39,3 +39,11 @@
 # Control de versiones
 **/.git/
 **/.gitignore
+
+# Artefactos de trabajo local que no deben entrar a ninguna imagen
+# (zg5nT_8: al migrar whatsapp_bot a context=./backend, su COPY selectivo
+# arrastraba bot.log/test.db/test_output.txt que antes tampoco deberian
+# haber estado en la imagen via "COPY . .").
+**/*.log
+**/*.db
+**/test_output.txt

@@ -20,7 +20,7 @@ from typing import Optional
 
 from core.logging import get_logger
 from models.schemas import EstadoConversacion
-from services.fiscal_validator import (
+from shared.fiscal_validator import (
     CATALOGO_REGIMEN_FISCAL,
     CATALOGO_USO_CFDI,
     validate_codigo_postal,

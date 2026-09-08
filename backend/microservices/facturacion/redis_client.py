@@ -5,8 +5,10 @@ de tickets (POST /facturas/tickets/{qr_token}/facturar, zg5b-ZE pieza 5,
 
 Mismo patron que auth_usuarios/redis_client.py (redis.asyncio, singleton de
 modulo, fail-closed si Redis no responde) - NO se importa aquel modulo
-directo: auth_usuarios y facturacion son builds Docker independientes con
-build-context distinto (misma razon documentada en fiscal_catalogo.py).
+directo: cada microservicio tiene su copia de este helper de Redis (no vale
+la pena moverlo a backend/shared/ por unas 30 lineas identicas; distinto
+caso al de fiscal_validator, que si se unifico en zg5nT_8 porque el
+catalogo del SAT es dato que hay que mantener sincronizado).
 Este servicio ya tiene REDIS_URL en el compose (redis://redis:6379/0) y
 depends_on: redis, solo faltaba el cliente.
 

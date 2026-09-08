@@ -226,7 +226,13 @@ services:
 
   # ── WhatsApp Bot ────────────────────────────────────────────────────────────
   whatsapp_bot:
-    build: ./backend/microservices/whatsapp_bot
+    # context ampliado a ./backend (zg5nT_8, 07 sep 2026) - ultimo servicio
+    # que faltaba migrar, mismo patron que administracion/auth_usuarios/
+    # facturacion/ia. Necesario para COPY backend/shared/ (fiscal_validator
+    # unificado). Ver su Dockerfile: COPY selectivo, NO todo el contexto.
+    build:
+      context: ./backend
+      dockerfile: microservices/whatsapp_bot/Dockerfile
     ports: ["8006:8006"]
     environment:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_BOT:-cfdi}:${POSTGRES_PASSWORD_BOT:-secret_bot}@postgres_bot/${POSTGRES_DB_BOT:-cfdi_bot}"

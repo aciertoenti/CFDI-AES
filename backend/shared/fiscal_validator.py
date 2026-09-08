@@ -1,3 +1,13 @@
+# Modulo compartido de validacion fiscal mexicana (catalogos c_RegimenFiscal /
+# c_UsoCFDI del SAT + validadores de RFC/CP/regimen/uso).
+#
+# Historial: hasta el 07 sep 2026 este archivo vivia en
+# backend/microservices/whatsapp_bot/services/fiscal_validator.py y facturacion
+# tenia una copia recortada (fiscal_catalogo.py). Unificado aqui (zg5nT_8):
+# lo consumen whatsapp_bot (services/state_machine.py, tests/test_validators.py)
+# y facturacion (main.py). Ambos builds usan context=./backend y hacen
+# COPY shared /app/shared, asi que el import es `from shared.fiscal_validator`.
+
 """
 Módulo de validación fiscal mexicana.
 - RFC: regex estructural + dígito verificador

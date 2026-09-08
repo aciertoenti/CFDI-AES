@@ -43,6 +43,7 @@ import finkok_client
 import storage_client
 import redis_client
 from shared.fiscal_validator import validate_regimen_fiscal, validate_uso_cfdi
+from shared.email_sender import enviar_correo
 from database import BorradorFactura, BorradorFacturaEliminado, Factura, TicketVenta, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
@@ -134,6 +135,11 @@ class ReceptorCFDI(BaseModel):
     uso_cfdi: str = "G03"
     regimen_fiscal: str = "601"
     domicilio_fiscal: str
+    # Solo para entrega: si viene, tras el timbrado exitoso se manda el CFDI
+    # (XML + PDF adjuntos) a este correo (zg3DyDM). NO va al comprobante
+    # fiscal - el SAT no tiene nodo de email del receptor. Opcional: el
+    # timbrado funciona igual sin el.
+    email: Optional[str] = None
 
 class FacturaCreate(BaseModel):
     emisor_rfc: str
@@ -718,6 +724,57 @@ async def _ejecutar_timbrado(
 
     xml_url = storage_client.subir_xml(resultado["uuid"], xml_timbrado_bytes)
     pdf_url = storage_client.subir_pdf(resultado["uuid"], pdf_generado)
+
+    # Entrega del CFDI por correo al receptor (zg3DyDM) - BEST-EFFORT, mismo
+    # criterio que la subida a MinIO de arriba: si falla, se loggea y NADA
+    # MAS. En este punto el timbrado YA esta hecho en Finkok (irreversible)
+    # y la Factura YA fue commiteada; un fallo de correo jamas debe tocar la
+    # respuesta 201. enviar_correo() nunca lanza; el try extra cubre solo el
+    # armado (lookup del nombre del emisor, base64) por defensa en profundidad.
+    if factura.receptor.email:
+        try:
+            emisor_nombre = (comprobante.get("Emisor") or {}).get("Nombre") or factura.emisor_rfc
+            total_fmt = f"${float(total):,.2f} MXN"
+            enviado = await enviar_correo(
+                destinatario=factura.receptor.email,
+                asunto=f"Tu factura de {emisor_nombre} — Folio {folio}",
+                cuerpo_texto=(
+                    f"Hola,\n\nAdjuntamos tu factura (CFDI) emitida por {emisor_nombre}.\n\n"
+                    f"Folio: {folio}\nUUID: {resultado['uuid']}\nTotal: {total_fmt}\n\n"
+                    "Se incluyen el XML (comprobante fiscal) y el PDF (representacion impresa).\n\n"
+                    "Este correo es automatico, no es necesario responderlo."
+                ),
+                cuerpo_html=(
+                    "<p>Hola,</p>"
+                    f"<p>Adjuntamos tu factura (CFDI) emitida por <strong>{emisor_nombre}</strong>.</p>"
+                    f"<ul><li>Folio: {folio}</li><li>UUID: {resultado['uuid']}</li>"
+                    f"<li>Total: {total_fmt}</li></ul>"
+                    "<p>Se incluyen el XML (comprobante fiscal) y el PDF (representaci&oacute;n impresa).</p>"
+                    "<p>Este correo es autom&aacute;tico, no es necesario responderlo.</p>"
+                ),
+                adjuntos=[
+                    {
+                        "filename": f"factura_{folio}.xml",
+                        "content_base64": base64.b64encode(xml_timbrado_bytes).decode("ascii"),
+                        "content_type": "application/xml",
+                    },
+                    {
+                        "filename": f"factura_{folio}.pdf",
+                        "content_base64": base64.b64encode(pdf_generado).decode("ascii"),
+                        "content_type": "application/pdf",
+                    },
+                ],
+            )
+            if not enviado:
+                logger.warning(
+                    "correo_factura.no_enviado uuid=%s folio=%s destinatario=%s",
+                    resultado["uuid"], folio, factura.receptor.email,
+                )
+        except Exception:
+            logger.error(
+                "correo_factura.error_inesperado uuid=%s folio=%s destinatario=%s",
+                resultado["uuid"], folio, factura.receptor.email, exc_info=True,
+            )
 
     return FacturaResponse(
         uuid=resultado["uuid"],

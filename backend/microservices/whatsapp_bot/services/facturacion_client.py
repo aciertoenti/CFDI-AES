@@ -88,6 +88,11 @@ def _build_request_payload(solicitud: SolicitudFacturaBot) -> dict:
             "uso_cfdi": solicitud.uso_cfdi,
             "regimen_fiscal": solicitud.regimen_fiscal,
             "domicilio_fiscal": solicitud.codigo_postal,
+            # El bot ya captura y valida el email en el estado CAPTURA_EMAIL
+            # (SolicitudFacturaBot.email es EmailStr requerido) - hasta hoy
+            # se descartaba aqui. Ahora viaja para que facturacion mande el
+            # CFDI por correo tras el timbrado (zg3DyDM).
+            "email": solicitud.email,
         },
         "conceptos": [
             {

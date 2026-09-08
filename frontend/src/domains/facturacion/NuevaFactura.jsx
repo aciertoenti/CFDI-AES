@@ -262,6 +262,10 @@ export default function NuevaFactura(){
         uso_cfdi: form.usoCfdi,
         domicilio_fiscal: form.domicilioFiscal,
         ...(form.regimenFiscal ? { regimen_fiscal: form.regimenFiscal } : {}),
+        // Solo para entrega por correo tras el timbrado (zg3DyDM). Opcional:
+        // el campo "Correo (opcional)" del form. Si esta vacio no se manda y
+        // el backend simplemente no envia correo.
+        ...(form.email ? { email: form.email } : {}),
       },
       conceptos: [{
         descripcion: form.concepto,

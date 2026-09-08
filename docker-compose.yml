@@ -109,6 +109,13 @@ services:
       # no define INTERNAL_API_KEY, cualquiera que lea este repo lo conoce.
       # Aqui se falla el arranque en vez de aceptar ese default en silencio.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
+      # Envio del CFDI por correo al receptor tras timbrado exitoso (zg3DyDM).
+      # Mismo SendGrid ya usado por auth (recuperacion de contrasena) via
+      # shared/email_sender.py - mismo patron fail-fast, sin default: si el
+      # .env real no las define, el servicio no arranca (no manda -o intenta
+      # mandar- correos con una clave vacia en silencio).
+      SENDGRID_API_KEY: "${SENDGRID_API_KEY:?SENDGRID_API_KEY no configurada}"
+      SENDGRID_FROM_EMAIL: "${SENDGRID_FROM_EMAIL:?SENDGRID_FROM_EMAIL no configurada}"
       # Base publica para el QR del ticket de venta (POS ligero, zg5b-ZE, 04
       # sep 2026) - config, no secreto, default seguro para dev (a diferencia
       # de INTERNAL_API_KEY arriba, que falla el arranque si falta).

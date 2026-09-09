@@ -24,7 +24,7 @@ from alembic import command
 from alembic.config import Config
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text, TypeDecorator, UniqueConstraint, func, inspect
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, SmallInteger, String, Text, TypeDecorator, UniqueConstraint, func, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -235,6 +235,24 @@ class Efirma(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        # UNICA e.firma en estado 'Activo' por rfc_titular (Paso 2 del plan
+        # zg55DWY). Indice unico PARCIAL: solo aplica a las filas 'Activo',
+        # asi el historial ('Reemplazada', 'Vencida', 'Destruida') puede
+        # tener varias filas del mismo RFC sin chocar. El flujo de renovacion
+        # debe marcar la anterior como 'Reemplazada' (y llenar
+        # reemplazada_por_id) ANTES de insertar la nueva 'Activo'.
+        # No confundir con ix_efirmas_rfc_titular (el index=True de la
+        # columna): ese es el lookup general, no-unico; este es la garantia
+        # de "una sola vigente".
+        Index(
+            "ix_efirmas_rfc_titular_activo_unico",
+            "rfc_titular",
+            unique=True,
+            postgresql_where=text("estado = 'Activo'"),
+        ),
     )
 
 

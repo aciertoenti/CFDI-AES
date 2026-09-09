@@ -204,6 +204,17 @@ class Efirma(Base):
     (Integer + index, sin FK: Negocio vive en esta misma BD pero se mantiene
     el mismo estilo de referencia suave que el resto de columnas *_id
     cross-concepto del proyecto).
+
+    consentimiento_at / consentimiento_por_rfc (Paso 3 del plan zg55DWY):
+    evidencia AUDITABLE del consentimiento expreso ESPECIFICO para el
+    tratamiento de este dato personal sensible, que la LFPDPPP exige recabar
+    en el momento de recibir el dato. NO se confunde con el aviso general de
+    la app (ModalPrivacidadPruebas en login/registro, commit d188098) - ese
+    es un aviso global, no consentimiento puntual para la e.firma. El
+    endpoint de subida exigira un flag explicito en el request y, al
+    aceptarlo, sella aqui el timestamp y el RFC personal (X-Usuario-Rfc) de
+    quien lo otorgo. Nullables porque las filas previas a esta feature (hoy
+    ninguna) no lo tendrian.
     """
     __tablename__ = "efirmas"
 
@@ -229,6 +240,11 @@ class Efirma(Base):
     # Marca de tiempo del borrado criptografico (procedimiento de destruccion,
     # Parte 2 del aviso de privacidad). Nullable: una e.firma viva no lo tiene.
     destruida_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Consentimiento expreso especifico para el tratamiento de la e.firma
+    # (LFPDPPP, dato sensible) - ver docstring de la clase. Se sella al aceptar
+    # el flag del request en el endpoint de subida.
+    consentimiento_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    consentimiento_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # Auditoria (mismo criterio que creado_por_rfc en emisores): RFC personal
     # de quien la subio. Nullable, no es control de seguridad.
     creado_por_rfc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)

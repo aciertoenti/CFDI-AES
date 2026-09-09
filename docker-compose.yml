@@ -139,6 +139,12 @@ services:
     environment:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_ADMIN:-cfdi}:${POSTGRES_PASSWORD_ADMIN:-secret_admin}@postgres_admin/${POSTGRES_DB_ADMIN:-cfdi_admin}"
       CSD_MASTER_KEY: "${CSD_MASTER_KEY}"
+      # Llave Fernet SEPARADA para cifrar la e.firma en reposo (zg55DWY) -
+      # mismo patron que CSD_MASTER_KEY (passthrough del .env, fail-fast por
+      # os.environ[...] en database.py). Distinta de CSD_MASTER_KEY a
+      # proposito: la e.firma tiene mayor blast radius legal. Generar con:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      EFIRMA_MASTER_KEY: "${EFIRMA_MASTER_KEY}"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
       # Invalidar el cache de CSD en facturacion al rotar un CSD (PUT
       # /admin/emisores/{rfc}) - sin depends_on a proposito: la llamada se

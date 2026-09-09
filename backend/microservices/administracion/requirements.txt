@@ -6,3 +6,7 @@ asyncpg==0.30.0
 alembic==1.18.5
 cryptography
 httpx
+# Cliente SOAP para la descarga masiva de CFDI del SAT (zg55DWY) - misma
+# libreria y mismo pin (ninguno) que ya usa facturacion/finkok_client.py,
+# para no divergir entre servicios.
+zeep

@@ -10,10 +10,12 @@
 import base64
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime, timezone
 from typing import Optional, List
 
 import httpx
+from cryptography.hazmat.primitives.serialization import load_der_private_key
+from cryptography.x509 import load_der_x509_certificate
 from fastapi import FastAPI, Header, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,7 +24,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Emisor, Cliente, Negocio, SerieFolio, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import Efirma, Emisor, Cliente, Negocio, SerieFolio, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import _fernet_efirma  # cifrado explicito de la e.firma (ver database.py)
 from csd_rfc import extraer_rfc_de_certificado
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
@@ -157,6 +160,28 @@ class EmisorCSDDescifrado(BaseModel):
     csd_cert_base64: str
     csd_key_base64: str
     csd_password: str
+
+class EfirmaCreate(BaseModel):
+    rfc_titular: str
+    cert_base64: str   # .cer DER en base64 (certificado PUBLICO)
+    key_base64: str    # .key DER en base64, SIN cifrar - se cifra en el endpoint
+    password: str      # contrasena de la e.firma, SIN cifrar - se cifra en el endpoint
+    # Consentimiento expreso ESPECIFICO para el tratamiento de la e.firma
+    # (LFPDPPP, dato sensible). Obligatorio == True; si no, 422 antes de
+    # tocar el archivo. Ver Efirma.consentimiento_at en database.py.
+    acepto_tratamiento_efirma: bool
+
+class EfirmaResponse(BaseModel):
+    # Deliberado: NUNCA se exponen cert_base64/key_base64_cifrado/password_cifrado
+    # en ninguna respuesta - el material sensible no sale del backend.
+    id: int
+    rfc_titular: str
+    negocio_id: int
+    vigencia_desde: date
+    vigencia_hasta: date
+    estado: str
+    consentimiento_at: Optional[datetime] = None
+    created_at: datetime
 
 class NegocioCreate(BaseModel):
     nombre: str
@@ -634,6 +659,177 @@ async def eliminar_emisor(
     await db.delete(existente)
     await db.commit()
     return {"rfc": rfc, "eliminado": True}
+
+
+# ─── e.firmas (FIEL) - custodia para descarga masiva SAT (zg55DWY) ─────────────
+
+def _efirma_to_response(e: Efirma) -> EfirmaResponse:
+    return EfirmaResponse(
+        id=e.id,
+        rfc_titular=e.rfc_titular,
+        negocio_id=e.negocio_id,
+        vigencia_desde=e.vigencia_desde,
+        vigencia_hasta=e.vigencia_hasta,
+        estado=e.estado,
+        consentimiento_at=e.consentimiento_at,
+        created_at=e.created_at,
+    )
+
+
+@app.post(
+    "/admin/efirmas",
+    response_model=EfirmaResponse,
+    status_code=201,
+    dependencies=[Depends(require_internal_key)],
+)
+async def crear_efirma(
+    payload: EfirmaCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+):
+    """
+    Sube y custodia la e.firma (FIEL) de un contribuyente para usarla en la
+    descarga masiva de CFDI ante el SAT (zg55DWY). Validado con abogado:
+    Responsable = el contribuyente (rfc_titular), Encargado = Acierto en TI.
+
+    Orden de validacion (de menor a mayor costo, gate legal primero) - toda
+    la validacion de la tripleta cert+key+password es LOCAL, sin una sola
+    llamada al SAT:
+      1. consentimiento expreso (bool)  -> 422
+      2. negocio_id del Gateway (fail-closed)
+      3. base64 decode de cert y key    -> 422
+      4. parse del cert + RFC embebido (csd_rfc, ya probado con esta FIEL) -> 422
+      5. RFC declarado == RFC del cert   -> 422
+      6. parse+descifrado de la key con la password (cryptography, NO
+         cfdiclient.Fiel: Fiel no valida el par cert<->key ni distingue
+         password-mala de key-ajena) + chequeo del par cert<->key -> 422
+      7. vigencia extraida del cert (not_valid_before/after)
+      8. rechazo si ya vencio            -> 422
+      9. unicidad: 1 sola e.firma 'Activo' por rfc_titular -> 409 (no se
+         auto-renueva; eso es un flujo/endpoint aparte, aun placeholder)
+     10. cifrado explicito de key y password con _fernet_efirma
+     11. INSERT + sello de consentimiento (at + por_rfc)
+     12. respuesta sin material sensible
+    """
+    # 1. Consentimiento - ANTES de tocar el archivo.
+    if not payload.acepto_tratamiento_efirma:
+        raise HTTPException(
+            status_code=422,
+            detail="Se requiere aceptar expresamente el tratamiento de la e.firma para poder custodiarla.",
+        )
+
+    # 2. negocio_id (fail-closed, mismo patron que crear_emisor).
+    negocio_id = requerir_negocio_id(x_negocio_id)
+
+    # 3. base64 decode.
+    try:
+        cert_bytes = base64.b64decode(payload.cert_base64)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"cert_base64 invalido: {e}")
+    try:
+        key_bytes = base64.b64decode(payload.key_base64)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"key_base64 invalido: {e}")
+
+    # 4. Parse del certificado + RFC embebido (reusa csd_rfc, ya probado
+    #    contra la FIEL real de persona fisica en el Paso 1 del plan).
+    try:
+        rfc_del_cert = extraer_rfc_de_certificado(cert_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Certificado invalido: {e}")
+
+    # 5. RFC declarado == RFC del certificado.
+    if payload.rfc_titular.upper() != rfc_del_cert:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"El RFC declarado ({payload.rfc_titular}) no coincide con el RFC "
+                f"del certificado ({rfc_del_cert})."
+            ),
+        )
+
+    # 6. Parse+descifrado de la llave con la password (LOCAL) + par cert<->key.
+    #    cryptography distingue los casos que cfdiclient.Fiel no:
+    #      - password ausente para key cifrada -> TypeError
+    #      - password incorrecta / key corrupta -> ValueError
+    #      - key valida que NO corresponde al cert -> se detecta comparando
+    #        public_numbers() (Fiel construye sin error en ese caso).
+    try:
+        priv = load_der_private_key(key_bytes, password=payload.password.encode())
+    except TypeError:
+        raise HTTPException(status_code=422, detail="La llave privada esta cifrada y requiere contrasena.")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Contrasena incorrecta o llave privada invalida.")
+
+    cert = load_der_x509_certificate(cert_bytes)
+    if cert.public_key().public_numbers() != priv.public_key().public_numbers():
+        raise HTTPException(
+            status_code=422,
+            detail="La llave privada no corresponde al certificado (par cert/key distinto).",
+        )
+
+    # 7. Vigencia: se EXTRAE del certificado, no la captura el usuario.
+    vigencia_desde = cert.not_valid_before_utc.date()
+    vigencia_hasta = cert.not_valid_after_utc.date()
+
+    # 8. Rechazo si ya vencio.
+    if vigencia_hasta < date.today():
+        raise HTTPException(
+            status_code=422,
+            detail=f"La e.firma vencio el {vigencia_hasta}; no puede custodiarse para descarga masiva.",
+        )
+
+    # 9. Unicidad: 1 sola e.firma 'Activo' por rfc_titular. Chequeo explicito
+    #    para dar un 409 con mensaje claro; el indice unico parcial
+    #    ix_efirmas_rfc_titular_activo_unico es el backstop ante una carrera.
+    existente = await db.scalar(
+        select(Efirma.id).where(
+            Efirma.rfc_titular == rfc_del_cert,
+            Efirma.estado == "Activo",
+        )
+    )
+    if existente is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Ya existe una e.firma activa para {rfc_del_cert}. "
+                "Para renovarla, usa el flujo de reemplazo de e.firma."
+            ),
+        )
+
+    # 10. Cifrado explicito (solo key y password; el cert es publico).
+    key_cifrada = _fernet_efirma.encrypt(payload.key_base64.encode()).decode()
+    pwd_cifrada = _fernet_efirma.encrypt(payload.password.encode()).decode()
+
+    # 11. INSERT + sello del consentimiento (at en UTC, naive para la columna
+    #     'timestamp without time zone', y el RFC personal de quien acepto).
+    nueva = Efirma(
+        rfc_titular=rfc_del_cert,
+        negocio_id=negocio_id,
+        cert_base64=payload.cert_base64,
+        key_base64_cifrado=key_cifrada,
+        password_cifrado=pwd_cifrada,
+        vigencia_desde=vigencia_desde,
+        vigencia_hasta=vigencia_hasta,
+        estado="Activo",
+        consentimiento_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        consentimiento_por_rfc=x_usuario_rfc,
+        creado_por_rfc=x_usuario_rfc,
+    )
+    db.add(nueva)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ya existe una e.firma activa para {rfc_del_cert}.",
+        )
+    await db.refresh(nueva)
+
+    # 12. Respuesta sin material sensible.
+    return _efirma_to_response(nueva)
 
 
 # ─── Clientes ──────────────────────────────────────────────────────────────────

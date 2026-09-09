@@ -37,13 +37,13 @@ function BadgeTicket({ estado }) {
   );
 }
 
-// Link al portal publico de autofacturacion de un ticket (zg6DPGc). Mismo
+// URL del portal publico de autofacturacion de un ticket (zg6DPGc). Mismo
 // formato de ruta que codifica el QR impreso del backend
 // (PUBLIC_APP_URL + "/facturas/tickets/{qr_token}", ver facturacion/main.py) -
 // y que el router publico del front tambien acepta (App.jsx: /factura/<tok> o
 // /facturas/tickets/<tok>). El host es window.location.origin: el operador
 // esta en el mismo dominio donde el SPA sirve el portal, asi que ese link
-// funciona tal cual al pegarlo (el front no puede -ni debe- leer la env
+// abre el portal tal cual (el front no puede -ni debe- leer la env
 // PUBLIC_APP_URL del backend).
 const linkPortalTicket = (qrToken) =>
   `${window.location.origin}/facturas/tickets/${qrToken}`;
@@ -67,20 +67,23 @@ export default function VentaDiaria() {
   const [estadoFiltro, setEstadoFiltro] = useState(null);
   const esHoy = fecha === hoyLocal();
 
-  // id del ticket cuyo link se acaba de copiar -> feedback "¡Copiado!" breve.
-  const [copiadoId, setCopiadoId] = useState(null);
-  const copiarLinkPortal = async (tk) => {
+  // id del ticket cuya apertura de portal fue bloqueada por el navegador
+  // (popup blocker) -> se muestra aviso + link visible de respaldo en esa fila.
+  const [bloqueadoId, setBloqueadoId] = useState(null);
+  const abrirPortalTicket = (tk) => {
     const url = linkPortalTicket(tk.qr_token);
-    try {
-      await navigator.clipboard.writeText(url);
-    } catch {
-      // clipboard bloqueado (http sin localhost, permiso denegado, browser
-      // viejo) -> el prompt deja copiar manual con Ctrl+C.
-      window.prompt("Copia este link y compártelo con el cliente:", url);
+    // window.open SIN pasar "noopener" en el string de features a proposito:
+    // si se pasa ahi, los navegadores devuelven null aunque la pestaña SI se
+    // haya abierto -> la deteccion de bloqueo daria falso positivo en cada
+    // clic. Se abre normal y se anula opener despues (mismo efecto de
+    // seguridad, y con referencia usable para detectar el bloqueo real).
+    const ventana = window.open(url, "_blank");
+    if (!ventana || ventana.closed || typeof ventana.closed === "undefined") {
+      setBloqueadoId(tk.id); // popup bloqueado - NO fallar en silencio
       return;
     }
-    setCopiadoId(tk.id);
-    setTimeout(() => setCopiadoId((cur) => (cur === tk.id ? null : cur)), 1600);
+    try { ventana.opener = null; } catch { /* mismo origen: siempre aplica */ }
+    setBloqueadoId((cur) => (cur === tk.id ? null : cur)); // se abrio: limpia aviso previo
   };
 
   const items = useMemo(() => {
@@ -173,20 +176,40 @@ export default function VentaDiaria() {
                   {!isMobile && (
                     <td style={{ ...TD, fontSize: 12, fontFamily: "monospace", color: C.textSec, whiteSpace: "nowrap" }}>{tk.numero_cliente || "—"}</td>
                   )}
-                  <td style={{ ...TD, textAlign: "center", whiteSpace: "nowrap" }}>
+                  <td style={{ ...TD, textAlign: "center" }}>
                     {tk.estado === "pendiente" ? (
-                      <button
-                        onClick={() => copiarLinkPortal(tk)}
-                        title="Copiar el link del portal de autofacturación para enviárselo al cliente"
-                        style={{
-                          fontSize: 11, padding: "4px 10px", borderRadius: 12, cursor: "pointer", whiteSpace: "nowrap",
-                          border: `1px solid ${copiadoId === tk.id ? C.accentBorder : C.border}`,
-                          background: copiadoId === tk.id ? C.accentSoft : "transparent",
-                          color: copiadoId === tk.id ? C.accentBorder : C.textSec,
-                        }}
-                      >
-                        {copiadoId === tk.id ? "¡Copiado!" : "🔗 Copiar link"}
-                      </button>
+                      <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                        <button
+                          onClick={() => abrirPortalTicket(tk)}
+                          title="Abrir el portal de autofacturación de este ticket en una pestaña nueva"
+                          style={{
+                            fontSize: 12, fontWeight: 600, borderRadius: 12, cursor: "pointer", whiteSpace: "nowrap",
+                            // Touch-friendly en mobile: 44px de alto minimo (no se reduce
+                            // al cambiar de "Copiar link" a "Facturar"). En desktop se
+                            // mantiene compacto como el resto de la columna.
+                            minHeight: isMobile ? 44 : 30,
+                            padding: isMobile ? "0 16px" : "5px 12px",
+                            border: `1px solid ${C.accentBorder}`, background: C.accentSoft, color: C.accentBorder,
+                          }}
+                        >
+                          🧾 Facturar
+                        </button>
+                        {bloqueadoId === tk.id && (
+                          <div style={{ fontSize: 10, color: C.warn, maxWidth: 190, whiteSpace: "normal", lineHeight: 1.35 }}>
+                            Tu navegador bloqueó la ventana — permite ventanas emergentes para
+                            este sitio, o{" "}
+                            <a
+                              href={linkPortalTicket(tk.qr_token)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ color: C.info, textDecoration: "underline", fontWeight: 600 }}
+                            >
+                              abre el portal aquí
+                            </a>
+                            .
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <span style={{ color: C.textMuted, fontSize: 12 }}>—</span>
                     )}

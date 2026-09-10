@@ -46,7 +46,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import Efirma, PaqueteDescarga, SolicitudDescarga, _fernet_efirma
-from sat_codigos import clasificar_cod_estatus, verificar_bloqueo_previo
+from sat_codigos import (
+    clasificar_cod_estatus,
+    es_sin_resultados,
+    verificar_bloqueo_previo,
+)
 
 logger = logging.getLogger("administracion.sat_descarga")
 
@@ -303,6 +307,7 @@ async def tick_verificar_solicitudes(db: AsyncSession) -> List[SolicitudDescarga
             )
             estado = int(resultado.get("estado_solicitud") or 0)
             cod_estatus = resultado.get("cod_estatus")
+            codigo_estado_solicitud = resultado.get("codigo_estado_solicitud")
             mensaje = resultado.get("mensaje")
 
             if estado == 0:
@@ -312,6 +317,11 @@ async def tick_verificar_solicitudes(db: AsyncSession) -> List[SolicitudDescarga
                     "sat_descarga.tick token_invalido_persistente solicitud=%s", fila.id
                 )
                 continue
+
+            # codigo_estado_solicitud se persiste SIEMPRE (no solo en el 5004):
+            # es el resultado real del procesamiento y hoy la unica pista
+            # confiable para distinguir un rechazo de un "sin resultados".
+            fila.codigo_estado_solicitud = codigo_estado_solicitud
 
             if estado in (1, 2):
                 fila.estado_solicitud = estado
@@ -338,10 +348,19 @@ async def tick_verificar_solicitudes(db: AsyncSession) -> List[SolicitudDescarga
                 terminadas.append(fila)
                 continue
 
-            # 4 Error · 5 Rechazada · 6 Vencida -> terminal.
+            # 4 Error · 5 Rechazada · 6 Vencida -> terminal. Se guarda el
+            # estado_solicitud CRUDO del SAT (no se reescribe: sigue siendo un
+            # espejo fiel del enum 1-6). La reinterpretacion de casos como
+            # "5 + CodigoEstadoSolicitud=5004 = consulta vacia, no rechazo"
+            # vive en sat_codigos.es_sin_resultados (capa de presentacion),
+            # mismo criterio que 5002 con es_bloqueo_permanente.
             fila.estado_solicitud = estado
             fila.cod_estatus = cod_estatus
             fila.mensaje_sat = mensaje
+            if es_sin_resultados(estado, codigo_estado_solicitud):
+                # Exito sin resultados: numero_cfdis explicito a 0 (no NULL),
+                # para que "consultado, 0 CFDI" no se confunda con "sin verificar".
+                fila.numero_cfdis = 0
             await db.commit()
 
         except Exception:  # noqa: BLE001 - una fila mala no debe tumbar el tick

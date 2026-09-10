@@ -224,6 +224,9 @@ class SolicitudDescargaResponse(BaseModel):
     # 1 Aceptada · 2 EnProceso · 3 Terminada · 4 Error · 5 Rechazada · 6 Vencida
     estado_solicitud: int
     cod_estatus: Optional[str] = None
+    # CodigoEstadoSolicitud del SAT (distinto de cod_estatus). Ej.: "5004"
+    # dentro de un estado_solicitud=5 = consulta vacia, NO un rechazo real.
+    codigo_estado_solicitud: Optional[str] = None
     mensaje_sat: Optional[str] = None
     numero_cfdis: Optional[int] = None
     created_at: datetime
@@ -1057,6 +1060,7 @@ def _solicitud_a_response(s: SolicitudDescarga) -> SolicitudDescargaResponse:
         id_solicitud_sat=s.id_solicitud_sat,
         estado_solicitud=s.estado_solicitud,
         cod_estatus=s.cod_estatus,
+        codigo_estado_solicitud=s.codigo_estado_solicitud,
         mensaje_sat=s.mensaje_sat,
         numero_cfdis=s.numero_cfdis,
         created_at=s.created_at,

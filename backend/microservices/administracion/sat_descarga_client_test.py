@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import sat_descarga_client as mod
 from database import AsyncSessionLocal, Efirma, PaqueteDescarga, SolicitudDescarga
+from sat_codigos import es_sin_resultados
 from sat_descarga_client import (
     BloqueoPrevioError,
     descargar_paquetes,
@@ -266,6 +267,60 @@ async def caso_5(db, efirma):
     check("solicitud NO en la lista de terminadas", fila.id in [t.id for t in terminadas], False)
 
 
+async def caso_6(db, efirma):
+    print("\n=== CASO 6: tick -> EstadoSolicitud=5 + CodigoEstadoSolicitud=5004 = SIN RESULTADOS (real Fase 2) ===")
+    _reset_mocks()
+    _FakeSolicita.mock.return_value = {
+        "id_solicitud": "66666666-6666-6666-6666-666666666666",
+        "cod_estatus": "5000", "mensaje": "Solicitud Aceptada",
+    }
+    fila = await solicitar_descarga(
+        fiel=object(), negocio_id=NEGOCIO_ID, efirma_id=efirma.id, rfc_titular=RFC,
+        tipo="emitidas", fecha_desde=date(2025, 6, 1), fecha_hasta=date(2025, 6, 1),
+        solicitado_por_rfc="TESTRFC", db=db,
+    )
+    # Respuesta EXACTA que devolvio el SAT real el 09 sep 2026 para la
+    # solicitud 94e68a70-...: estado 5, codigo 5004, 0 CFDIs, mensaje generico.
+    _FakeVerifica.mock.return_value = {
+        "cod_estatus": "5000", "estado_solicitud": "5", "codigo_estado_solicitud": "5004",
+        "numero_cfdis": "0", "mensaje": "Solicitud Aceptada", "paquetes": [],
+    }
+    terminadas = await tick_verificar_solicitudes(db)
+    await db.refresh(fila)
+    check("estado_solicitud CRUDO del SAT preservado (5)", fila.estado_solicitud, 5)
+    check("codigo_estado_solicitud persistido", fila.codigo_estado_solicitud, "5004")
+    check("numero_cfdis explicito a 0 (no NULL)", fila.numero_cfdis, 0)
+    check("es_sin_resultados(5, '5004') == True", es_sin_resultados(5, "5004"), True)
+    check("NO cuenta como terminada (no hay nada que descargar)",
+          fila.id in [t.id for t in terminadas], False)
+    n_paq = await db.scalar(
+        select(mod.PaqueteDescarga.id).where(mod.PaqueteDescarga.solicitud_id == fila.id)
+    )
+    check("sin paquetes", n_paq, None)
+
+    print("  -- sub-caso: estado 5 SIN 5004 = rechazo genuino, numero_cfdis NO se toca --")
+    _reset_mocks()
+    _FakeSolicita.mock.return_value = {
+        "id_solicitud": "66666666-6666-6666-6666-66666666aaaa",
+        "cod_estatus": "5000", "mensaje": "Solicitud Aceptada",
+    }
+    fila2 = await solicitar_descarga(
+        fiel=object(), negocio_id=NEGOCIO_ID, efirma_id=efirma.id, rfc_titular=RFC,
+        tipo="emitidas", fecha_desde=date(2025, 6, 2), fecha_hasta=date(2025, 6, 2),
+        solicitado_por_rfc="TESTRFC", db=db,
+    )
+    _FakeVerifica.mock.return_value = {
+        "cod_estatus": "5000", "estado_solicitud": "5", "codigo_estado_solicitud": "5999",
+        "numero_cfdis": None, "mensaje": "Solicitud Rechazada", "paquetes": [],
+    }
+    await tick_verificar_solicitudes(db)
+    await db.refresh(fila2)
+    check("rechazo genuino: estado 5", fila2.estado_solicitud, 5)
+    check("rechazo genuino: codigo_estado_solicitud persistido (5999)", fila2.codigo_estado_solicitud, "5999")
+    check("rechazo genuino: numero_cfdis sigue NULL (no es 'sin resultados')", fila2.numero_cfdis, None)
+    check("es_sin_resultados(5, '5999') == False", es_sin_resultados(5, "5999"), False)
+
+
 # ─── Runner ─────────────────────────────────────────────────────────────────
 async def main():
     # patch
@@ -295,6 +350,7 @@ async def main():
             await caso_3(db, efirma)
             await caso_4(db, efirma)
             await caso_5(db, efirma)
+            await caso_6(db, efirma)
         finally:
             await _limpiar(db)
             n_e = await db.scalar(select(Efirma.id).where(Efirma.rfc_titular == RFC, Efirma.negocio_id == NEGOCIO_ID))

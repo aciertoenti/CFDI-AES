@@ -93,6 +93,16 @@ NO_REINTENTAR = {"5001", "5002", "5003", "304", "305"}
 # comparando contra solicitudes pasadas.
 BLOQUEO_POR_PERIODO = {"5001", "5002", "5003"}
 
+# CodigoEstadoSolicitud que, dentro de un EstadoSolicitud=5, significa "la
+# consulta termino bien pero NO hay CFDI en el rango" - NO es un rechazo.
+# Descubierto en la corrida REAL de Fase 2 (09 sep 2026, RAHP7112093H0,
+# solicitud 94e68a70-...): el SAT NO usa EstadoSolicitud=3+NumeroCFDIs=0
+# para "vacio" (lo asumido en Fase 1), usa EstadoSolicitud=5 +
+# CodigoEstadoSolicitud=5004. Mismo criterio de diseno que 5002: el dato
+# crudo (estado_solicitud) se guarda tal cual vino del SAT; la
+# interpretacion "esto no es un error" vive aqui, en la capa que clasifica.
+SIN_RESULTADOS = {"5004"}
+
 # Default fail-safe para un CodEstatus no mapeado: desconocido y NO
 # reintentable, hasta que alguien lo investigue y lo agregue a CODIGOS_SAT.
 _DEFAULT_DESCONOCIDO = {
@@ -121,6 +131,21 @@ def es_bloqueo_permanente(cod_estatus: str) -> bool:
     reintentos - el caller debe tratarlo como terminal y NO volver a
     solicitar ese mismo periodo."""
     return (cod_estatus or "").strip() in NO_REINTENTAR
+
+
+def es_sin_resultados(estado_solicitud, codigo_estado_solicitud) -> bool:
+    """True si (estado_solicitud, codigo_estado_solicitud) del SAT
+    representan "consulta exitosa pero SIN CFDI en el rango", no un rechazo.
+
+    Es un EstadoSolicitud=5 con CodigoEstadoSolicitud en SIN_RESULTADOS
+    ("5004"). La capa de presentacion debe mostrarlo como "no hay CFDI en
+    ese periodo", NO como error/rechazo. El estado_solicitud crudo (5) se
+    conserva tal cual lo devolvio el SAT; esta funcion es la que lo
+    reinterpreta, igual que es_bloqueo_permanente() hace con el 5002."""
+    return (
+        str(estado_solicitud).strip() == "5"
+        and (codigo_estado_solicitud or "").strip() in SIN_RESULTADOS
+    )
 
 
 async def verificar_bloqueo_previo(

@@ -152,7 +152,10 @@ class TestCapturaEmail:
 
 
 class TestCapturaTicket:
-    def test_ticket_valido_muestra_confirmacion(self):
+    def test_ticket_valido_pide_monto(self):
+        # Flujo actual (desde 4f0bfba, 01 sep): tras un ticket valido NO se
+        # va directo a CONFIRMACION - primero se captura el total real en
+        # CAPTURA_MONTO (antes el subtotal iba hardcodeado a 1.0).
         ctx = _ctx(
             EstadoConversacion.CAPTURA_TICKET,
             rfc="DNS010101AAA",
@@ -163,9 +166,51 @@ class TestCapturaTicket:
             email="test@test.mx",
         )
         r = sm.process(ctx, "TKT-12345")
+        assert r.nuevo_estado == EstadoConversacion.CAPTURA_MONTO
+        assert "total" in r.respuesta.lower()
+        assert r.datos_actualizados.ticket_id == "TKT-12345"
+
+
+class TestCapturaMonto:
+    def _ctx_monto(self) -> SessionContext:
+        return _ctx(
+            EstadoConversacion.CAPTURA_MONTO,
+            rfc="DNS010101AAA",
+            razon_social="Mi Empresa SA de CV",
+            codigo_postal="06600",
+            regimen_fiscal="601",
+            uso_cfdi="G03",
+            email="test@test.mx",
+            ticket_id="TKT-12345",
+        )
+
+    def test_monto_valido_va_a_confirmacion(self):
+        ctx = self._ctx_monto()
+        r = sm.process(ctx, "348.00")
         assert r.nuevo_estado == EstadoConversacion.CONFIRMACION
         assert "Resumen de tu factura" in r.respuesta
-        assert "DNS010101AAA" in r.respuesta
+        assert "Total: $348.00 MXN" in r.respuesta
+        assert r.datos_actualizados.monto == "348.00"
+        # subtotal derivado = monto / 1.16 (IVA fijo 16% v1)
+        assert r.datos_actualizados.subtotal == "300.00"
+
+    def test_monto_no_numerico_repregunta(self):
+        ctx = self._ctx_monto()
+        r = sm.process(ctx, "no es un numero")
+        assert r.nuevo_estado == EstadoConversacion.CAPTURA_MONTO
+        assert "No entendí el monto" in r.respuesta
+
+    def test_monto_negativo_repregunta(self):
+        ctx = self._ctx_monto()
+        r = sm.process(ctx, "-5")
+        assert r.nuevo_estado == EstadoConversacion.CAPTURA_MONTO
+        assert "mayor a 0" in r.respuesta
+
+    def test_monto_excede_maximo_repregunta(self):
+        ctx = self._ctx_monto()
+        r = sm.process(ctx, "1000000")
+        assert r.nuevo_estado == EstadoConversacion.CAPTURA_MONTO
+        assert "mayor a 0" in r.respuesta
 
 
 class TestConfirmacion:

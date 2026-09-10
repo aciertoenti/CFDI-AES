@@ -58,7 +58,10 @@ jobs:
       - name: Lint (ruff)
         working-directory: ${{ env.WORKDIR }}
         run: |
-          pip install ruff
+          # Pin exacto: sin pin, CI tomaba 0.16.6 y local 0.16.7 sin que
+          # nadie lo notara (ver ci_diagnostico_whatsapp_bot.txt). La config
+          # de reglas y exclusiones vive en whatsapp_bot/ruff.toml.
+          pip install ruff==0.16.6
           ruff check . --select E,W,F --ignore E501
 
       - name: Type check (mypy)

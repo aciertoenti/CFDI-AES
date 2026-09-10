@@ -1,0 +1,22 @@
+# Config de ruff para el microservicio whatsapp_bot.
+#
+# Motivo (CI rojo desde 2026-09-02, ver ci_diagnostico_whatsapp_bot.txt): el
+# step "Lint (ruff)" corre `ruff check .` sobre TODO el arbol, incluyendo
+# alembic/versions/. Las migraciones las genera `alembic revision
+# --autogenerate` con una plantilla fija (`from alembic import op` +
+# `import sqlalchemy as sa`) aunque el cuerpo no use `sa` -> F401 garantizado
+# en cualquier migracion hecha a mano/por enum. No tiene sentido lintar
+# codigo generado; se excluye la carpeta de versiones.
+#
+# El resto de alembic/ (env.py, script.py.mako) SI se linta - ahi si es
+# codigo propio.
+
+extend-exclude = ["alembic/versions"]
+
+[lint]
+# Mismo criterio que el workflow (.github/workflows/whatsapp-bot.yml):
+#   ruff check . --select E,W,F --ignore E501
+# Se replica aqui para que un `ruff check .` local sin flags de por el mismo
+# resultado que CI.
+select = ["E", "W", "F"]
+ignore = ["E501"]

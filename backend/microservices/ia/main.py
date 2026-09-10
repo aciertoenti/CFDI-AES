@@ -46,6 +46,29 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Reintento unico para el caso "Claude respondio sin texto utilizable" (ver
+# call_claude / stream_claude). 1 llamada original + 1 reintento.
+_MAX_INTENTOS_CLAUDE = 2
+
+
+class ClaudeRespuestaVaciaError(Exception):
+    """Claude devolvio una respuesta sin NINGUN bloque de texto utilizable
+    (texto concatenado vacio) - tipicamente solo un bloque 'thinking' con
+    stop_reason='max_tokens'. Ya se reintento una vez sin exito. Lleva el
+    stop_reason y el nombre del call site que la origino para diagnostico;
+    NO es un 502 generico sin contexto.
+    """
+
+    def __init__(self, call_site: str, stop_reason=None, tipos_bloque=None):
+        self.call_site = call_site
+        self.stop_reason = stop_reason
+        self.tipos_bloque = tipos_bloque or []
+        super().__init__(
+            f"Claude no devolvio texto utilizable (call_site={call_site}, "
+            f"stop_reason={stop_reason}, bloques={self.tipos_bloque})"
+        )
+
+
 app = FastAPI(title="CFDI-AES – Microservicio IA", version="1.0.0")
 
 app.add_middleware(
@@ -88,6 +111,24 @@ async def anthropic_error_handler(request: Request, exc: httpx.HTTPStatusError):
         content={"detail": f"Error de Anthropic: {exc.response.status_code} {exc.response.reason_phrase}"},
     )
 
+
+@app.exception_handler(ClaudeRespuestaVaciaError)
+async def claude_respuesta_vacia_handler(request: Request, exc: ClaudeRespuestaVaciaError):
+    """Red de seguridad, misma razon que anthropic_error_handler: sin esto la
+    excepcion sube a ServerErrorMiddleware (fuera de CORS) -> el navegador la
+    ve como ERR_FAILED. Los endpoints que parsean JSON ademas la capturan
+    explicitamente para un mensaje mas especifico; este handler cubre el
+    resto (ej. /ia/chat)."""
+    logger.error(
+        "claude_respuesta_vacia call_site=%s stop_reason=%s bloques=%s",
+        exc.call_site, exc.stop_reason, exc.tipos_bloque,
+    )
+    return JSONResponse(
+        status_code=502,
+        content={"detail": "El modelo no genero una respuesta utilizable. Intenta de nuevo."},
+    )
+
+
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL      = "claude-sonnet-5"
@@ -101,60 +142,111 @@ def anthropic_headers() -> dict:
         "content-type": "application/json",
     }
 
-async def call_claude(messages: list, system: str, max_tokens: int = 1024) -> str:
+def _payload_claude(messages: list, system: str, max_tokens: int, stream: bool = False) -> dict:
+    # `thinking` NO se envia deliberadamente. Los prompts de este servicio
+    # piden respuestas cortas / JSON estricto; con extended thinking activado
+    # el presupuesto de max_tokens se gastaria en tokens de razonamiento y la
+    # respuesta podria quedar sin ningun bloque de texto (stop_reason=
+    # max_tokens) - justo el fallo que este modulo maneja abajo. Omitir la
+    # clave es el default documentado del Messages API (thinking desactivado).
+    # No se pasa {"type": "disabled"} explicito porque no se pudo verificar
+    # que ese valor sea aceptado con anthropic-version=2023-06-01 para este
+    # modelo; ante la duda, no se agrega (ver investigacion zg4pAxA).
     payload = {
         "model": CLAUDE_MODEL,
         "max_tokens": max_tokens,
         "system": system,
         "messages": messages,
     }
+    if stream:
+        payload["stream"] = True
+    return payload
+
+
+async def _post_claude(payload: dict) -> dict:
+    """Una sola llamada no-stream al Messages API. Factorizada para poder
+    reintentarla y para poder mockearla en tests sin tocar la API real."""
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(ANTHROPIC_API_URL, headers=anthropic_headers(), json=payload)
         resp.raise_for_status()
-        data = resp.json()
+        return resp.json()
 
-        content = data.get("content", [])
-        for bloque in content:
-            if bloque.get("type") == "text":
-                return bloque["text"]
 
-        # Ningún bloque de tipo text encontrado - loguear el payload completo
-        # para diagnosticar (stop_reason, tipos de bloque presentes, etc.)
-        logger.error(
-            "call_claude.sin_bloque_texto stop_reason=%s tipos_bloque=%s data_completo=%s",
-            data.get("stop_reason"),
-            [b.get("type") for b in content],
-            str(data)[:1000],
-        )
-        raise HTTPException(
-            status_code=502,
-            detail="Claude no devolvió contenido de texto en la respuesta",
-        )
+def _extraer_texto(data: dict) -> str:
+    """Concatena el texto de TODOS los bloques type=='text' del content.
+    Devuelve '' si no hay bloques de texto o si el texto resultante es vacio
+    (ej. solo un bloque 'thinking')."""
+    partes = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
+    return "".join(partes).strip()
 
-async def stream_claude(messages: list, system: str, max_tokens: int = 1024) -> AsyncGenerator[str, None]:
-    payload = {
-        "model": CLAUDE_MODEL,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": messages,
-        "stream": True,
-    }
+
+async def _stream_eventos_claude(payload: dict) -> AsyncGenerator[dict, None]:
+    """Un solo intento de stream SSE. Yield-ea cada evento JSON ya parseado.
+    Factorizado igual que _post_claude: reintentable y mockeable en tests."""
     async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream("POST", ANTHROPIC_API_URL, headers=anthropic_headers(), json=payload) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    chunk = line[6:]
-                    if chunk == "[DONE]":
-                        break
-                    try:
-                        event = json.loads(chunk)
-                        if event.get("type") == "content_block_delta":
-                            delta = event.get("delta", {})
-                            if delta.get("type") == "text_delta":
-                                yield delta.get("text", "")
-                    except json.JSONDecodeError:
-                        continue
+                if not line.startswith("data: "):
+                    continue
+                chunk = line[6:]
+                if chunk == "[DONE]":
+                    break
+                try:
+                    yield json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+
+
+async def call_claude(
+    messages: list, system: str, max_tokens: int = 1024, *, call_site: str = "desconocido"
+) -> str:
+    """Llama al Messages API y devuelve el texto. Si la respuesta no trae
+    texto utilizable, REINTENTA una vez con los mismos parametros; si el
+    reintento tampoco trae texto, lanza ClaudeRespuestaVaciaError con el
+    stop_reason y el call_site (nunca un 502 generico sin contexto)."""
+    payload = _payload_claude(messages, system, max_tokens)
+    for intento in range(1, _MAX_INTENTOS_CLAUDE + 1):
+        data = await _post_claude(payload)
+        texto = _extraer_texto(data)
+        if texto:
+            return texto
+        stop_reason = data.get("stop_reason")
+        tipos = [b.get("type") for b in data.get("content", [])]
+        logger.error(
+            "call_claude.sin_texto call_site=%s intento=%s/%s stop_reason=%s tipos_bloque=%s data=%s",
+            call_site, intento, _MAX_INTENTOS_CLAUDE, stop_reason, tipos, str(data)[:1000],
+        )
+        if intento >= _MAX_INTENTOS_CLAUDE:
+            raise ClaudeRespuestaVaciaError(
+                call_site=call_site, stop_reason=stop_reason, tipos_bloque=tipos
+            )
+    raise ClaudeRespuestaVaciaError(call_site=call_site)  # inalcanzable, para el type checker
+
+
+async def stream_claude(
+    messages: list, system: str, max_tokens: int = 1024, *, call_site: str = "desconocido"
+) -> AsyncGenerator[str, None]:
+    """Stream de texto del Messages API. Trackea si se emitio al menos un
+    text_delta. Si un intento termina sin ninguno, REINTENTA una vez; si el
+    reintento tampoco emite texto, lanza ClaudeRespuestaVaciaError (el caller
+    lo traduce a un evento SSE de error) en vez de dejar el stream mudo."""
+    payload = _payload_claude(messages, system, max_tokens, stream=True)
+    for intento in range(1, _MAX_INTENTOS_CLAUDE + 1):
+        emitio_texto = False
+        async for event in _stream_eventos_claude(payload):
+            if event.get("type") == "content_block_delta":
+                delta = event.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    emitio_texto = True
+                    yield delta.get("text", "")
+        if emitio_texto:
+            return
+        logger.error(
+            "stream_claude.sin_texto call_site=%s intento=%s/%s",
+            call_site, intento, _MAX_INTENTOS_CLAUDE,
+        )
+    raise ClaudeRespuestaVaciaError(call_site=call_site, stop_reason="stream_sin_text_delta")
 
 
 def _limpiar_json_response(raw: str) -> str:
@@ -268,7 +360,15 @@ async def extraer_documento(file: UploadFile = File(...), _: str = Depends(requi
         }
     ]
 
-    raw = await call_claude(messages, PDF_EXTRACTION_SYSTEM, max_tokens=2000)
+    try:
+        raw = await call_claude(
+            messages, PDF_EXTRACTION_SYSTEM, max_tokens=2000, call_site="extraer_documento"
+        )
+    except ClaudeRespuestaVaciaError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"El modelo no generó una respuesta utilizable (stop_reason={e.stop_reason}). Intenta de nuevo.",
+        )
 
     try:
         data = json.loads(_limpiar_json_response(raw))
@@ -348,7 +448,15 @@ async def identificar_proveedor(file: UploadFile = File(...), _: str = Depends(r
         }
     ]
 
-    raw = await call_claude(messages, PROVEEDOR_IDENTIFICACION_SYSTEM, max_tokens=2000)
+    try:
+        raw = await call_claude(
+            messages, PROVEEDOR_IDENTIFICACION_SYSTEM, max_tokens=2000, call_site="identificar_proveedor"
+        )
+    except ClaudeRespuestaVaciaError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"El modelo no generó una respuesta utilizable (stop_reason={e.stop_reason}). Intenta de nuevo.",
+        )
 
     try:
         data = json.loads(_limpiar_json_response(raw))
@@ -427,7 +535,11 @@ async def chat_fiscal(req: ChatRequest, _: str = Depends(require_internal_key)):
     system = _construir_system_prompt(req)
 
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
-    respuesta = await call_claude(messages, system, max_tokens=800)
+    # ClaudeRespuestaVaciaError (respuesta sin texto tras el reintento) NO se
+    # captura aqui a proposito: no hay json.loads que proteger y el
+    # exception_handler global (claude_respuesta_vacia_handler) ya responde un
+    # 502 claro con headers CORS correctos.
+    respuesta = await call_claude(messages, system, max_tokens=800, call_site="chat_fiscal")
 
     # Extraer acciones sugeridas (líneas que empiezan con "→" o "•")
     acciones = [
@@ -451,8 +563,17 @@ async def chat_fiscal_stream(req: ChatRequest, _: str = Depends(require_internal
 
     async def event_generator():
         try:
-            async for token in stream_claude(messages, system, max_tokens=800):
+            async for token in stream_claude(
+                messages, system, max_tokens=800, call_site="chat_fiscal_stream"
+            ):
                 yield f"data: {json.dumps({'token': token})}\n\n"
+        except ClaudeRespuestaVaciaError:
+            # Ambos intentos del stream terminaron sin un solo text_delta.
+            # Mismo criterio que el except de abajo: no se puede dejar subir la
+            # excepcion (la respuesta ya inicio); se emite un evento de error
+            # explicito para que el cliente sepa que paso, en vez de un stream
+            # mudo que cierra con [DONE] sin haber dicho nada.
+            yield f"data: {json.dumps({'error': 'no se pudo generar respuesta, intenta de nuevo'})}\n\n"
         except httpx.HTTPStatusError as e:
             # A diferencia de los endpoints no-streaming, aqui NO se puede
             # dejar que la excepcion suba hasta el exception_handler global
@@ -524,7 +645,15 @@ async def detectar_anomalias(req: AnomalyRequest, _: str = Depends(require_inter
     messages = [
         {"role": "user", "content": f"Analiza estas facturas y pagos y detecta anomalías:\n\n{data_str}"}
     ]
-    raw = await call_claude(messages, ANOMALY_SYSTEM, max_tokens=2000)
+    try:
+        raw = await call_claude(
+            messages, ANOMALY_SYSTEM, max_tokens=2000, call_site="detectar_anomalias"
+        )
+    except ClaudeRespuestaVaciaError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"El modelo no generó una respuesta utilizable (stop_reason={e.stop_reason}). Intenta de nuevo.",
+        )
 
     try:
         # Limpiar posibles backticks de markdown
@@ -584,7 +713,15 @@ async def conciliar_banco(req: ConciliationRequest, _: str = Depends(require_int
     messages = [
         {"role": "user", "content": f"Concilia estas facturas con los depósitos bancarios:\n\n{data_str}"}
     ]
-    raw = await call_claude(messages, CONCILIATION_SYSTEM, max_tokens=3000)
+    try:
+        raw = await call_claude(
+            messages, CONCILIATION_SYSTEM, max_tokens=3000, call_site="conciliar_banco"
+        )
+    except ClaudeRespuestaVaciaError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"El modelo no generó una respuesta utilizable (stop_reason={e.stop_reason}). Intenta de nuevo.",
+        )
 
     try:
         clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -628,7 +765,15 @@ async def generar_resumen(req: SummaryRequest, _: str = Depends(require_internal
     messages = [
         {"role": "user", "content": f"Genera el resumen ejecutivo para estos datos:\n\n{data_str}"}
     ]
-    raw = await call_claude(messages, SUMMARY_SYSTEM, max_tokens=1500)
+    try:
+        raw = await call_claude(
+            messages, SUMMARY_SYSTEM, max_tokens=1500, call_site="generar_resumen"
+        )
+    except ClaudeRespuestaVaciaError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"El modelo no generó una respuesta utilizable (stop_reason={e.stop_reason}). Intenta de nuevo.",
+        )
 
     try:
         clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()

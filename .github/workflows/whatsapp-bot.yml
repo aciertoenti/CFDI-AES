@@ -18,6 +18,16 @@ jobs:
     name: Lint + Tests
     runs-on: ubuntu-latest
 
+    # El refactor de fiscal_validator a backend/shared/ (21336ca, 07 sep)
+    # dejo a state_machine.py y test_validators.py importando `shared.*`. El
+    # Dockerfile lo resuelve con `COPY shared /app/shared`, pero CI corre
+    # pytest directo sobre el checkout (working-directory = whatsapp_bot/),
+    # sin ese mecanismo. Poner el backend/ del repo en PYTHONPATH hace
+    # `shared` importable igual, sin exponer services/ ni models/ (esos ya
+    # los resuelve pytest por working-directory).
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
+
     services:
       redis:
         image: redis:7-alpine

@@ -304,6 +304,20 @@ class SolicitudDescarga(Base):
     # 6 Vencida (0 = token invalido). Arranca en 1 al crear la fila local.
     estado_solicitud: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     cod_estatus: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+    # Campo DISTINTO de cod_estatus: cod_estatus es el resultado del sobre
+    # SOAP en si (ej. "5000" = solicitud recibida OK); codigo_estado_solicitud
+    # es el resultado REAL del procesamiento una vez que
+    # VerificaSolicitudDescarga responde (ej. "5004" = sin CFDI en el rango,
+    # dentro de un EstadoSolicitud=5). Confirmado con una llamada REAL al SAT
+    # (09 sep 2026, RAHP7112093H0, solicitud
+    # 94e68a70-b3ea-4b74-8278-3f9047030105): un "exito sin resultados" NO
+    # llega como EstadoSolicitud=3+NumeroCFDIs=0 (lo que se habia asumido en
+    # Fase 1), llega como EstadoSolicitud=5 + CodigoEstadoSolicitud=5004 - sin
+    # esta columna, esa distincion se pierde y una consulta vacia se ve
+    # identica a un rechazo real. La interpretacion "5+5004 = sin resultados,
+    # no es error" vive en la capa de presentacion (sat_codigos.es_sin_resultados),
+    # no se altera el estado_solicitud crudo del SAT.
+    codigo_estado_solicitud: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
     # Texto libre 'Mensaje' que devuelve el SAT junto al cod_estatus (p. ej.
     # "Solicitud Aceptada", o la redaccion exacta de un 5002). Se guarda
     # verbatim para mostrarselo al usuario sin hard-codear la redaccion; el

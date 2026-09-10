@@ -6,7 +6,12 @@ asyncpg==0.30.0
 alembic==1.18.5
 cryptography
 httpx
-# Cliente SOAP para la descarga masiva de CFDI del SAT (zg55DWY) - misma
-# libreria y mismo pin (ninguno) que ya usa facturacion/finkok_client.py,
-# para no divergir entre servicios.
-zeep
+# Cliente del ciclo de Descarga Masiva de CFDI del SAT (zg55DWY):
+# Solicita -> Verifica -> Descarga. Pin exacto (la API de retorno de
+# cada metodo se confirmo contra esta version). Arrastra requests, lxml,
+# pycryptodome, pyOpenSSL y sube cryptography a >=46 (APIs usadas por el
+# codigo de e.firma son estables en esa version).
+cfdiclient==1.6.3
+# Subida de los .zip de la descarga masiva a MinIO (bucket cfdi-descargas-sat),
+# mismo patron que facturacion/storage_client.py.
+minio

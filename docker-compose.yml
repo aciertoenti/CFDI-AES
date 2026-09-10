@@ -151,7 +151,15 @@ services:
       # tolera si facturacion esta caido (ver actualizar_emisor), no debe
       # bloquear el arranque de administracion.
       FACTURACION_URL: "http://facturacion:8001"
-    depends_on: [postgres_admin]
+      # Descarga masiva SAT (zg55DWY): los .zip que devuelve el SAT se suben
+      # a MinIO (bucket cfdi-descargas-sat), mismo cliente interno de red
+      # Docker que ya usa facturacion. Solo subida - no se exponen con URL
+      # publica (son datos fiscales; se sirven despues por endpoint autenticado).
+      MINIO_URL: "http://minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-minio_admin}"
+      MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-minio_secret}"
+      MINIO_BUCKET_DESCARGAS: "${MINIO_BUCKET_DESCARGAS:-cfdi-descargas-sat}"
+    depends_on: [postgres_admin, minio]
     command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 
   addenda_aes:

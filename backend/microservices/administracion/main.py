@@ -25,9 +25,16 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Efirma, Emisor, Cliente, Negocio, SerieFolio, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import Efirma, Emisor, Cliente, Negocio, SerieFolio, SolicitudDescarga, PaqueteDescarga, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from database import _fernet_efirma  # cifrado explicito de la e.firma (ver database.py)
 from csd_rfc import extraer_rfc_de_certificado
+from sat_descarga_client import (
+    BloqueoPrevioError,
+    construir_fiel,
+    descargar_paquetes,
+    solicitar_descarga,
+    tick_verificar_solicitudes,
+)
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 
@@ -196,6 +203,30 @@ class EfirmaReemplazar(BaseModel):
     key_base64: str    # .key DER en base64, SIN cifrar - se cifra en el endpoint
     password: str      # contrasena de la e.firma nueva, SIN cifrar - se cifra en el endpoint
     acepto_tratamiento_efirma: bool
+
+class SolicitudDescargaCreate(BaseModel):
+    # tipo: 'emitidas' | 'recibidas'. 'ambas' (dos solicitudes al SAT) queda
+    # fuera de Fase 1 - se rechaza con 422 (ver crear_solicitud_descarga).
+    tipo: str
+    fecha_desde: date
+    fecha_hasta: date
+
+class SolicitudDescargaResponse(BaseModel):
+    # Nunca expone material de la e.firma. Refleja la fila local; el token
+    # del SAT no se persiste ni se devuelve.
+    id: int
+    efirma_id: int
+    negocio_id: int
+    tipo: str
+    fecha_desde: date
+    fecha_hasta: date
+    id_solicitud_sat: Optional[str] = None
+    # 1 Aceptada · 2 EnProceso · 3 Terminada · 4 Error · 5 Rechazada · 6 Vencida
+    estado_solicitud: int
+    cod_estatus: Optional[str] = None
+    mensaje_sat: Optional[str] = None
+    numero_cfdis: Optional[int] = None
+    created_at: datetime
 
 class NegocioCreate(BaseModel):
     nombre: str
@@ -1011,6 +1042,178 @@ async def reemplazar_efirma(
 
     # 11. Respuesta sin material sensible (mismo shape que el alta).
     return _efirma_to_response(nueva)
+
+
+# ─── Descarga masiva SAT: solicitudes + tick (zg55DWY) ────────────────────────
+
+def _solicitud_a_response(s: SolicitudDescarga) -> SolicitudDescargaResponse:
+    return SolicitudDescargaResponse(
+        id=s.id,
+        efirma_id=s.efirma_id,
+        negocio_id=s.negocio_id,
+        tipo=s.tipo,
+        fecha_desde=s.fecha_desde,
+        fecha_hasta=s.fecha_hasta,
+        id_solicitud_sat=s.id_solicitud_sat,
+        estado_solicitud=s.estado_solicitud,
+        cod_estatus=s.cod_estatus,
+        mensaje_sat=s.mensaje_sat,
+        numero_cfdis=s.numero_cfdis,
+        created_at=s.created_at,
+    )
+
+
+@app.post(
+    "/admin/efirmas/{rfc_titular}/solicitudes-descarga",
+    response_model=SolicitudDescargaResponse,
+    status_code=201,
+    dependencies=[Depends(require_internal_key)],
+)
+async def crear_solicitud_descarga(
+    rfc_titular: str,
+    payload: SolicitudDescargaCreate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+):
+    """
+    Dispara una solicitud de descarga masiva de CFDI ante el SAT para la
+    e.firma Activa de `rfc_titular` (zg55DWY).
+
+      - Requiere la e.firma en estado 'Activo' para ese RFC + negocio -> 404.
+      - Descifra key/password SOLO en memoria para armar el Fiel; nada de eso
+        se loguea ni sale en la respuesta.
+      - Guarda de pre-vuelo: si ya hay una solicitud 5001/5002/5003 con los
+        MISMOS (efirma_id, tipo, fecha_desde, fecha_hasta) -> 409 con el
+        mensaje_sat verbatim y la fecha del intento previo, SIN llamar al SAT
+        (no gasta un intento contra el limite "de por vida").
+      - El estado real del ciclo (Verifica/Descarga) lo avanza el tick.
+    """
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    rfc_titular = rfc_titular.upper().strip()
+    tipo = payload.tipo.lower().strip()
+
+    if tipo == "ambas":
+        raise HTTPException(
+            status_code=422,
+            detail="tipo 'ambas' aun no soportado; envia una solicitud 'emitidas' y otra 'recibidas'.",
+        )
+    if tipo not in ("emitidas", "recibidas"):
+        raise HTTPException(
+            status_code=422,
+            detail="tipo invalido; usa 'emitidas' o 'recibidas'.",
+        )
+    if payload.fecha_desde > payload.fecha_hasta:
+        raise HTTPException(
+            status_code=422,
+            detail="fecha_desde no puede ser posterior a fecha_hasta.",
+        )
+
+    efirma = await db.scalar(
+        select(Efirma).where(
+            Efirma.rfc_titular == rfc_titular,
+            Efirma.negocio_id == negocio_id,
+            Efirma.estado == "Activo",
+        )
+    )
+    if efirma is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No hay una e.firma activa para {rfc_titular} en este negocio.",
+        )
+
+    fiel = construir_fiel(efirma)
+    try:
+        fila = await solicitar_descarga(
+            fiel=fiel,
+            negocio_id=negocio_id,
+            efirma_id=efirma.id,
+            rfc_titular=rfc_titular,
+            tipo=tipo,
+            fecha_desde=payload.fecha_desde,
+            fecha_hasta=payload.fecha_hasta,
+            solicitado_por_rfc=x_usuario_rfc or "",
+            db=db,
+        )
+    except BloqueoPrevioError as e:
+        prev = e.solicitud_previa
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"El SAT ya bloqueo este periodo (cod_estatus {prev.cod_estatus}) "
+                f"en un intento del {prev.created_at:%Y-%m-%d}. "
+                f"Mensaje del SAT: {prev.mensaje_sat!r}. No se reintenta."
+            ),
+        )
+
+    return _solicitud_a_response(fila)
+
+
+@app.post(
+    "/admin/solicitudes-descarga/tick",
+    dependencies=[Depends(require_internal_key)],
+)
+async def tick_solicitudes_descarga(db: AsyncSession = Depends(get_db)):
+    """
+    Un "tick" del ciclo asincrono de descarga masiva: verifica en el SAT
+    todas las solicitudes en vuelo (estado 1/2), avanza su maquina de
+    estados y, para las que quedaron 3=Terminada en este tick, baja los
+    paquetes y los sube a MinIO. Re-autentica desde cero en cada paso (el
+    token del SAT vive 5 min).
+
+    Pensado para un disparador EXTERNO periodico (no hay scheduler/Celery en
+    el proyecto).
+
+    TODO (seguridad - PENDIENTE DE DECISION, no resolver aqui): este endpoint
+    hoy solo esta detras de require_internal_key (X-Internal-Key), igual que
+    el resto de administracion. Pero es un endpoint de EFECTO (habla con el
+    SAT, escribe en MinIO) que ademas se va a invocar en bucle. Falta
+    definir el disparador y su superficie:
+      - un cron DENTRO del propio docker-compose (contenedor sidecar que hace
+        el POST con la internal key, sin exponer nada fuera de la red Docker)?
+      - un job del host / GitHub Actions con la internal key en secreto?
+      - rate-limit propio del endpoint (Redis, como facturacion) para que ni
+        con la internal key se pueda martillar?
+    Se decide antes de conectarlo a algo real.
+    """
+    terminadas = await tick_verificar_solicitudes(db)
+
+    detalle = []
+    for sol in terminadas:
+        efirma = await db.get(Efirma, sol.efirma_id)
+        if efirma is None:
+            detalle.append({"solicitud_id": sol.id, "error": "e.firma inexistente"})
+            continue
+        fiel = construir_fiel(efirma)
+        await descargar_paquetes(fiel, sol, db)
+        await db.refresh(sol)
+        pendientes = await db.scalar(
+            select(func.count())
+            .select_from(PaqueteDescarga)
+            .where(
+                PaqueteDescarga.solicitud_id == sol.id,
+                PaqueteDescarga.descargado.is_(False),
+            )
+        )
+        total = await db.scalar(
+            select(func.count())
+            .select_from(PaqueteDescarga)
+            .where(PaqueteDescarga.solicitud_id == sol.id)
+        )
+        detalle.append(
+            {
+                "solicitud_id": sol.id,
+                "id_solicitud_sat": sol.id_solicitud_sat,
+                "numero_cfdis": sol.numero_cfdis,
+                "paquetes_total": total,
+                "paquetes_pendientes": pendientes,
+            }
+        )
+
+    return {
+        "terminadas_en_este_tick": len(terminadas),
+        "detalle": detalle,
+    }
 
 
 # ─── Clientes ──────────────────────────────────────────────────────────────────

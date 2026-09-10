@@ -304,6 +304,11 @@ class SolicitudDescarga(Base):
     # 6 Vencida (0 = token invalido). Arranca en 1 al crear la fila local.
     estado_solicitud: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     cod_estatus: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+    # Texto libre 'Mensaje' que devuelve el SAT junto al cod_estatus (p. ej.
+    # "Solicitud Aceptada", o la redaccion exacta de un 5002). Se guarda
+    # verbatim para mostrarselo al usuario sin hard-codear la redaccion; el
+    # SAT no documenta una longitud maxima confiable -> Text, no String(n).
+    mensaje_sat: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     numero_cfdis: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # RFC personal de quien la disparo (auditoria, obligatorio aqui: una
     # solicitud siempre la inicia un usuario autenticado).

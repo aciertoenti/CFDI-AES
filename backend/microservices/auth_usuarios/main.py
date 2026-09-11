@@ -561,6 +561,29 @@ async def cambiar_password(
     if "sub" not in token or not token["sub"]:
         raise HTTPException(status_code=401, detail="Token inválido")
 
+    # Rate limiting (zg325Wk) - MISMO mecanismo que /auth/login: se reutilizan
+    # registrar_intento_fallido / segundos_bloqueado / resetear_intentos de
+    # redis_client, sin duplicar logica; lo unico distinto es el
+    # identificador. Se cuenta por el usuario autenticado del JWT ya validado
+    # (token["sub"] == rfc_personal), NO por IP - mismo criterio que login.
+    # Prefijo "pwchange:" para que el contador sea INDEPENDIENTE del de login
+    # (fallar 5 veces la contrasena actual no debe bloquear tambien el login,
+    # ni viceversa). Mismos limites que login (MAX_INTENTOS_LOGIN=5 ->
+    # BLOQUEO_LOGIN_SEGUNDOS=15 min): un JWT robado vive 1h y bcrypt es lento,
+    # 5/15min ya hace inutil la fuerza bruta post-autenticacion; no hay razon
+    # concreta para divergir. Se revisa ANTES de tocar BD/bcrypt, igual que login.
+    identificador_rl = f"pwchange:{token['sub']}"
+    bloqueo = await segundos_bloqueado(identificador_rl)
+    if bloqueo is not None:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Demasiados intentos fallidos. Intenta de nuevo en "
+                f"{bloqueo // 60 + 1} minutos."
+            ),
+            headers={"Retry-After": str(bloqueo)},
+        )
+
     nueva_password = validar_password_nueva(req.nueva_password)
     if not req.password_actual:
         raise HTTPException(status_code=400, detail="La contraseña actual es obligatoria")
@@ -571,10 +594,17 @@ async def cambiar_password(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if not bcrypt.checkpw(req.password_actual.encode("utf-8"), usuario.password_hash.encode("utf-8")):
+        # Igual que login: el intento que dispara el bloqueo (el 5to) aun
+        # responde 401 normal; el SIGUIENTE encuentra el bloqueo activo -> 429.
+        await registrar_intento_fallido(identificador_rl)
         raise HTTPException(status_code=401, detail="La contraseña actual no coincide")
 
     usuario.password_hash = bcrypt.hashpw(nueva_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     await db.flush()
+
+    # Cambio exitoso - limpia contador/bloqueo previos de este identificador
+    # (mismo criterio que resetear_intentos tras un login OK).
+    await resetear_intentos(identificador_rl)
 
     # Mismo hallazgo que en password_reset_confirm(): invalidacion de
     # sesiones activas previas NO implementada. Un JWT robado antes de

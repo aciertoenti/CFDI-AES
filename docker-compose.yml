@@ -65,7 +65,17 @@ services:
       # verificar el JWT del usuario - mismo patron fail-fast que ya usan
       # facturacion/administracion/whatsapp_bot, sin default debil.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
-    depends_on: [auth, facturacion, administracion, addenda_aes, reportes]
+      # Revocacion de JWT (zg3ehbA): el Gateway es LECTOR de
+      # auth:revocado_desde:{rfc}, que auth_usuarios ESCRIBE - necesitan
+      # ver el mismo Redis/db, no es una eleccion de aislamiento (como si
+      # lo es separar db0/1/2 por servicio para sus PROPIOS datos), es el
+      # mismo mecanismo cruzando 2 servicios. Por eso este bloque usa la
+      # MISMA variable de host ${REDIS_URL_AUTH} que el bloque "auth" de
+      # arriba (no una copia con el mismo valor por casualidad) - los 2
+      # servicios leen literalmente la misma fuente; cambiarla en un solo
+      # lugar (.env o aqui) los actualiza a ambos de forma atomica.
+      REDIS_URL: "${REDIS_URL_AUTH:-redis://redis:6379/1}"
+    depends_on: [auth, facturacion, administracion, addenda_aes, reportes, redis]
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   facturacion:
@@ -228,7 +238,19 @@ services:
     environment:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_AUTH:-cfdi}:${POSTGRES_PASSWORD_AUTH:-secret_auth}@postgres_auth/${POSTGRES_DB_AUTH:-cfdi_auth}"
       JWT_SECRET: "${JWT_SECRET:-cambia_en_produccion}"
-      REDIS_URL: "redis://redis:6379/1"
+      # Antes: literal hardcodeado "redis://redis:6379/1", sin pasar por
+      # variable de entorno - el bloque "gateway" (revocacion de JWT,
+      # zg3ehbA) apuntaba a la MISMA db 1 pero via una variable de host
+      # DISTINTA (REDIS_URL_AUTH), asi que ambos coincidian hoy "por
+      # casualidad": nada garantizaba que siguieran apuntando al mismo
+      # Redis si algun dia se cambiaba solo uno de los dos. Unificado a
+      # ${REDIS_URL_AUTH:-...} en AMBOS bloques (ver gateway abajo) - es
+      # la MISMA variable de host en los 2 lugares, asi que cambiarla en
+      # .env (o aqui) actualiza a los 2 servicios de forma atomica. El
+      # nombre lleva "AUTH" porque el namespace de keys es "auth:*"
+      # (login rate limit, tokens de reset, revocado_desde) - dueño
+      # logico: este servicio, aunque el Gateway tambien lo lea.
+      REDIS_URL: "${REDIS_URL_AUTH:-redis://redis:6379/1}"
       ADMINISTRACION_URL: "http://administracion:8002"
       # X-Internal-Key en crear_usuario/listar_usuarios (14 ago 2026,
       # refactor/shared-internal-key, tarjeta 228937665) - mismo patron

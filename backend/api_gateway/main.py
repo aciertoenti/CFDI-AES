@@ -1,4 +1,7 @@
+import asyncio
+import logging
 import os
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +9,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import httpx
 import jwt
+import redis.asyncio as aioredis
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CFDI – API Gateway", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["*"], allow_headers=["*"])
@@ -48,14 +54,77 @@ SERVICES = {
 }
 
 
-def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+# ─── Revocacion de JWT por "revocado desde" (zg3ehbA) ───────────────────────
+# LECTOR del mecanismo que auth_usuarios/redis_client.py escribe
+# (revocar_desde -> auth:revocado_desde:{rfc_personal}). MISMO Redis/DB que
+# auth_usuarios (ver comentario en docker-compose.yml, servicio gateway) -
+# no es opcional, es el mismo namespace cruzando 2 servicios.
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/1")
+REDIS_REVOCACION_TIMEOUT_SEGUNDOS = 2.0  # corto y explicito - un Redis LENTO no debe colgar el request; ver fail-open abajo
+
+_redis: Optional[aioredis.Redis] = None
+
+
+def _get_redis() -> aioredis.Redis:
+    global _redis
+    if _redis is None:
+        _redis = aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    return _redis
+
+
+def _key_revocado_desde(rfc_personal: str) -> str:
+    return f"auth:revocado_desde:{rfc_personal}"
+
+
+async def _token_revocado(payload: dict) -> bool:
+    """
+    fail-open DELIBERADO (a diferencia de auth_usuarios/redis_client.py,
+    que es fail-closed): firma + exp (ya validados en verify_token antes de
+    llamar aqui) siguen siendo la barrera real fail-closed de este sistema.
+    Revocar por "revocado desde" es defensa ADICIONAL, no el control
+    principal - tumbar el Gateway completo (unico punto de paso de TODO lo
+    autenticado en los 7 microservicios) por un blip de Redis es un riesgo
+    mucho mayor que el riesgo residual acotado de no aplicar la revocacion
+    durante ese blip (ventana maxima: REVOCACION_TTL_SEGUNDOS en
+    auth_usuarios/redis_client.py, 2h, y solo afecta a quien ya cambio su
+    contrasena en esa ventana Y cuyo JWT viejo sigue siendo robado/usado).
+    """
+    iat = payload.get("iat")
+    sub = payload.get("sub")
+    if iat is None or sub is None:
+        # Token sin iat: emitido ANTES de este cambio (o de un caller que
+        # nunca lo puso). No hay base de comparacion -> se trata como NO
+        # revocado. No rompe tokens ya emitidos antes del deploy durante
+        # su ventana de vida restante (maximo 1h, el exp del JWT).
+        return False
+    try:
+        valor = await asyncio.wait_for(
+            _get_redis().get(_key_revocado_desde(sub)),
+            timeout=REDIS_REVOCACION_TIMEOUT_SEGUNDOS,
+        )
+    except Exception as e:
+        logger.warning(
+            "revocacion JWT: Redis no disponible, fail-open aplicado (sub=%s, error=%s: %s)",
+            sub, type(e).__name__, e,
+        )
+        return False
+    if valor is None:
+        return False
+    return int(iat) < int(valor)
+
+
+async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expirado")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token inválido")
+
+    if await _token_revocado(payload):
+        raise HTTPException(status_code=401, detail="Token revocado, inicia sesión de nuevo")
+
+    return payload
 
 
 @app.post("/auth/login")

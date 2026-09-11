@@ -3,3 +3,7 @@ uvicorn[standard]
 httpx
 PyJWT
 python-multipart
+# Revocacion de JWT por "revocado desde" (zg3ehbA) - verify_token consulta
+# auth:revocado_desde:{rfc_personal}, escrito por auth_usuarios. Mismo
+# paquete (redis.asyncio) que ya usan auth_usuarios/whatsapp_bot/facturacion.
+redis

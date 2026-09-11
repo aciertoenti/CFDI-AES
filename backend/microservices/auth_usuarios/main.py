@@ -28,6 +28,7 @@ from redis_client import (
     permitir_solicitud_reset,
     registrar_intento_fallido,
     resetear_intentos,
+    revocar_desde,
     segundos_bloqueado,
 )
 
@@ -442,6 +443,15 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     # Esto es lo que mantiene intacta toda la auditoria de hoy
     # (creado_por_rfc, cancelado_por_rfc, X-Usuario-Rfc) sin ningun cambio
     # en facturacion/administracion/whatsapp_bot/api_gateway.
+    # iat (zg3ehbA): PyJWT NO lo agrega automaticamente - confirmado por
+    # introspeccion (jwt.decode() de un token sin iat explicito en el
+    # payload no lo trae). Es el prerequisito de la revocacion por
+    # "revocado desde": el Gateway (verify_token) compara este iat contra
+    # auth:revocado_desde:{sub} para decidir si el token es de ANTES o
+    # DESPUES del ultimo evento que invalida sesiones (hoy: cambio de
+    # contrasena - ver cambiar_password). login() es el UNICO jwt.encode()
+    # de este servicio (confirmado: password_reset_confirm cambia la
+    # contrasena pero no reemite token).
     payload = {
         "sub": usuario.rfc_personal,
         "nombre": usuario.nombre,
@@ -449,6 +459,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         "rfc_emisor": usuario.rfc_emisor,
         "negocio_id": usuario.negocio_id,
         "roles": [usuario.rol],
+        "iat": datetime.utcnow(),
         "exp": datetime.utcnow() + timedelta(hours=1),
     }
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -606,10 +617,16 @@ async def cambiar_password(
     # (mismo criterio que resetear_intentos tras un login OK).
     await resetear_intentos(identificador_rl)
 
-    # Mismo hallazgo que en password_reset_confirm(): invalidacion de
-    # sesiones activas previas NO implementada. Un JWT robado antes de
-    # este cambio sigue siendo valido hasta su expiracion natural (1h,
-    # ver JWT_ALGORITHM arriba) - cambiar la contrasena no lo revoca.
+    # Revocacion de JWT (zg3ehbA): marca 'ahora' como punto de corte para
+    # token["sub"] en Redis (auth:revocado_desde:{rfc_personal},
+    # redis_client.revocar_desde). Un JWT robado ANTES de este cambio deja
+    # de ser valido en la proxima verificacion del Gateway (compara iat
+    # contra este timestamp) - ya no sobrevive hasta su exp natural (1h).
+    # NOTA: password_reset_confirm() (el flujo "olvide mi contrasena") NO
+    # se toco en este cambio y sigue SIN revocar - mismo gap, fuera de
+    # alcance de esta tarjeta (zg3ehbA solo pidio cambiar_password como
+    # disparador 1); queda documentado para decidir aparte.
+    await revocar_desde(token["sub"])
     logger.info("password_change.confirmado rfc=%s", token["sub"])
 
     return {"mensaje": "Contraseña actualizada correctamente."}

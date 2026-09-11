@@ -63,6 +63,7 @@ async def _limpiar(r):
         redis_client._key_bloqueo(_IDENT_RL),
         redis_client._key_intentos(RFC_TEST),   # el de login "puro", para el test de aislamiento
         redis_client._key_bloqueo(RFC_TEST),
+        redis_client._key_revocado_desde(RFC_TEST),  # zg3ehbA
     )
 
 
@@ -161,3 +162,46 @@ async def test_bloqueo_de_pwchange_no_bloquea_el_login_del_mismo_rfc():
     # ...pero el identificador "puro" que usaria login (RFC sin prefijo) NO
     assert await r.get(redis_client._key_bloqueo(RFC_TEST)) is None
     assert await r.get(redis_client._key_intentos(RFC_TEST)) is None
+
+
+# ─── revocado_desde (zg3ehbA) ───────────────────────────────────────────────
+
+async def test_cambio_exitoso_escribe_revocado_desde_con_ttl():
+    import time
+
+    r = await redis_client.get_redis()
+    assert await r.get(redis_client._key_revocado_desde(RFC_TEST)) is None  # nada antes
+
+    antes = int(time.time())
+    async with _cliente() as ac:
+        ok = await _post(ac, PWD_ACTUAL_OK)
+    despues = int(time.time())
+    assert ok.status_code == 200
+
+    # se escribio en el identificador SIN el prefijo pwchange: (token["sub"]
+    # tal cual, no identificador_rl) - es lo que va a leer el Gateway con
+    # payload["sub"].
+    valor = await r.get(redis_client._key_revocado_desde(RFC_TEST))
+    assert valor is not None
+    assert antes <= int(valor) <= despues
+
+    ttl = await r.ttl(redis_client._key_revocado_desde(RFC_TEST))
+    assert 0 < ttl <= redis_client.REVOCACION_TTL_SEGUNDOS
+    # TTL realmente cerca del maximo esperado (2h), no un valor arbitrario
+    assert ttl > redis_client.REVOCACION_TTL_SEGUNDOS - 10
+
+
+async def test_revocar_desde_y_obtener_revocado_desde_son_consistentes():
+    """Test directo del helper (sin pasar por el endpoint), mismo estilo
+    que ya se usaria para probar segundos_bloqueado/registrar_intento_fallido."""
+    ident = f"helper-test:{RFC_TEST}"
+    r = await redis_client.get_redis()
+    try:
+        assert await redis_client.obtener_revocado_desde(ident) is None
+        await redis_client.revocar_desde(ident)
+        valor = await redis_client.obtener_revocado_desde(ident)
+        assert isinstance(valor, int) and valor > 0
+        ttl = await r.ttl(redis_client._key_revocado_desde(ident))
+        assert 0 < ttl <= redis_client.REVOCACION_TTL_SEGUNDOS
+    finally:
+        await r.delete(redis_client._key_revocado_desde(ident))

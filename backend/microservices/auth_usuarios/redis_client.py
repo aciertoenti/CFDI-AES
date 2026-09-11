@@ -1,21 +1,30 @@
 """
-Redis compartido para dos mecanismos de este servicio, ambos con TTL nativo
-(no requieren tabla ni migracion de Alembic - ver docs/migraciones.md, esto
-no es esquema versionado, es estado efimero por diseno):
+Redis compartido para TRES mecanismos de este servicio, todos con TTL
+nativo (no requieren tabla ni migracion de Alembic - ver docs/migraciones.md,
+esto no es esquema versionado, es estado efimero por diseno):
 
 1. Rate limiting de login (5 intentos fallidos consecutivos -> bloqueo de
    15 min), contado por identificador de login (RFC/usuario), NO por IP.
 2. Tokens de un solo uso para recuperacion de contrasena (30 min de vida).
+3. Revocacion de JWT por "revocado desde" (zg3ehbA): NO es una blacklist por
+   token individual (jti) - se guarda, por identificador (rfc_personal), el
+   timestamp del ULTIMO evento que invalida cualquier sesion previa (hoy:
+   cambio de contrasena). El Gateway (api_gateway/main.py:verify_token)
+   compara el iat de cada JWT contra este timestamp: iat anterior ->
+   token revocado, aunque su firma y exp sigan siendo validos.
 
 Mismo patron que whatsapp_bot/services/session_store.py (redis.asyncio,
 singleton modulo, fallback silencioso si Redis no esta disponible) - a
 diferencia de las sesiones de conversacion del bot, aqui NO hay fallback en
-memoria: si Redis esta caido, fail-closed (rechazar) es mas seguro que
-fail-open (dejar pasar login sin rate limit, o tokens de reset que nunca
-expiran). Ver comentario en cada funcion.
+memoria DENTRO de este servicio: si Redis esta caido, fail-closed (rechazar)
+es mas seguro que fail-open (dejar pasar login sin rate limit, o tokens de
+reset que nunca expiran). Ver comentario en cada funcion. La UNICA excepcion
+a fail-closed en todo este mecanismo esta en el LECTOR (Gateway,
+verify_token), no aqui - ver el razonamiento fail-open documentado alla.
 """
 import os
 import secrets
+from datetime import datetime, timezone
 from typing import Optional
 
 import redis.asyncio as aioredis
@@ -88,6 +97,61 @@ async def resetear_intentos(identificador: str) -> None:
     acierta, no debe quedar un bloqueo fantasma de la ventana anterior)."""
     r = await get_redis()
     await r.delete(_key_intentos(identificador), _key_bloqueo(identificador))
+
+
+# ─── Revocacion de JWT por "revocado desde" (zg3ehbA) ───────────────────────
+# auth:revocado_desde:{rfc_personal} - por AHORA el unico disparador real es
+# el cambio de contrasena (cambiar_password, main.py) - ver PARTE 4 del
+# diseño (zg3ehbA) para los otros 2 disparadores previstos:
+#
+#   - Usuario desactivado/borrado -> escribiria aqui mismo,
+#     auth:revocado_desde:{rfc_personal}. NO IMPLEMENTADO: hoy no existe
+#     ningun endpoint que desactive/borre un Usuario, y el modelo Usuario
+#     (database.py) ni siquiera tiene columna 'estado' - haria falta
+#     migracion + endpoint antes de poder engancharlo aqui.
+#   - Negocio desactivado/borrado -> escribiria una key DISTINTA,
+#     auth:revocado_desde:negocio:{negocio_id} (revoca a TODOS los usuarios
+#     de ese negocio de un solo golpe, no uno por uno) - el Gateway tendria
+#     que comparar el iat del token contra AMBAS keys (la de su rfc_personal
+#     Y la de su negocio_id) y rechazar si es anterior a cualquiera de las
+#     dos. NO IMPLEMENTADO: hoy no existe ningun endpoint que desactive/
+#     borre un Negocio (administracion/main.py) - Negocio.estado SI existe
+#     en el modelo (default "Activo"), pero nada lo escribe todavia. Ademas
+#     administracion no tiene conexion a Redis hoy (a diferencia de este
+#     servicio) - haria falta agregarla, mismo patron que se agrega aqui
+#     para el Gateway.
+#
+# Este modulo (redis_client.py) es intencionalmente el unico lugar de
+# auth_usuarios que sabe escribir revocado_desde - cuando existan los otros
+# 2 disparadores, deberian reusar exactamente estas 2 funciones (o su
+# patron), no reinventar el formato de la key.
+
+REVOCACION_TTL_SEGUNDOS = 2 * 60 * 60  # 2h: margen sobre el exp maximo del JWT (1h) - pasada esa ventana, ningun token vivo pudo haberse emitido antes de la revocacion, la key ya no aporta nada
+
+
+def _key_revocado_desde(identificador: str) -> str:
+    return f"auth:revocado_desde:{identificador}"
+
+
+async def revocar_desde(identificador: str) -> None:
+    """Marca 'ahora' como el punto de corte: cualquier JWT con iat anterior
+    a este momento deja de ser valido para `identificador` (rfc_personal),
+    aunque su firma y exp sigan siendo correctos. TTL acotado (ver
+    REVOCACION_TTL_SEGUNDOS) - no hace falta que la key viva para siempre,
+    solo mientras pueda existir un JWT emitido antes de ella."""
+    r = await get_redis()
+    ahora = int(datetime.now(timezone.utc).timestamp())
+    await r.set(_key_revocado_desde(identificador), ahora, ex=REVOCACION_TTL_SEGUNDOS)
+
+
+async def obtener_revocado_desde(identificador: str) -> Optional[int]:
+    """Timestamp (epoch segundos) del ultimo evento de revocacion para
+    `identificador`, o None si nunca se revoco (o la key ya expiro - ver
+    REVOCACION_TTL_SEGUNDOS, en ese caso ya no hay ningun JWT vivo que
+    pudiera haberse emitido antes)."""
+    r = await get_redis()
+    valor = await r.get(_key_revocado_desde(identificador))
+    return int(valor) if valor is not None else None
 
 
 def _key_reset_ip(ip: str) -> str:

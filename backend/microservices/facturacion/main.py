@@ -263,8 +263,23 @@ async def obtener_datos_emisor(rfc: str, x_negocio_id: Optional[str] = None) -> 
     return resp.json()
 
 
-async def obtener_plan_negocio(negocio_id: int) -> str:
-    """Consulta el plan vigente del negocio antes de aplicar su cuota mensual."""
+@dataclass
+class PlanNegocio:
+    plan: str                # nombre del plan, ya en minusculas
+    limite_facturas_mes: int  # cuota mensual de facturas; fuente unica: PLAN_LIMITS en administracion
+
+
+async def obtener_plan_negocio(negocio_id: int) -> PlanNegocio:
+    """Consulta el plan vigente del negocio y su cuota mensual de facturas.
+
+    limite_facturas_mes lo deriva administracion de PLAN_LIMITS y lo expone
+    en GET /admin/negocios/{id} desde 0d43f71 (fuente unica de verdad, zg33XEQ)
+    - facturacion ya NO tiene su propia copia del diccionario.
+
+    fail-closed en todos los caminos (mismo criterio que ya tenia para 'plan'):
+    caida/timeout de administracion, status != 200, o respuesta 200 sin
+    limite_facturas_mes -> HTTPException(502). Nunca se defaultea a un limite.
+    """
     headers = {"X-Negocio-Id": str(negocio_id), "X-Internal-Key": INTERNAL_API_KEY}
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
@@ -273,7 +288,11 @@ async def obtener_plan_negocio(negocio_id: int) -> str:
             raise HTTPException(status_code=502, detail=f"No se pudo consultar el plan del negocio: {e}")
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"administracion respondio {resp.status_code} al consultar el plan")
-    return resp.json().get("plan", "basico").lower()
+    data = resp.json()
+    limite = data.get("limite_facturas_mes")
+    if limite is None:
+        raise HTTPException(status_code=502, detail="administracion no devolvio el limite de facturas del plan")
+    return PlanNegocio(plan=data.get("plan", "basico").lower(), limite_facturas_mes=int(limite))
 
 
 async def obtener_siguiente_folio(rfc: str, serie: str, x_negocio_id: Optional[str] = None, crudo: bool = False) -> Union[str, int]:
@@ -815,9 +834,8 @@ async def timbrar_factura(
                 content=_factura_to_response(factura_existente).model_dump(mode="json"),
             )
 
-    plan = await obtener_plan_negocio(negocio_id)
-    limites_facturas = {"emprendedor": 25, "basico": 50, "contador": 100, "despacho": 500}
-    limite_mensual = limites_facturas.get(plan, limites_facturas["basico"])
+    plan_negocio = await obtener_plan_negocio(negocio_id)
+    limite_mensual = plan_negocio.limite_facturas_mes
     inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     facturas_mes = await db.scalar(
         select(func.count(Factura.id)).where(
@@ -829,7 +847,7 @@ async def timbrar_factura(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"El plan {plan} permite hasta {limite_mensual} factura(s) por mes. "
+                f"El plan {plan_negocio.plan} permite hasta {limite_mensual} factura(s) por mes. "
                 "Actualiza tu plan para continuar."
             ),
         )
@@ -1471,9 +1489,8 @@ async def facturar_ticket(
         # timbrar_factura, pero con negocio_id de la fila (no de un header).
         # Una factura derivada de ticket consume cuota fiscal real igual que
         # cualquier otra.
-        plan = await obtener_plan_negocio(ticket.negocio_id)
-        limites_facturas = {"emprendedor": 25, "basico": 50, "contador": 100, "despacho": 500}
-        limite_mensual = limites_facturas.get(plan, limites_facturas["basico"])
+        plan_negocio = await obtener_plan_negocio(ticket.negocio_id)
+        limite_mensual = plan_negocio.limite_facturas_mes
         inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         facturas_mes = await db.scalar(
             select(func.count(Factura.id)).where(
@@ -1485,7 +1502,7 @@ async def facturar_ticket(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"El plan {plan} permite hasta {limite_mensual} factura(s) por mes. "
+                    f"El plan {plan_negocio.plan} permite hasta {limite_mensual} factura(s) por mes. "
                     "Actualiza tu plan para continuar."
                 ),
             )

@@ -6,6 +6,7 @@ import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
 import { Card, Btn, SectionTitle, SectionSub } from "../../shared/components/atoms";
 import { C } from "../../shared/utils/format";
 import DashboardMiCuenta from "./DashboardMiCuenta";
+import ConfiguracionMarca from "./ConfiguracionMarca";
 
 // Vista de aterrizaje post-login para usuarios admin (zg5z04A):
 // una vista NEUTRAL, no ligada a un emisor concreto.
@@ -165,6 +166,8 @@ export default function Perfil() {
             </div>
           ))}
         </Card>
+
+        <ConfiguracionMarca />
       </div>
     </div>
   );

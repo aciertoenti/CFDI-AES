@@ -15,3 +15,7 @@ cfdiclient==1.6.3
 # Subida de los .zip de la descarga masiva a MinIO (bucket cfdi-descargas-sat),
 # mismo patron que facturacion/storage_client.py.
 minio
+# Upload de logo de white-label (zg2mOhE, POST /admin/config/logo) - FastAPI
+# necesita esto para parsear multipart/form-data (UploadFile). Mismo pin que
+# whatsapp_bot/requirements.txt.
+python-multipart==0.0.12

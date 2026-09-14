@@ -104,6 +104,15 @@ class Negocio(Base):
     plan: Mapped[str] = mapped_column(String(30), nullable=False, default="basico")
     fecha_alta: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="Activo")
+    # White-label del portal de autofacturacion publica (zg2mOhE). Ambos
+    # nullable a proposito - sin configurar, PortalAutofacturacion.jsx cae a
+    # la marca de CFDI-AES (fallback obligatorio, nunca portal roto/vacio).
+    # logo_url apunta a MinIO publico (bucket dedicado, politica de lectura
+    # anonima - un logo no es dato fiscal sensible, distinto criterio al de
+    # XML/PDF con presigned URLs). color_primario: hex de 7 caracteres
+    # ("#RRGGBB"), validado en el endpoint, no aqui (columna solo guarda).
+    logo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    color_primario: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
 
 
 class Emisor(Base):

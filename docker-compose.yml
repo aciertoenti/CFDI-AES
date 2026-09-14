@@ -166,9 +166,15 @@ services:
       # Docker que ya usa facturacion. Solo subida - no se exponen con URL
       # publica (son datos fiscales; se sirven despues por endpoint autenticado).
       MINIO_URL: "http://minio:9000"
+      # Logo de white-label (zg2mOhE) - bucket PUBLICO distinto de
+      # cfdi-descargas-sat (privado, arriba) - necesita el hostname externo
+      # para que PortalAutofacturacion.jsx (pagina publica sin sesion) pueda
+      # cargar la imagen. Mismo patron/variable que ya usa facturacion.
+      MINIO_PUBLIC_URL: "${MINIO_PUBLIC_URL:-http://minio:9000}"
       MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-minio_admin}"
       MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-minio_secret}"
       MINIO_BUCKET_DESCARGAS: "${MINIO_BUCKET_DESCARGAS:-cfdi-descargas-sat}"
+      MINIO_BUCKET_LOGOS: "${MINIO_BUCKET_LOGOS:-cfdi-logos-negocios}"
     depends_on: [postgres_admin, minio]
     command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 

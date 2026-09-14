@@ -1221,6 +1221,31 @@ class TicketPublicoResponse(BaseModel):
     total: float
     rfc_receptor: Optional[str] = None
     estado: str
+    # White-label (zg2mOhE) - None/None si el negocio no configuro nada o
+    # si administracion no respondio (ver _obtener_branding_negocio):
+    # PortalAutofacturacion.jsx cae a la marca de CFDI-AES, nunca a un
+    # portal roto/vacio por esto.
+    logo_url: Optional[str] = None
+    color_primario: Optional[str] = None
+
+
+async def _obtener_branding_negocio(negocio_id: int) -> dict:
+    """None-safe en cada campo si administracion no responde - el portal
+    publico debe seguir funcionando con la marca de CFDI-AES por default,
+    nunca romperse por un timeout/502 de administracion (mismo criterio
+    de degradacion que _obtener_resumen_facturas_mes en el otro sentido,
+    ver zg6k9Pw)."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{ADMINISTRACION_URL}/admin/negocios/{negocio_id}/branding",
+                headers={"X-Internal-Key": INTERNAL_API_KEY},
+            )
+        if resp.status_code != 200:
+            return {"logo_url": None, "color_primario": None}
+        return resp.json()
+    except httpx.RequestError:
+        return {"logo_url": None, "color_primario": None}
 
 # Publico de cara al usuario final: sin JWT de sesion (ver la ruta dedicada
 # en api_gateway/main.py, que se registra antes de la ruta generica para no
@@ -1371,6 +1396,7 @@ async def obtener_ticket_publico(qr_token: str, db: AsyncSession = Depends(get_d
     ):
         estado_efectivo = "pendiente"
 
+    branding = await _obtener_branding_negocio(ticket.negocio_id)
     return TicketPublicoResponse(
         emisor_rfc=ticket.emisor_rfc,
         folio=ticket.folio,
@@ -1379,6 +1405,8 @@ async def obtener_ticket_publico(qr_token: str, db: AsyncSession = Depends(get_d
         total=float(ticket.total),
         rfc_receptor=ticket.rfc_receptor,
         estado=estado_efectivo,
+        logo_url=branding.get("logo_url"),
+        color_primario=branding.get("color_primario"),
     )
 
 

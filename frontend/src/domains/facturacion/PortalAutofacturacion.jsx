@@ -52,11 +52,11 @@ const msgBox = (kind) => ({
 // Android/Chrome). A nivel de modulo la referencia del componente es estable,
 // asi que un re-render solo actualiza el value del mismo <input> y el foco se
 // conserva. Reciben por props todo lo que antes leian del closure.
-function ResumenTicket({ ticket }) {
+function ResumenTicket({ ticket, colorPrimario }) {
   if (!ticket) return null;
   return (
     <Card style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Ticket de venta</div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: colorPrimario, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Ticket de venta</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8, marginBottom: 10 }}>
         {[["Folio", ticket.folio], ["Fecha", new Date(ticket.fecha_hora).toLocaleString("es-MX")], ["Emisor (RFC)", ticket.emisor_rfc]].map(([l, v]) => (
           <div key={l} style={{ background: C.surface, borderRadius: 8, padding: "8px 10px" }}>
@@ -72,7 +72,7 @@ function ResumenTicket({ ticket }) {
             <span style={{ whiteSpace: "nowrap" }}>{fmt((parseFloat(c.cantidad) || 0) * (parseFloat(c.precio_unitario) || 0))}</span>
           </div>
         ))}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 8, fontSize: 16, fontWeight: 700, color: C.accent }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 8, fontSize: 16, fontWeight: 700, color: colorPrimario }}>
           <span style={{ color: C.textMuted, fontSize: 12, alignSelf: "center" }}>Total</span>{fmt(ticket.total)}
         </div>
       </div>
@@ -80,7 +80,7 @@ function ResumenTicket({ ticket }) {
   );
 }
 
-function Formulario({ form, setCampo, usosDisponibles, formCompleto, enviando, errorMsg, fase, onSubmit }) {
+function Formulario({ form, setCampo, usosDisponibles, formCompleto, enviando, errorMsg, fase, onSubmit, colorPrimario }) {
   return (
     <form onSubmit={onSubmit} noValidate>
       <div style={fieldGroup}>
@@ -128,10 +128,18 @@ function Formulario({ form, setCampo, usosDisponibles, formCompleto, enviando, e
         <div style={{ ...msgBox("error"), marginBottom: 14 }} role="alert" aria-live="assertive">{errorMsg}</div>
       )}
 
-      <Btn type="submit" variant="accent" disabled={!formCompleto || enviando}
-        style={{ width: "100%", padding: "13px 18px", fontSize: 15, minHeight: 48 }}>
+      {/* Boton nativo, no <Btn variant="accent"> (atoms.jsx): ese variant
+          fija background:C.accent DESPUES de mezclar el style que le pasen,
+          asi que un style={{background:...}} externo no lo puede sobreescribir
+          - se necesita el color dinamico de marca aqui (colorPrimario). */}
+      <button type="submit" disabled={!formCompleto || enviando}
+        style={{
+          width: "100%", padding: "13px 18px", fontSize: 15, minHeight: 48, borderRadius: 8,
+          fontWeight: 600, border: "none", background: colorPrimario, color: "#fff",
+          cursor: (!formCompleto || enviando) ? "not-allowed" : "pointer", opacity: (!formCompleto || enviando) ? .5 : 1,
+        }}>
         {enviando ? "Generando factura…" : "Solicitar mi factura"}
-      </Btn>
+      </button>
       <div style={{ fontSize: 11, color: C.textMuted, marginTop: 10, textAlign: "center" }}>
         Tus datos solo se usan para timbrar esta factura ante el SAT.
       </div>
@@ -285,11 +293,20 @@ export default function PortalAutofacturacion({ qrToken }) {
     }
   };
 
+  // White-label (zg2mOhE): logo_url/color_primario vienen embebidos en la
+  // respuesta del ticket (TicketPublicoResponse, enriquecida server-side por
+  // facturacion consultando administracion) - no un fetch aparte. Antes de
+  // que el ticket cargue (fase "cargando") o si el negocio no configuro
+  // nada, cae al fallback de siempre: color C.accent y el wordmark de texto
+  // "CFDI-AES · Autofacturación" - NUNCA un portal roto o vacio por esto.
+  const colorPrimario = ticket?.color_primario || C.accent;
+  const logoUrl = ticket?.logo_url || null;
+
   // Props comunes del formulario - se arman una vez por render, pero Formulario
   // es un componente de modulo (tipo estable) asi que esto NO lo remonta.
   const formularioProps = {
     form, setCampo, usosDisponibles, formCompleto, enviando, errorMsg, fase,
-    onSubmit: enviarFactura,
+    onSubmit: enviarFactura, colorPrimario,
   };
 
   // ── UI ───────────────────────────────────────────────────────────────────
@@ -298,12 +315,14 @@ export default function PortalAutofacturacion({ qrToken }) {
       {/* Spinner keyframes: contenido propio, no toca index.css */}
       <style>{`@keyframes pa-spin{to{transform:rotate(360deg)}}`}</style>
       <div style={wrap}>
-        <div style={brand}>CFDI-AES · Autofacturación</div>
+        {logoUrl
+          ? <img src={logoUrl} alt="" style={{ maxHeight: 40, maxWidth: 200, objectFit: "contain", marginBottom: 12, display: "block" }} />
+          : <div style={{ ...brand, color: colorPrimario }}>CFDI-AES · Autofacturación</div>}
 
         {fase === "cargando" && (
           <Card>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }} role="status" aria-live="polite">
-              <span style={{ width: 20, height: 20, border: `3px solid ${C.border}`, borderTopColor: C.accent, borderRadius: "50%", display: "inline-block", animation: "pa-spin .8s linear infinite" }} aria-hidden="true" />
+              <span style={{ width: 20, height: 20, border: `3px solid ${C.border}`, borderTopColor: colorPrimario, borderRadius: "50%", display: "inline-block", animation: "pa-spin .8s linear infinite" }} aria-hidden="true" />
               <span style={{ color: C.textSec, fontSize: 14 }}>Cargando tu ticket…</span>
             </div>
           </Card>
@@ -320,7 +339,7 @@ export default function PortalAutofacturacion({ qrToken }) {
           <>
             <h1 style={h1}>Solicita tu factura</h1>
             <p style={p}>Completa tus datos fiscales para generar la factura de esta compra.</p>
-            <ResumenTicket ticket={ticket} />
+            <ResumenTicket ticket={ticket} colorPrimario={colorPrimario} />
             <Card><Formulario {...formularioProps} /></Card>
           </>
         )}
@@ -329,7 +348,7 @@ export default function PortalAutofacturacion({ qrToken }) {
           <>
             <h1 style={h1}>Solicita tu factura</h1>
             <p style={p}>Revisa el mensaje y vuelve a intentarlo. Tus datos siguen aquí.</p>
-            <ResumenTicket ticket={ticket} />
+            <ResumenTicket ticket={ticket} colorPrimario={colorPrimario} />
             <Card><Formulario {...formularioProps} /></Card>
           </>
         )}
@@ -337,7 +356,7 @@ export default function PortalAutofacturacion({ qrToken }) {
         {fase === "procesando" && (
           <Card>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-              <span style={{ width: 20, height: 20, border: `3px solid ${C.border}`, borderTopColor: C.accent, borderRadius: "50%", display: "inline-block", animation: "pa-spin .8s linear infinite" }} aria-hidden="true" />
+              <span style={{ width: 20, height: 20, border: `3px solid ${C.border}`, borderTopColor: colorPrimario, borderRadius: "50%", display: "inline-block", animation: "pa-spin .8s linear infinite" }} aria-hidden="true" />
               <h1 style={{ ...h1, margin: 0 }}>Generando tu factura</h1>
             </div>
             <div style={msgBox("info")} role="status" aria-live="polite">

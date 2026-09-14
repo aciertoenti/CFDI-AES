@@ -9,6 +9,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 import base64
 import os
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -17,7 +18,7 @@ from typing import Optional, List
 import httpx
 from cryptography.hazmat.primitives.serialization import load_der_private_key
 from cryptography.x509 import load_der_x509_certificate
-from fastapi import FastAPI, Header, HTTPException, Query, Depends
+from fastapi import FastAPI, File, Header, HTTPException, Query, Depends, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import desc, func, select
@@ -28,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import Efirma, Emisor, Cliente, Negocio, Notificacion, SerieFolio, SolicitudDescarga, PaqueteDescarga, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from database import _fernet_efirma  # cifrado explicito de la e.firma (ver database.py)
 from csd_rfc import extraer_rfc_de_certificado
+from logo_storage import subir_logo, validar_logo
 from sat_descarga_client import (
     BloqueoPrevioError,
     construir_fiel,
@@ -355,10 +357,25 @@ class SerieResponse(BaseModel):
     ultimo_folio: int
 
 class ConfiguracionUpdate(BaseModel):
+    # HALLAZGO (14 sep 2026, investigacion previa a zg2mOhE): los 6 campos
+    # de este modelo se descartaban en silencio - PUT /admin/config
+    # devolvia {"actualizado": True} sin persistir nada, endpoint sin
+    # X-Internal-Key ni X-Negocio-Id. zg2mOhE arregla SOLO logo_url y
+    # color_primario (white-label, por negocio). pac_url/pac_usuario/
+    # pac_password/storage_bucket SIGUEN sin persistir a proposito -
+    # fuera de alcance de esta tarjeta, documentado como hallazgo aparte,
+    # no silenciado sin dejar rastro.
     pac_url: Optional[str] = None
     pac_usuario: Optional[str] = None
     pac_password: Optional[str] = None
     storage_bucket: Optional[str] = None
+    logo_url: Optional[str] = None
+    color_primario: Optional[str] = None
+
+
+class ConfiguracionResponse(BaseModel):
+    pac_url: str
+    storage_bucket: str
     logo_url: Optional[str] = None
     color_primario: Optional[str] = None
 
@@ -599,6 +616,34 @@ async def obtener_resumen_negocio(
         limite_plan=limites["facturas_mes"],
         porcentaje_cancelacion_mes=_calcular_porcentaje_cancelacion(facturas_mes, canceladas_mes),
     )
+
+
+class NegocioBrandingResponse(BaseModel):
+    logo_url: Optional[str] = None
+    color_primario: Optional[str] = None
+
+
+@app.get(
+    "/admin/negocios/{negocio_id}/branding",
+    response_model=NegocioBrandingResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def obtener_branding_negocio(negocio_id: int, db: AsyncSession = Depends(get_db)):
+    """Portal de autofacturacion publica (zg2mOhE) - SIN self-only a
+    proposito, a diferencia de GET /admin/negocios/{id}: lo llama
+    facturacion servicio-a-servicio para enriquecer TicketPublicoResponse
+    (pagina publica sin sesion, el visitante no tiene un negocio_id
+    propio contra el cual validar). Expone SOLO logo_url/color_primario -
+    nunca nombre/plan/estado ni nada mas, mismo criterio de "response
+    reducido" que TicketPublicoResponse en facturacion.
+
+    negocio_id inexistente -> campos null (no 404): el portal publico
+    debe caer al fallback de marca CFDI-AES, nunca romperse por esto."""
+    result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
+    negocio = result.scalar_one_or_none()
+    if negocio is None:
+        return NegocioBrandingResponse()
+    return NegocioBrandingResponse(logo_url=negocio.logo_url, color_primario=negocio.color_primario)
 
 
 @app.get(
@@ -1709,15 +1754,101 @@ async def siguiente_folio(
     await db.commit()
     return {"serie": serie, "folio": folio, "folio_formateado": f"{serie}-{folio:04d}"}
 
-# ─── Configuración (mock, fuera de alcance de esta tarea) ──────────────────────
+# ─── Configuración ──────────────────────────────────────────────────────────
+# pac_url/storage_bucket: SIGUEN siendo mock global (hallazgo documentado en
+# ConfiguracionUpdate, fuera de alcance de zg2mOhE). logo_url/color_primario:
+# reales, por negocio, desde aqui (zg2mOhE, white-label del portal publico).
 
-@app.get("/admin/config")
-async def obtener_config():
-    return {"pac_url": "https://ws.finkok.com/servicios/soap/stamp.wsdl", "storage_bucket": "cfdi-xmls"}
+_HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
-@app.put("/admin/config")
-async def actualizar_config(config: ConfiguracionUpdate):
-    return {"actualizado": True}
+
+def _validar_color_primario(valor: str) -> None:
+    if not _HEX_COLOR_RE.match(valor):
+        raise HTTPException(
+            status_code=422,
+            detail="color_primario debe ser un hex de 7 caracteres, ej. #00C896",
+        )
+
+
+@app.get(
+    "/admin/config",
+    response_model=ConfiguracionResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def obtener_config(
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
+    negocio = result.scalar_one_or_none()
+    if negocio is None:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+    return ConfiguracionResponse(
+        pac_url="https://ws.finkok.com/servicios/soap/stamp.wsdl",
+        storage_bucket="cfdi-xmls",
+        logo_url=negocio.logo_url,
+        color_primario=negocio.color_primario,
+    )
+
+
+@app.put(
+    "/admin/config",
+    response_model=ConfiguracionResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def actualizar_config(
+    config: ConfiguracionUpdate,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
+    negocio = result.scalar_one_or_none()
+    if negocio is None:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+
+    if config.color_primario is not None:
+        _validar_color_primario(config.color_primario)
+        negocio.color_primario = config.color_primario
+    if config.logo_url is not None:
+        negocio.logo_url = config.logo_url
+
+    await db.commit()
+    await db.refresh(negocio)
+    return ConfiguracionResponse(
+        pac_url="https://ws.finkok.com/servicios/soap/stamp.wsdl",
+        storage_bucket="cfdi-xmls",
+        logo_url=negocio.logo_url,
+        color_primario=negocio.color_primario,
+    )
+
+
+@app.post(
+    "/admin/config/logo",
+    dependencies=[Depends(require_internal_key)],
+)
+async def subir_logo_negocio(
+    archivo: UploadFile = File(...),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Sube el logo a MinIO (bucket publico, ver logo_storage.py) y
+    devuelve la URL - el caller todavia debe mandarla en un PUT
+    /admin/config para guardarla en negocios.logo_url. Separado en 2
+    pasos a proposito (subir vs. confirmar) - permite preview en el
+    frontend antes de guardar de verdad.
+
+    Validacion REAL por magic bytes (validar_logo), no solo el
+    Content-Type que declare el multipart - un cliente API directo puede
+    saltarse cualquier validacion que solo confiara en el navegador."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    contenido = await archivo.read()
+    try:
+        content_type = validar_logo(contenido)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    url = subir_logo(negocio_id, contenido, content_type)
+    return {"logo_url": url}
 
 # ─── Health check ──────────────────────────────────────────────────────────────
 

@@ -83,6 +83,38 @@ async def _invalidar_csd_cache_en_facturacion(rfc: str) -> bool:
         return False
 
 
+async def _obtener_resumen_facturas_mes(negocio_id: int) -> Optional[dict]:
+    """None si no se pudo obtener (sin INTERNAL_API_KEY, timeout, conexion
+    rechazada, o status != 200) - a diferencia de _contar_facturas_del_emisor
+    (que fail-cierra porque protege un DELETE), aqui la falla se degrada:
+    el endpoint publico (obtener_resumen_negocio) devuelve los campos
+    dependientes de facturacion como null + una advertencia, en vez de
+    tumbar toda la respuesta con un 500 generico (zg6k9Pw, Dashboard 'Mi
+    cuenta') - limite_plan sigue disponible porque vive en esta misma BD."""
+    if not INTERNAL_API_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{FACTURACION_URL}/facturas/resumen-mes",
+                headers={"X-Internal-Key": INTERNAL_API_KEY, "X-Negocio-Id": str(negocio_id)},
+            )
+        if resp.status_code != 200:
+            return None
+        return resp.json()
+    except httpx.RequestError:
+        return None
+
+
+def _calcular_porcentaje_cancelacion(facturas_mes: int, canceladas_mes: int) -> float:
+    """0.0 si no hubo facturas este mes - evita ZeroDivisionError. El
+    frontend decide el empty state mirando facturas_mes == 0 (no este
+    campo): 0.0 aqui significa "sin cancelaciones", no "sin datos"."""
+    if facturas_mes <= 0:
+        return 0.0
+    return round((canceladas_mes / facturas_mes) * 100, 1)
+
+
 async def _contar_facturas_del_emisor(rfc: str, negocio_id: int) -> Optional[int]:
     """None si no se pudo verificar (timeout/error) - en ese caso el
     DELETE debe FALLAR CERRADO (rechazar el borrado), no asumir 0 facturas
@@ -248,6 +280,21 @@ class NegocioResponse(BaseModel):
     # nuevos no los afectan.
     limite_emisores: int
     limite_facturas_mes: int
+
+class NegocioResumenResponse(BaseModel):
+    # Dashboard 'Mi cuenta' (zg6k9Pw). facturas_mes/porcentaje_cancelacion_mes
+    # None cuando facturacion no respondio (ver advertencias) - limite_plan
+    # NUNCA es None, sale de PLAN_LIMITS (esta misma BD, sin llamada externa).
+    facturas_mes: Optional[int] = None
+    limite_plan: int
+    porcentaje_cancelacion_mes: Optional[float] = None
+    # Sin infraestructura de wallet/timbres todavia (zg3mu7Q y relacionados,
+    # confirmado por grep - no hay tabla ni columna de saldo en el repo).
+    # Siempre null hasta que eso se construya; el campo ya esta en el
+    # contrato para no romper el frontend cuando se implemente.
+    timbres_disponibles: Optional[int] = None
+    advertencias: List[str] = []
+
 
 class ClienteCreate(BaseModel):
     emisor_rfc: str
@@ -485,6 +532,53 @@ async def obtener_negocio(
     if negocio is None:
         raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
     return _negocio_to_response(negocio)
+
+
+@app.get(
+    "/admin/negocios/{negocio_id}/resumen",
+    response_model=NegocioResumenResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def obtener_resumen_negocio(
+    negocio_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Dashboard 'Mi cuenta' (zg6k9Pw). Mismo aislamiento self-only que
+    GET /admin/negocios/{negocio_id} (404, no 403, si negocio_id no es el
+    propio). Debe ir ANTES de cualquier ruta generica que capture un solo
+    segmento bajo /admin/negocios/{negocio_id}/... - hoy no existe otra,
+    pero mismo cuidado ya documentado en costos-resumen de facturacion.
+
+    Agregador con degradacion parcial: si facturacion no responde,
+    facturas_mes/porcentaje_cancelacion_mes salen null con una advertencia
+    en vez de tumbar el endpoint completo (limite_plan siempre esta
+    disponible, no depende de facturacion)."""
+    caller_negocio_id = requerir_negocio_id(x_negocio_id)
+    if negocio_id != caller_negocio_id:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+    result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
+    negocio = result.scalar_one_or_none()
+    if negocio is None:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+
+    limites = PLAN_LIMITS.get(negocio.plan, PLAN_LIMITS["basico"])
+    resumen_facturas = await _obtener_resumen_facturas_mes(negocio_id)
+
+    if resumen_facturas is None:
+        return NegocioResumenResponse(
+            limite_plan=limites["facturas_mes"],
+            advertencias=["no se pudo obtener datos de facturación"],
+        )
+
+    facturas_mes = resumen_facturas.get("facturas_mes", 0)
+    canceladas_mes = resumen_facturas.get("canceladas_mes", 0)
+    return NegocioResumenResponse(
+        facturas_mes=facturas_mes,
+        limite_plan=limites["facturas_mes"],
+        porcentaje_cancelacion_mes=_calcular_porcentaje_cancelacion(facturas_mes, canceladas_mes),
+    )
+
 
 @app.get(
     "/admin/emisores",

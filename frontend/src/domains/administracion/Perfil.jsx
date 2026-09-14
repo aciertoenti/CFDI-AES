@@ -5,6 +5,7 @@ import { useNav } from "../../shared/layout/nav";
 import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
 import { Card, Btn, SectionTitle, SectionSub } from "../../shared/components/atoms";
 import { C } from "../../shared/utils/format";
+import DashboardMiCuenta from "./DashboardMiCuenta";
 
 // Vista de aterrizaje post-login para usuarios admin (zg5z04A):
 // una vista NEUTRAL, no ligada a un emisor concreto.
@@ -62,6 +63,39 @@ export default function Perfil() {
     return () => { cancelado = true; };
   }, [negocioId]);
 
+  // Resumen del mes (zg6k9Pw, Dashboard "Mi cuenta") - fetch independiente
+  // del de /admin/negocios/{id} de arriba: son dos endpoints distintos
+  // (este agrega datos de facturacion, con degradacion por campo si ese
+  // servicio no responde - ver DashboardMiCuenta). Un solo fetch aqui,
+  // las 4 tarjetas se reparten el resultado por props.
+  const [resumen, setResumen] = useState(null);
+  const [resumenLoading, setResumenLoading] = useState(true);
+  const [resumenError, setResumenError] = useState(null);
+
+  useEffect(() => {
+    if (!negocioId) {
+      setResumenLoading(false);
+      setResumenError("No se pudo determinar el negocio del usuario.");
+      return;
+    }
+    let cancelado = false;
+    (async () => {
+      setResumenLoading(true);
+      setResumenError(null);
+      try {
+        const res = await fetchAuth(`${API_BASE}/admin/negocios/${negocioId}/resumen`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelado) setResumen(data);
+      } catch (e) {
+        if (!cancelado) setResumenError(e.message);
+      } finally {
+        if (!cancelado) setResumenLoading(false);
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [negocioId]);
+
   const nombre = usuarioActual?.nombre || "—";
   const rfcPersonal = usuarioActual?.sub || "—";
   const email = usuarioActual?.email || "—";
@@ -76,7 +110,7 @@ export default function Perfil() {
         Puedes cambiar de emisor cuando quieras desde el selector del encabezado o en Administración › Emisores.
       </SectionSub>
 
-      <div style={{ display: "grid", gap: 16, maxWidth: 560 }}>
+      <div style={{ display: "grid", gap: 16, maxWidth: 680 }}>
         <Card>
           <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 4 }}>Datos de la cuenta</div>
           <div style={fila}><span style={etiqueta}>Nombre</span><span style={valor}>{nombre}</span></div>
@@ -96,13 +130,14 @@ export default function Perfil() {
                 <span style={etiqueta}>Emisores</span>
                 <span style={valor}>{emisoresActivos} de {negocio.limite_emisores}</span>
               </div>
-              <div style={fila}>
-                <span style={etiqueta}>Facturas al mes (límite del plan)</span>
-                <span style={valor}>{negocio.limite_facturas_mes}</span>
-              </div>
             </>
           )}
         </Card>
+
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>Resumen de este mes</div>
+          <DashboardMiCuenta resumen={resumen} loading={resumenLoading} error={resumenError} />
+        </div>
 
         <Card>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4, gap: 8 }}>

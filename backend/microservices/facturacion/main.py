@@ -886,6 +886,37 @@ async def contar_facturas_por_emisor(
     return {"emisor_rfc": emisor_rfc, "total_facturas": total}
 
 
+@app.get("/facturas/resumen-mes", dependencies=[Depends(require_internal_key)])
+async def resumen_mes(
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Dashboard 'Mi cuenta' (zg6k9Pw) en administracion - consumido via
+    GET /admin/negocios/{id}/resumen alla, mismo patron internal-key que
+    /facturas/count pero a nivel de TODO el negocio (no un emisor), y con
+    el desglose de canceladas que /facturas/count no trae.
+
+    Mes calendario en curso (no rolling 30 dias) - mismo criterio que
+    timbrar_factura ya usa para el limite del plan (inicio_mes = dia 1 a
+    las 00:00 de hoy). Solo 2 COUNT baratos, sin traer filas."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    facturas_mes = await db.scalar(
+        select(func.count(Factura.id)).where(
+            Factura.negocio_id == negocio_id,
+            Factura.fecha_timbrado >= inicio_mes,
+        )
+    ) or 0
+    canceladas_mes = await db.scalar(
+        select(func.count(Factura.id)).where(
+            Factura.negocio_id == negocio_id,
+            Factura.fecha_timbrado >= inicio_mes,
+            Factura.estado == "Cancelada",
+        )
+    ) or 0
+    return {"facturas_mes": facturas_mes, "canceladas_mes": canceladas_mes}
+
+
 # ─── Borradores de factura ────────────────────────────────────────────────────
 # Un borrador es el form de NuevaFactura.jsx guardado tal cual (datos_json),
 # NO un documento fiscal. Mismo aislamiento por negocio_id que Factura.

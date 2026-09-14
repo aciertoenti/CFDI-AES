@@ -20,7 +20,7 @@ from cryptography.x509 import load_der_x509_certificate
 from fastapi import FastAPI, Header, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -589,9 +589,19 @@ async def listar_emisores(
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
+    """Orden compuesto: el/los emisor(es) Activo(s) siempre arriba, sin
+    importar su fecha de creacion - dentro de cada grupo (Activo/Inactivo),
+    el mas reciente primero (comportamiento previo, sin cambio). Compilado
+    y verificado contra PostgreSQL real antes de este cambio: la expresion
+    booleana (Emisor.estado == "Activo") ordena True antes que False con
+    desc(), sin necesitar un CASE explicito. Sin emisores Activos, cae
+    limpio al orden por fecha de siempre (confirmado con datos reales, sin
+    error) - no es un caso especial que necesite manejo aparte."""
     negocio_id = requerir_negocio_id(x_negocio_id)
     result = await db.execute(
-        select(Emisor).where(Emisor.negocio_id == negocio_id).order_by(Emisor.created_at.desc())
+        select(Emisor)
+        .where(Emisor.negocio_id == negocio_id)
+        .order_by(desc(Emisor.estado == "Activo"), Emisor.created_at.desc())
     )
     return [_emisor_to_response(e) for e in result.scalars().all()]
 

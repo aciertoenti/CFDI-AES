@@ -353,6 +353,42 @@ class PaqueteDescarga(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class Notificacion(Base):
+    """
+    Alertas proactivas del portal (zg6k9Ok, primera implementacion: plan
+    cerca del limite mensual de facturas). Generacion LAZY - no hay
+    scheduler/Celery en el proyecto (confirmado antes de disenar esto,
+    ver comentario en tick_solicitudes_descarga): se genera al consultar
+    GET /admin/negocios/{id}/notificaciones, no por un job periodico.
+
+    UNIQUE(negocio_id, tipo, periodo) es la pieza critica: sin ella, cada
+    consulta al endpoint (el usuario recarga Perfil, abre la campanita,
+    etc.) insertaria una notificacion duplicada del mismo evento en el
+    mismo mes. Con ella, el INSERT ... ON CONFLICT DO NOTHING del
+    endpoint es seguro ante requests concurrentes (2 pestañas del mismo
+    usuario recargando a la vez) sin necesitar un SELECT-then-INSERT que
+    tendria una race condition real.
+
+    periodo como string "YYYY-MM" (no un Date): el mes calendario en
+    curso es el mismo concepto que ya usa el resumen de zg6k9Pw
+    (inicio_mes = dia 1 del mes) - un string simple evita reconstruir un
+    rango de fechas solo para comparar "mismo mes".
+    """
+    __tablename__ = "notificaciones"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    negocio_id: Mapped[int] = mapped_column(ForeignKey("negocios.id"), nullable=False, index=True)
+    tipo: Mapped[str] = mapped_column(String(50), nullable=False)
+    mensaje: Mapped[str] = mapped_column(String(500), nullable=False)
+    periodo: Mapped[str] = mapped_column(String(7), nullable=False)  # "YYYY-MM"
+    leida: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("negocio_id", "tipo", "periodo", name="uq_notificacion_negocio_tipo_periodo"),
+    )
+
+
 async def get_db() -> AsyncSession:  # type: ignore[misc]
     """Dependencia FastAPI para inyectar sesion de base de datos."""
     async with AsyncSessionLocal() as session:

@@ -25,7 +25,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Efirma, Emisor, Cliente, Negocio, SerieFolio, SolicitudDescarga, PaqueteDescarga, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import Efirma, Emisor, Cliente, Negocio, Notificacion, SerieFolio, SolicitudDescarga, PaqueteDescarga, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from database import _fernet_efirma  # cifrado explicito de la e.firma (ver database.py)
 from csd_rfc import extraer_rfc_de_certificado
 from sat_descarga_client import (
@@ -294,6 +294,27 @@ class NegocioResumenResponse(BaseModel):
     # contrato para no romper el frontend cuando se implemente.
     timbres_disponibles: Optional[int] = None
     advertencias: List[str] = []
+
+
+class NotificacionResponse(BaseModel):
+    id: int
+    negocio_id: int
+    tipo: str
+    mensaje: str
+    periodo: str
+    leida: bool
+    created_at: datetime
+
+
+def _notificacion_to_response(n: Notificacion) -> NotificacionResponse:
+    return NotificacionResponse(
+        id=n.id, negocio_id=n.negocio_id, tipo=n.tipo, mensaje=n.mensaje,
+        periodo=n.periodo, leida=n.leida, created_at=n.created_at,
+    )
+
+
+UMBRAL_PLAN_CERCA_LIMITE = 0.80
+TIPO_PLAN_CERCA_LIMITE = "plan_cerca_limite"
 
 
 class ClienteCreate(BaseModel):
@@ -578,6 +599,101 @@ async def obtener_resumen_negocio(
         limite_plan=limites["facturas_mes"],
         porcentaje_cancelacion_mes=_calcular_porcentaje_cancelacion(facturas_mes, canceladas_mes),
     )
+
+
+@app.get(
+    "/admin/negocios/{negocio_id}/notificaciones",
+    response_model=List[NotificacionResponse],
+    dependencies=[Depends(require_internal_key)],
+)
+async def listar_notificaciones(
+    negocio_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Alertas proactivas (zg6k9Ok, primera implementacion: plan cerca del
+    limite). Generacion LAZY - sin scheduler (confirmado que no existe
+    ninguno en el proyecto antes de disenar esto): esta consulta es el
+    unico disparador. Reutiliza _obtener_resumen_facturas_mes (mismo
+    helper que obtener_resumen_negocio, zg6k9Pw) en vez de duplicar la
+    logica de facturas_mes/limite.
+
+    Si facturacion no responde, simplemente no se evalua el umbral esta
+    vez (no es un error - la proxima consulta lo vuelve a intentar,
+    mismo criterio de degradacion que el resumen)."""
+    caller_negocio_id = requerir_negocio_id(x_negocio_id)
+    if negocio_id != caller_negocio_id:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+    result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
+    negocio = result.scalar_one_or_none()
+    if negocio is None:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+
+    resumen_facturas = await _obtener_resumen_facturas_mes(negocio_id)
+    if resumen_facturas is not None:
+        limite = PLAN_LIMITS.get(negocio.plan, PLAN_LIMITS["basico"])["facturas_mes"]
+        facturas_mes = resumen_facturas.get("facturas_mes", 0)
+        if limite > 0 and (facturas_mes / limite) >= UMBRAL_PLAN_CERCA_LIMITE:
+            periodo = datetime.now().strftime("%Y-%m")
+            porcentaje = round((facturas_mes / limite) * 100)
+            mensaje = (
+                f"Has usado el {porcentaje}% de tus facturas incluidas este mes "
+                f"({facturas_mes} de {limite})."
+            )
+            # ON CONFLICT DO NOTHING (no SELECT-then-INSERT): el UNIQUE
+            # (negocio_id, tipo, periodo) es lo que hace esto seguro ante 2
+            # requests concurrentes al mismo endpoint - un SELECT previo
+            # dejaria una ventana de carrera real entre el SELECT y el
+            # INSERT (ver test que reproduce esto con 2 llamadas reales).
+            stmt = pg_insert(Notificacion).values(
+                negocio_id=negocio_id,
+                tipo=TIPO_PLAN_CERCA_LIMITE,
+                mensaje=mensaje,
+                periodo=periodo,
+                leida=False,
+            ).on_conflict_do_nothing(
+                index_elements=["negocio_id", "tipo", "periodo"],
+            )
+            await db.execute(stmt)
+            await db.commit()
+
+    result = await db.execute(
+        select(Notificacion)
+        .where(Notificacion.negocio_id == negocio_id)
+        .order_by(Notificacion.created_at.desc())
+    )
+    return [_notificacion_to_response(n) for n in result.scalars().all()]
+
+
+@app.post(
+    "/admin/negocios/{negocio_id}/notificaciones/{notif_id}/marcar-leida",
+    response_model=NotificacionResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def marcar_notificacion_leida(
+    negocio_id: int,
+    notif_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    caller_negocio_id = requerir_negocio_id(x_negocio_id)
+    if negocio_id != caller_negocio_id:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+
+    result = await db.execute(
+        select(Notificacion).where(
+            Notificacion.id == notif_id,
+            Notificacion.negocio_id == negocio_id,
+        )
+    )
+    notificacion = result.scalar_one_or_none()
+    if notificacion is None:
+        raise HTTPException(status_code=404, detail=f"Notificación {notif_id} no encontrada")
+
+    notificacion.leida = True
+    await db.commit()
+    await db.refresh(notificacion)
+    return _notificacion_to_response(notificacion)
 
 
 @app.get(

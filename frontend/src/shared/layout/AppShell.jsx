@@ -2,6 +2,7 @@ import { useState } from "react";
 import logoAcierto from "../../assets/logo-acierto.png";
 import useBreakpoint from "../hooks/useBreakpoint";
 import useEmisores from "../hooks/useEmisores";
+import NotificationBell from "./NotificationBell";
 import { useNav } from "./nav";
 import { C } from "../utils/format";
 import { Card, Btn } from "../components/atoms";
@@ -149,10 +150,7 @@ export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views
               )
               : <div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>Emisor: {cargandoEmisor?"…":(emisorActual?.rfc||"—")}</div>
             )}
-            <div style={{position:"relative"}}>
-              <div style={{width:7,height:7,borderRadius:"50%",background:C.danger,position:"absolute",top:-1,right:-1,border:"2px solid #fff"}}/>
-              <span style={{fontSize:17,cursor:"pointer"}}>🔔</span>
-            </div>
+            <NotificationBell negocioId={usuarioActual?.negocio_id} />
             <div style={{width:30,height:30,borderRadius:"50%",background:C.primary,display:"flex",alignItems:"center",justifyContent:"center",color:C.accent,fontWeight:700,fontSize:11,flexShrink:0}}>{inicialesEmisor}</div>
             <button onClick={()=>setMostrarPasswordModal(true)} title="Cambiar contraseña"
               style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 10px",fontSize:12,color:C.textSec,cursor:"pointer",flexShrink:0}}>Cambiar contraseña</button>

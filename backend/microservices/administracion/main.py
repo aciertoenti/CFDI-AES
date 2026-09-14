@@ -588,20 +588,35 @@ async def obtener_resumen_negocio(
 async def listar_emisores(
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
 ):
-    """Orden compuesto: el/los emisor(es) Activo(s) siempre arriba, sin
-    importar su fecha de creacion - dentro de cada grupo (Activo/Inactivo),
-    el mas reciente primero (comportamiento previo, sin cambio). Compilado
-    y verificado contra PostgreSQL real antes de este cambio: la expresion
-    booleana (Emisor.estado == "Activo") ordena True antes que False con
-    desc(), sin necesitar un CASE explicito. Sin emisores Activos, cae
-    limpio al orden por fecha de siempre (confirmado con datos reales, sin
-    error) - no es un caso especial que necesite manejo aparte."""
+    """Orden compuesto de 3 niveles:
+      1. El emisor cuyo RFC coincide con el del usuario logueado (persona
+         fisica que es tambien su propio emisor, ej. Pedro/RAHP7112093H0
+         en negocio 11) - siempre primero, sin importar estado.
+      2. Activo antes que Inactivo (regla previa, sin cambio).
+      3. created_at desc como desempate final (regla previa, sin cambio).
+
+    x_usuario_rfc ya llegaba inyectado por el Gateway desde el JWT en
+    cualquier request autenticado (igual que en crear_emisor) - este
+    endpoint simplemente no lo leia todavia.
+
+    Caso borde verificado por compilacion Y contra Postgres real antes de
+    este cambio: si x_usuario_rfc es None (o no coincide con ningun
+    emisor), "Emisor.rfc == None" compila a "emisores.rfc IS NULL" -
+    siempre falso (rfc es NOT NULL), asi que el nivel 1 no afecta nada y
+    cae limpio a las reglas 2/3 de siempre. No es un caso especial con
+    manejo aparte, es la misma expresion evaluando a falso en todas las
+    filas."""
     negocio_id = requerir_negocio_id(x_negocio_id)
     result = await db.execute(
         select(Emisor)
         .where(Emisor.negocio_id == negocio_id)
-        .order_by(desc(Emisor.estado == "Activo"), Emisor.created_at.desc())
+        .order_by(
+            desc(Emisor.rfc == x_usuario_rfc),
+            desc(Emisor.estado == "Activo"),
+            Emisor.created_at.desc(),
+        )
     )
     return [_emisor_to_response(e) for e in result.scalars().all()]
 

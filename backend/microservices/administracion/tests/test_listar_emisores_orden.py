@@ -1,6 +1,9 @@
 """
-Tests de orden de GET /admin/emisores - Activo siempre primero, sin importar
-fecha de creacion (pedido de ajuste sobre la pantalla de Emisores/Perfil.jsx).
+Tests de orden de GET /admin/emisores. Orden compuesto de 3 niveles:
+  1. RFC del usuario logueado (X-Usuario-Rfc) coincide con el emisor - va
+     primero, sin importar estado.
+  2. Activo antes que Inactivo.
+  3. created_at desc como desempate final.
 
 A diferencia de test_resumen_negocio.py (que mockea la DB porque la logica
 interesante ahi es el manejo de fallos de facturacion), aqui lo unico
@@ -87,7 +90,7 @@ async def test_activo_mas_antiguo_va_antes_que_inactivo_mas_reciente(negocio_tem
         )
         await session.commit()
 
-        out = await main.listar_emisores(db=session, x_negocio_id=str(negocio_temporal))
+        out = await main.listar_emisores(db=session, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None)
 
     rfcs = [e.rfc for e in out]
     assert rfcs == ["TEST010101AA1", "TEST020202BB2"], (
@@ -108,7 +111,7 @@ async def test_entre_activos_se_mantiene_orden_por_fecha_desc(negocio_temporal):
         )
         await session.commit()
 
-        out = await main.listar_emisores(db=session, x_negocio_id=str(negocio_temporal))
+        out = await main.listar_emisores(db=session, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None)
 
     rfcs = [e.rfc for e in out]
     assert rfcs == ["TEST040404DD4", "TEST030303CC3"], (
@@ -133,7 +136,7 @@ async def test_sin_ningun_emisor_activo_cae_a_orden_por_fecha_sin_error(negocio_
 
         # No debe lanzar - el ORDER BY compuesto degrada limpio a "solo
         # fecha" cuando ningun emisor cumple estado == "Activo".
-        out = await main.listar_emisores(db=session, x_negocio_id=str(negocio_temporal))
+        out = await main.listar_emisores(db=session, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None)
 
     rfcs = [e.rfc for e in out]
     assert rfcs == ["TEST060606FF6", "TEST050505EE5"]
@@ -147,6 +150,54 @@ async def test_un_solo_emisor_no_rompe_el_order_by(negocio_temporal):
         )
         await session.commit()
 
-        out = await main.listar_emisores(db=session, x_negocio_id=str(negocio_temporal))
+        out = await main.listar_emisores(db=session, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None)
 
     assert [e.rfc for e in out] == ["TEST070707GG7"]
+
+
+# ─── nivel 1: RFC del usuario logueado (Pedro/RAHP7112093H0, negocio 11) ───
+
+async def test_rfc_usuario_coincide_va_primero_aunque_sea_inactivo_y_mas_antiguo(negocio_temporal):
+    """El caso mas exigente: el emisor del usuario es Inactivo Y mas
+    antiguo que el otro (Activo, mas reciente) - bajo la regla vieja
+    perderia en los 2 desempates. Con el nivel 1 nuevo, gana igual."""
+    ahora = datetime.utcnow()
+    async with AsyncSessionLocal() as session:
+        await _crear_emisor(
+            session, negocio_id=negocio_temporal, rfc="TEST080808HH8",
+            estado="Inactivo", created_at=ahora - timedelta(days=30),  # el del usuario
+        )
+        await _crear_emisor(
+            session, negocio_id=negocio_temporal, rfc="TEST090909II9",
+            estado="Activo", created_at=ahora,
+        )
+        await session.commit()
+
+        out = await main.listar_emisores(
+            db=session, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TEST080808HH8",
+        )
+
+    assert [e.rfc for e in out] == ["TEST080808HH8", "TEST090909II9"]
+
+
+async def test_usuario_sin_emisor_propio_cae_a_regla_de_activo_y_fecha(negocio_temporal):
+    """x_usuario_rfc no coincide con ningun emisor del negocio (ej. admin
+    de despacho sin RFC propio como emisor) - el nivel 1 no debe afectar
+    nada, cae limpio a las reglas 2/3 de siempre."""
+    ahora = datetime.utcnow()
+    async with AsyncSessionLocal() as session:
+        await _crear_emisor(
+            session, negocio_id=negocio_temporal, rfc="TEST101010JJ0",
+            estado="Activo", created_at=ahora - timedelta(days=30),
+        )
+        await _crear_emisor(
+            session, negocio_id=negocio_temporal, rfc="TEST111111KK1",
+            estado="Inactivo", created_at=ahora,
+        )
+        await session.commit()
+
+        out = await main.listar_emisores(
+            db=session, x_negocio_id=str(negocio_temporal), x_usuario_rfc="RFC_QUE_NO_EXISTE_AQUI",
+        )
+
+    assert [e.rfc for e in out] == ["TEST101010JJ0", "TEST111111KK1"]

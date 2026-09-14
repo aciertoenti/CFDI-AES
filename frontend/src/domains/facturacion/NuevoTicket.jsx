@@ -142,7 +142,13 @@ export default function NuevoTicket(){
         </div>
       </Card>
       <div style={{marginTop:12,display:"flex",gap:10,flexWrap:"wrap"}}>
-        <Btn onClick={crearTicket} disabled={enviando||emisorInactivo}>{enviando?"Generando…":(emisorInactivo?"Emisor Inactivo — no se puede generar":"Generar ticket →")}</Btn>
+        {/* !!resultado en el disabled (bug real, ver zg... campanita triage):
+            enviando vuelve a false en el finally de crearTicket tras un
+            exito, pero resultado sigue con datos - sin este check el boton
+            quedaba habilitado con el mismo formulario intacto, listo para
+            reenviar y duplicar el ticket con un solo clic mas. "Crear otro
+            ticket" es el unico camino de vuelta (limpia resultado). */}
+        <Btn onClick={crearTicket} disabled={enviando||emisorInactivo||!!resultado}>{enviando?"Generando…":(emisorInactivo?"Emisor Inactivo — no se puede generar":"Generar ticket →")}</Btn>
         {resultado && <Btn variant="secondary" type="button" onClick={otroTicket}>Crear otro ticket</Btn>}
       </div>
       {resultado && (

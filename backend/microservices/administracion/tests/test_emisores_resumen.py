@@ -16,6 +16,7 @@ DB real para crear_emisor/actualizar_emisor/obtener_emisores_resumen
 es lo que realmente queda en Postgres), httpx mockeado para las llamadas
 a facturacion (mismo patron que test_resumen_negocio.py).
 """
+import base64
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -72,7 +73,6 @@ def _cert_sintetico_der(*, rfc: str, dias_vigencia: int, otro_rfc_representante:
 
 
 def _cert_sintetico_base64(**kwargs) -> str:
-    import base64
     return base64.b64encode(_cert_sintetico_der(**kwargs)).decode()
 
 
@@ -301,6 +301,9 @@ async def test_emisores_resumen_solo_activos_con_facturas_y_dias_por_emisor(monk
     # "Reemplazada" (1 dia) NO debe colarse, solo la "Activo".
     assert d1.dias_restantes_efirma == 700
     assert d1.vigencia_efirma_hasta == date.today() + timedelta(days=700)
+    # csd_cert_base64="dummy" no es base64 valido -> la comparacion de hash
+    # degrada a False (nunca lanza) - caso "no-match normal".
+    assert d1.csd_es_efirma_duplicada is False
 
     d2 = por_rfc["EEEE850101EE1"]
     assert d2.facturas_mes == 3
@@ -309,29 +312,46 @@ async def test_emisores_resumen_solo_activos_con_facturas_y_dias_por_emisor(monk
     # Sin ninguna e.firma registrada para este RFC - None, no error.
     assert d2.vigencia_efirma_hasta is None
     assert d2.dias_restantes_efirma is None
+    assert d2.csd_es_efirma_duplicada is False  # sin e.firma, no se evalua nada
 
 
-async def test_emisores_resumen_alerta_csd_y_efirma_con_la_misma_vigencia(monkeypatch):
-    """Caso real (RAHP7112093H0, 15-sep-2026): un usuario subio su e.firma
-    en el formulario de CSD por error - ambas vigencias quedan IDENTICAS.
-    El endpoint no bloquea nada (fuera de alcance de esta tarjeta), pero
-    debe exponer ambos valores tal cual para que la señal sea visible."""
+async def test_emisores_resumen_alerta_csd_y_efirma_con_la_misma_vigencia_pero_hash_distinto(monkeypatch):
+    """Caso sintetico deliberado (el que mas riesgo tiene de romperse si la
+    logica de las dos ramas colapsa): CSD y e.firma con la MISMA fecha de
+    vigencia por COINCIDENCIA (mismo tramite el mismo dia, certificados
+    genuinamente DISTINTOS - dos llaves RSA generadas por separado, hash
+    distinto). Debe seguir el comportamiento de "misma fecha" (banner
+    original en el frontend) - vigencia_csd_hasta NO se anula,
+    csd_es_efirma_duplicada debe ser False. Esto es lo opuesto al caso de
+    hash identico (ver test siguiente) - ambos casos son mutuamente
+    excluyentes por construccion."""
     async with AsyncSessionLocal() as session:
-        negocio = Negocio(nombre="TEST alerta CSD=FIEL", plan="despacho")
+        negocio = Negocio(nombre="TEST alerta CSD=FIEL hash distinto", plan="despacho")
         session.add(negocio)
         await session.commit()
         await session.refresh(negocio)
         negocio_id = negocio.id
 
-        misma_fecha = date(2028, 5, 2)
+        # Dos certificados sinteticos INDEPENDIENTES (llaves RSA distintas -
+        # nunca coinciden en hash) generados con el mismo dias_vigencia, asi
+        # que su fecha (.date(), sin hora) coincide en la practica.
+        cert_csd_b64 = _cert_sintetico_base64(rfc="GGGG850101GG1", dias_vigencia=700)
+        cert_efirma_b64 = _cert_sintetico_base64(rfc="GGGG850101GG1", dias_vigencia=700)
+        assert cert_csd_b64 != cert_efirma_b64  # confirma que son genuinamente distintos
+
+        misma_fecha = extraer_vigencia_hasta_de_certificado(base64.b64decode(cert_csd_b64))
+        assert misma_fecha == extraer_vigencia_hasta_de_certificado(base64.b64decode(cert_efirma_b64))
+
         emisor = Emisor(
             negocio_id=negocio_id, rfc="GGGG850101GG1", razon_social="Emisor confundido",
             regimen_fiscal="625", codigo_postal="00000",
-            csd_cert_base64="dummy", csd_key_base64="dummy", csd_password="dummy",
+            csd_cert_base64=cert_csd_b64, csd_key_base64="dummy", csd_password="dummy",
             estado="Activo", vigencia_csd_hasta=misma_fecha,
         )
         session.add(emisor)
-        session.add(_efirma_dummy(rfc_titular="GGGG850101GG1", negocio_id=negocio_id, vigencia_hasta=misma_fecha))
+        efirma = _efirma_dummy(rfc_titular="GGGG850101GG1", negocio_id=negocio_id, vigencia_hasta=misma_fecha)
+        efirma.cert_base64 = cert_efirma_b64
+        session.add(efirma)
         await session.commit()
 
     try:
@@ -339,9 +359,98 @@ async def test_emisores_resumen_alerta_csd_y_efirma_con_la_misma_vigencia(monkey
             out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id))
         assert len(out) == 1
         item = out[0]
-        assert item.vigencia_csd_hasta == misma_fecha
+        assert item.vigencia_csd_hasta == misma_fecha  # NO se anula
         assert item.vigencia_efirma_hasta == misma_fecha
-        assert item.vigencia_csd_hasta == item.vigencia_efirma_hasta  # la señal de alerta en si
+        assert item.vigencia_csd_hasta == item.vigencia_efirma_hasta  # la señal del banner original
+        assert item.csd_es_efirma_duplicada is False  # hash distinto -> NO es el caso de archivo duplicado
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(Emisor.__table__.delete().where(Emisor.negocio_id == negocio_id))
+            await session.execute(Efirma.__table__.delete().where(Efirma.negocio_id == negocio_id))
+            await session.execute(Negocio.__table__.delete().where(Negocio.id == negocio_id))
+            await session.commit()
+
+
+async def test_emisores_resumen_hash_identico_anula_vigencia_csd_y_marca_duplicada(monkeypatch):
+    """Caso real (RAHP7112093H0, 15-sep-2026): el CSD registrado es
+    BYTE-POR-BYTE el mismo archivo que la e.firma. A diferencia del test
+    anterior (misma fecha, hash distinto), aqui vigencia_csd_hasta SI debe
+    anularse a None (aunque en la fila de Emisor haya una fecha real
+    parseable guardada) y csd_es_efirma_duplicada debe ser True."""
+    async with AsyncSessionLocal() as session:
+        negocio = Negocio(nombre="TEST hash identico", plan="despacho")
+        session.add(negocio)
+        await session.commit()
+        await session.refresh(negocio)
+        negocio_id = negocio.id
+
+        # UN SOLO certificado, usado para AMBOS campos - el caso real.
+        cert_b64 = _cert_sintetico_base64(rfc="HHHH850101HH1", dias_vigencia=365)
+        fecha_real = extraer_vigencia_hasta_de_certificado(base64.b64decode(cert_b64))
+
+        emisor = Emisor(
+            negocio_id=negocio_id, rfc="HHHH850101HH1", razon_social="Emisor con archivo duplicado",
+            regimen_fiscal="625", codigo_postal="00000",
+            csd_cert_base64=cert_b64, csd_key_base64="dummy", csd_password="dummy",
+            estado="Activo", vigencia_csd_hasta=fecha_real,  # fecha REAL, parseable - igual se anula
+        )
+        session.add(emisor)
+        efirma = _efirma_dummy(rfc_titular="HHHH850101HH1", negocio_id=negocio_id, vigencia_hasta=fecha_real)
+        efirma.cert_base64 = cert_b64  # el MISMO archivo
+        session.add(efirma)
+        await session.commit()
+
+    try:
+        async with AsyncSessionLocal() as db:
+            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id))
+        assert len(out) == 1
+        item = out[0]
+        assert item.csd_es_efirma_duplicada is True
+        assert item.vigencia_csd_hasta is None  # anulado, aunque el CSD tuviera fecha real parseable
+        assert item.dias_restantes is None
+        assert item.vigencia_efirma_hasta == fecha_real  # la e.firma SI conserva su vigencia real
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(Emisor.__table__.delete().where(Emisor.negocio_id == negocio_id))
+            await session.execute(Efirma.__table__.delete().where(Efirma.negocio_id == negocio_id))
+            await session.execute(Negocio.__table__.delete().where(Negocio.id == negocio_id))
+            await session.commit()
+
+
+async def test_emisores_resumen_certificado_corrupto_no_truena_al_comparar_hash(monkeypatch):
+    """Certificado de Emisor corrupto (ej. GWT010101AA1 real) con una
+    e.firma real y valida registrada para el mismo RFC - la comparacion de
+    hash debe degradar a False (no se pudo confirmar que sean el mismo
+    archivo) sin tronar el endpoint completo."""
+    async with AsyncSessionLocal() as session:
+        negocio = Negocio(nombre="TEST cert corrupto vs efirma", plan="despacho")
+        session.add(negocio)
+        await session.commit()
+        await session.refresh(negocio)
+        negocio_id = negocio.id
+
+        cert_efirma_b64 = _cert_sintetico_base64(rfc="JJJJ850101JJ1", dias_vigencia=400)
+
+        emisor = Emisor(
+            negocio_id=negocio_id, rfc="JJJJ850101JJ1", razon_social="Emisor con CSD corrupto",
+            regimen_fiscal="625", codigo_postal="00000",
+            csd_cert_base64="esto-no-es-base64-valido-ni-cerca==", csd_key_base64="dummy", csd_password="dummy",
+            estado="Activo", vigencia_csd_hasta=None,  # ya nunca se pudo parsear, ver backfill
+        )
+        session.add(emisor)
+        efirma = _efirma_dummy(rfc_titular="JJJJ850101JJ1", negocio_id=negocio_id, vigencia_hasta=date.today() + timedelta(days=400))
+        efirma.cert_base64 = cert_efirma_b64
+        session.add(efirma)
+        await session.commit()
+
+    try:
+        async with AsyncSessionLocal() as db:
+            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id))
+        assert len(out) == 1
+        item = out[0]
+        assert item.csd_es_efirma_duplicada is False  # degradado, nunca lanzo
+        assert item.vigencia_csd_hasta is None  # ya era None desde antes, no relacionado al hash
+        assert item.vigencia_efirma_hasta is not None  # la e.firma en si sigue leyendose bien
     finally:
         async with AsyncSessionLocal() as session:
             await session.execute(Emisor.__table__.delete().where(Emisor.negocio_id == negocio_id))
@@ -370,3 +479,55 @@ async def test_negocio_ajeno_es_404_no_403(negocio_con_2_emisores):
                 negocio_id=negocio_con_2_emisores, db=db, x_negocio_id="999999",
             )
     assert exc.value.status_code == 404
+
+
+async def test_sin_efirma_nunca_compara_hash_y_no_toca_vigencia(monkeypatch):
+    """Emisor con CSD real (vigencia parseable) y SIN ninguna e.firma
+    registrada para su RFC - _csd_es_copia_de_efirma NUNCA debe
+    ejecutarse (nada que comparar sin una e.firma), y vigencia_csd_hasta
+    debe salir intacta, no anulada.
+
+    A diferencia de otros tests que solo verifican el RESULTADO final,
+    este monkeypatchea _csd_es_copia_de_efirma para que lance si alguna
+    vez se llega a invocar - prueba el "nunca se ejecuta", no solo que el
+    resultado final coincida por casualidad."""
+    def _fallar_si_se_llama(emisor, efirma):
+        raise AssertionError("_csd_es_copia_de_efirma no debia llamarse sin e.firma registrada")
+    monkeypatch.setattr(main, "_csd_es_copia_de_efirma", _fallar_si_se_llama)
+
+    async with AsyncSessionLocal() as session:
+        negocio = Negocio(nombre="TEST sin efirma registrada", plan="despacho")
+        session.add(negocio)
+        await session.commit()
+        await session.refresh(negocio)
+        negocio_id = negocio.id
+
+        fecha_real = date.today() + timedelta(days=200)
+        emisor = Emisor(
+            negocio_id=negocio_id, rfc="LLLL850101LL1", razon_social="Emisor sin e.firma",
+            regimen_fiscal="601", codigo_postal="00000",
+            csd_cert_base64="dummy", csd_key_base64="dummy", csd_password="dummy",
+            estado="Activo", vigencia_csd_hasta=fecha_real,
+        )
+        session.add(emisor)
+        # Deliberadamente SIN insertar ninguna fila en Efirma para este RFC.
+        await session.commit()
+
+    try:
+        _patch_facturacion_por_rfc(monkeypatch, {
+            "LLLL850101LL1": _FakeHttpResp(json_data={"facturas_mes": 5, "canceladas_mes": 0}),
+        })
+        async with AsyncSessionLocal() as db:
+            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id))
+        assert len(out) == 1
+        item = out[0]
+        assert item.vigencia_csd_hasta == fecha_real  # intacta, nunca anulada
+        assert item.dias_restantes == 200
+        assert item.vigencia_efirma_hasta is None
+        assert item.dias_restantes_efirma is None
+        assert item.csd_es_efirma_duplicada is False
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(Emisor.__table__.delete().where(Emisor.negocio_id == negocio_id))
+            await session.execute(Negocio.__table__.delete().where(Negocio.id == negocio_id))
+            await session.commit()

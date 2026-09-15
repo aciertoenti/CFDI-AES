@@ -8,6 +8,9 @@
 # de esta tarea (folios consecutivos es #12, tarea aparte).
 # ──────────────────────────────────────────────────────────────────────────────
 import base64
+import binascii
+import hashlib
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
@@ -152,6 +155,13 @@ async def lifespan(app: FastAPI):
     await stamp_head_si_es_ambiente_nuevo()
     yield
 
+
+# Mismo patron que facturacion (ver comentario ahi) - sin esto, uvicorn solo
+# configura sus propios loggers y los mensajes INFO/WARNING se descartan en
+# silencio. Necesario para _csd_es_copia_de_efirma() (ver abajo): una
+# excepcion inesperada ahi debe quedar auditada, no desaparecer.
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("administracion")
 
 app = FastAPI(title="CFDI – Servicio de Administración", version="2.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["*"], allow_headers=["*"])
@@ -328,6 +338,17 @@ class EmisorResumenItem(BaseModel):
     dias_restantes: Optional[int] = None
     vigencia_efirma_hasta: Optional[date] = None
     dias_restantes_efirma: Optional[int] = None
+    # csd_es_efirma_duplicada (hallazgo del 15-sep, refuerzo del banner de
+    # "misma fecha"): True cuando el CSD registrado es BYTE-POR-BYTE el
+    # mismo archivo que la e.firma (comparado por SHA-256 sobre los bytes
+    # ya descifrados de ambos certificados) - en ese caso vigencia_csd_hasta
+    # se fuerza a None aqui mismo (el CSD "vigente" es en realidad el
+    # archivo equivocado, no debe mostrarse como valido) para que el
+    # frontend lo trate como "CSD no registrado", no como un CSD real con
+    # coincidencia de fecha casual (ese otro caso sigue con el banner
+    # existente, son mutuamente excluyentes por construccion: si esto es
+    # True, vigencia_csd_hasta ya viene en None).
+    csd_es_efirma_duplicada: bool = False
     estado: str
 
 
@@ -663,6 +684,61 @@ async def obtener_resumen_negocio(
     )
 
 
+def _csd_es_copia_de_efirma(emisor: Emisor, efirma: Efirma) -> bool:
+    """
+    True si el CSD registrado para este emisor es BYTE-POR-BYTE el mismo
+    archivo que su e.firma (SHA-256 sobre los bytes YA DESCIFRADOS del
+    certificado, no sobre el base64 crudo ni sobre el blob cifrado) -
+    refuerzo del banner de "misma fecha" (dashboard multi-emisor): dos
+    certificados legitimos pueden coincidir en fecha de vencimiento por
+    casualidad (mismo tramite el mismo dia), pero nunca en el hash
+    completo del archivo salvo que sea literalmente el mismo archivo
+    subido dos veces (caso real: RAHP7112093H0, confirmado antes a mano).
+
+    emisor.csd_cert_base64 ya llega descifrado de forma transparente por
+    el TypeDecorator CifradoFernet (ver database.py) - efirma.cert_base64
+    nunca se cifro en primer lugar (es el certificado PUBLICO, ver
+    docstring de Efirma). Ninguno de los dos requiere una llamada de
+    descifrado aparte de leer el atributo del ORM - se reutiliza tal cual.
+
+    Nunca lanza - pero el except ahora es acotado, no un "except Exception"
+    generico (verificado contra el caso real antes de escribir esto, no
+    adivinado):
+      - base64.b64decode(...) es la UNICA linea que puede fallar aqui
+        (hashlib.sha256 nunca lanza sobre bytes, sea cual sea su
+        contenido) - dispara binascii.Error si el string no es base64
+        valido (padding/caracteres invalidos), o TypeError si el campo no
+        es str/bytes (defensivo, csd_cert_base64/cert_base64 son NOT NULL
+        en el schema, pero no cuesta cubrirlo).
+      - Confirmado explicitamente contra GWT010101AA1 (el certificado
+        corrupto real conocido): su csd_cert_base64 SI es base64 valido
+        (decodifica a bytes reales, aunque cortos) - lo que esta corrupto
+        es el DER resultante (falla al parsearlo como x509 en
+        extraer_vigencia_hasta_de_certificado, una funcion DISTINTA que
+        esta SI hace ese parseo). Esta funcion nunca parsea DER, solo
+        hashea bytes crudos - GWT010101AA1 no dispara ninguna excepcion
+        aqui, solo produce un hash que no coincide (False por comparacion
+        normal, no por el except).
+      - Cualquier excepcion FUERA de (binascii.Error, TypeError) es
+        genuinamente inesperada - se registra con logger.warning(...)
+        (RFC del emisor incluido) antes de degradar a False, para que no
+        desaparezca en silencio si algun dia pasa algo que hoy no se
+        preveo.
+    """
+    try:
+        cert_csd = base64.b64decode(emisor.csd_cert_base64)
+        cert_efirma = base64.b64decode(efirma.cert_base64)
+        return hashlib.sha256(cert_csd).digest() == hashlib.sha256(cert_efirma).digest()
+    except (binascii.Error, TypeError):
+        return False
+    except Exception:
+        logger.warning(
+            "Fallo inesperado comparando CSD vs e.firma por hash para el emisor %s",
+            emisor.rfc, exc_info=True,
+        )
+        return False
+
+
 @app.get(
     "/admin/negocios/{negocio_id}/emisores-resumen",
     response_model=List[EmisorResumenItem],
@@ -715,14 +791,25 @@ async def obtener_emisores_resumen(
         vigencia_efirma_hasta = efirma.vigencia_hasta if efirma else None
         dias_restantes_efirma = (vigencia_efirma_hasta - date.today()).days if vigencia_efirma_hasta else None
 
+        # Refuerzo por hash (ver _csd_es_copia_de_efirma) - solo tiene
+        # sentido evaluarlo si hay e.firma registrada para este RFC.
+        csd_es_efirma_duplicada = False
+        if efirma is not None and _csd_es_copia_de_efirma(e, efirma):
+            csd_es_efirma_duplicada = True
+            vigencia_csd_hasta = None
+            dias_restantes = None
+        else:
+            vigencia_csd_hasta = e.vigencia_csd_hasta
+
         items.append(EmisorResumenItem(
             rfc=e.rfc,
             razon_social=e.razon_social,
             facturas_mes=facturas_mes,
-            vigencia_csd_hasta=e.vigencia_csd_hasta,
+            vigencia_csd_hasta=vigencia_csd_hasta,
             dias_restantes=dias_restantes,
             vigencia_efirma_hasta=vigencia_efirma_hasta,
             dias_restantes_efirma=dias_restantes_efirma,
+            csd_es_efirma_duplicada=csd_es_efirma_duplicada,
             estado=e.estado,
         ))
     return items

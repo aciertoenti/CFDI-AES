@@ -86,7 +86,7 @@ class _FakeHttpClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def get(self, url, headers=None):
+    async def get(self, url, params=None, headers=None):
         if self._raise is not None:
             raise self._raise
         return self._resp

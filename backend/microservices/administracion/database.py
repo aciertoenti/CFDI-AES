@@ -135,6 +135,15 @@ class Emisor(Base):
     # Text (no String(255)): el texto cifrado con Fernet es mas largo que la
     # contrasena original.
     csd_password: Mapped[str] = mapped_column(CifradoFernet, nullable=False)
+    # Fecha de vencimiento del CSD (not_valid_after del certificado x509),
+    # EXTRAIDA del propio certificado - nunca la captura el usuario, mismo
+    # criterio que Efirma.vigencia_hasta (zg55DWY). Nullable: emisores
+    # previos a este campo (backfill pendiente/parcial - ver script de
+    # backfill, hay un CSD corrupto real que no se puede parsear) y
+    # cualquier fallo tolerado de parseo quedan en NULL, nunca inventado.
+    # Poblada al vuelo en crear_emisor/actualizar_emisor (alta y reemplazo
+    # de CSD) ademas del backfill one-off para los ya existentes.
+    vigencia_csd_hasta: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="Activo")
     # Auditoria (no control de seguridad) - RFC personal (X-Usuario-Rfc, ver
     # api_gateway) de quien dio de alta el emisor. Nullable a proposito: dato

@@ -1001,6 +1001,7 @@ async def contar_facturas_por_emisor(
 
 @app.get("/facturas/resumen-mes", dependencies=[Depends(require_internal_key)])
 async def resumen_mes(
+    emisor_rfc: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
@@ -1009,23 +1010,25 @@ async def resumen_mes(
     /facturas/count pero a nivel de TODO el negocio (no un emisor), y con
     el desglose de canceladas que /facturas/count no trae.
 
+    emisor_rfc opcional (zg1cYDU.../dashboard multi-emisor, GET
+    /admin/negocios/{id}/emisores-resumen alla): si viene, filtra ademas
+    por emisor - mismo query, mismo criterio de mes calendario, sin
+    duplicar la logica en un endpoint aparte. Omitido, se comporta exacto
+    igual que antes (total del negocio).
+
     Mes calendario en curso (no rolling 30 dias) - mismo criterio que
     timbrar_factura ya usa para el limite del plan (inicio_mes = dia 1 a
     las 00:00 de hoy). Solo 2 COUNT baratos, sin traer filas."""
     negocio_id = requerir_negocio_id(x_negocio_id)
     inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    filtros_base = [Factura.negocio_id == negocio_id, Factura.fecha_timbrado >= inicio_mes]
+    if emisor_rfc:
+        filtros_base.append(Factura.emisor_rfc == emisor_rfc)
     facturas_mes = await db.scalar(
-        select(func.count(Factura.id)).where(
-            Factura.negocio_id == negocio_id,
-            Factura.fecha_timbrado >= inicio_mes,
-        )
+        select(func.count(Factura.id)).where(*filtros_base)
     ) or 0
     canceladas_mes = await db.scalar(
-        select(func.count(Factura.id)).where(
-            Factura.negocio_id == negocio_id,
-            Factura.fecha_timbrado >= inicio_mes,
-            Factura.estado == "Cancelada",
-        )
+        select(func.count(Factura.id)).where(*filtros_base, Factura.estado == "Cancelada")
     ) or 0
     return {"facturas_mes": facturas_mes, "canceladas_mes": canceladas_mes}
 

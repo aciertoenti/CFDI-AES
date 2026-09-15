@@ -18,6 +18,8 @@ Limitacion conocida: solo verificado contra un CSD real de persona moral
 (unico disponible en certs_test/) - no se probo contra un certificado de
 persona fisica real.
 """
+from datetime import date
+
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.x509.oid import NameOID
@@ -43,3 +45,26 @@ def extraer_rfc_de_certificado(cert_bytes: bytes) -> str:
         raise
     except Exception as e:
         raise ValueError(f"No se pudo leer el certificado: {e}")
+
+
+def extraer_vigencia_hasta_de_certificado(cert_bytes: bytes) -> date:
+    """
+    Extrae la fecha de vencimiento (not_valid_after) de un certificado CSD
+    del SAT (DER) - dashboard multi-emisor (vigencia CSD). Mismo patron ya
+    probado en _validar_material_efirma (main.py, zg55DWY) para la e.firma,
+    aplicado aqui al CSD: solo necesita el CERTIFICADO, no la llave privada
+    ni la contrasena (a diferencia del paso 6 de esa funcion, que valida el
+    PAR cert<->key - aqui solo se lee un campo publico del certificado).
+
+    Lanza ValueError si el certificado no se puede parsear - el llamador
+    decide que hacer con eso: 422 en los endpoints de alta/reemplazo,
+    degradar a NULL sin detener el proceso en el backfill (ya hay un CSD
+    real corrupto conocido, ver investigacion previa).
+    """
+    try:
+        cert = x509.load_der_x509_certificate(cert_bytes, default_backend())
+        return cert.not_valid_after_utc.date()
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"No se pudo leer la vigencia del certificado: {e}")

@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import Efirma, Emisor, Cliente, Negocio, Notificacion, SerieFolio, SolicitudDescarga, PaqueteDescarga, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from database import _fernet_efirma  # cifrado explicito de la e.firma (ver database.py)
-from csd_rfc import extraer_rfc_de_certificado
+from csd_rfc import extraer_rfc_de_certificado, extraer_vigencia_hasta_de_certificado
 from logo_storage import subir_logo, validar_logo
 from sat_descarga_client import (
     BloqueoPrevioError,
@@ -85,20 +85,27 @@ async def _invalidar_csd_cache_en_facturacion(rfc: str) -> bool:
         return False
 
 
-async def _obtener_resumen_facturas_mes(negocio_id: int) -> Optional[dict]:
+async def _obtener_resumen_facturas_mes(negocio_id: int, emisor_rfc: Optional[str] = None) -> Optional[dict]:
     """None si no se pudo obtener (sin INTERNAL_API_KEY, timeout, conexion
     rechazada, o status != 200) - a diferencia de _contar_facturas_del_emisor
     (que fail-cierra porque protege un DELETE), aqui la falla se degrada:
     el endpoint publico (obtener_resumen_negocio) devuelve los campos
     dependientes de facturacion como null + una advertencia, en vez de
     tumbar toda la respuesta con un 500 generico (zg6k9Pw, Dashboard 'Mi
-    cuenta') - limite_plan sigue disponible porque vive en esta misma BD."""
+    cuenta') - limite_plan sigue disponible porque vive en esta misma BD.
+
+    emisor_rfc opcional (dashboard multi-emisor, GET
+    /admin/negocios/{id}/emisores-resumen): filtra el resumen a un solo
+    emisor en vez de todo el negocio - mismo endpoint de facturacion,
+    mismo criterio de degradacion."""
     if not INTERNAL_API_KEY:
         return None
+    params = {"emisor_rfc": emisor_rfc} if emisor_rfc else {}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
                 f"{FACTURACION_URL}/facturas/resumen-mes",
+                params=params,
                 headers={"X-Internal-Key": INTERNAL_API_KEY, "X-Negocio-Id": str(negocio_id)},
             )
         if resp.status_code != 200:
@@ -298,6 +305,32 @@ class NegocioResumenResponse(BaseModel):
     advertencias: List[str] = []
 
 
+class EmisorResumenItem(BaseModel):
+    # Dashboard multi-emisor (vigencia CSD + concentracion de facturas):
+    # un item por emisor Activo del negocio. facturas_mes None si
+    # facturacion no respondio (degradado, mismo criterio que
+    # NegocioResumenResponse) - vigencia_csd_hasta/dias_restantes None si
+    # el CSD nunca se pudo parsear (ej. GWT010101AA1, certificado corrupto
+    # real conocido) o esta pendiente de backfill - nunca inventados.
+    #
+    # vigencia_efirma_hasta/dias_restantes_efirma (hallazgo real del 15-sep:
+    # un usuario subio su e.firma en el formulario de CSD sin que nada en
+    # pantalla lo hiciera evidente - CSD y e.firma son certificados
+    # DISTINTOS por diseno del SAT, tabla Efirma separada de Emisor, ver
+    # database.py) - se muestran como dos filas independientes en el
+    # frontend precisamente para que esa confusion sea visible de inmediato
+    # (ej. ambas vigencias identicas = señal de alerta). None si el RFC no
+    # tiene ninguna e.firma con estado="Activo" registrada - nunca inventado.
+    rfc: str
+    razon_social: str
+    facturas_mes: Optional[int] = None
+    vigencia_csd_hasta: Optional[date] = None
+    dias_restantes: Optional[int] = None
+    vigencia_efirma_hasta: Optional[date] = None
+    dias_restantes_efirma: Optional[int] = None
+    estado: str
+
+
 class NotificacionResponse(BaseModel):
     id: int
     negocio_id: int
@@ -489,6 +522,17 @@ async def crear_emisor(
             ),
         )
 
+    # Vigencia del CSD (dashboard multi-emisor) - se puebla al vuelo, mismo
+    # cert_bytes ya decodificado arriba. No bloquea el alta si falla: el
+    # cert ya demostro ser parseable (extraer_rfc_de_certificado lo hizo
+    # segundos antes, sobre el mismo objeto) asi que en la practica esto no
+    # deberia fallar de forma independiente - pero se degrada a NULL en vez
+    # de 422 por si acaso, la vigencia es informativa, no un gate de alta.
+    try:
+        vigencia_csd_hasta = extraer_vigencia_hasta_de_certificado(cert_bytes)
+    except ValueError:
+        vigencia_csd_hasta = None
+
     nuevo = Emisor(
         negocio_id=negocio_id,
         rfc=emisor.rfc,
@@ -498,6 +542,7 @@ async def crear_emisor(
         csd_cert_base64=emisor.csd_cert_base64,
         csd_key_base64=emisor.csd_key_base64,
         csd_password=emisor.csd_password,
+        vigencia_csd_hasta=vigencia_csd_hasta,
         creado_por_rfc=x_usuario_rfc,
     )
     db.add(nuevo)
@@ -616,6 +661,71 @@ async def obtener_resumen_negocio(
         limite_plan=limites["facturas_mes"],
         porcentaje_cancelacion_mes=_calcular_porcentaje_cancelacion(facturas_mes, canceladas_mes),
     )
+
+
+@app.get(
+    "/admin/negocios/{negocio_id}/emisores-resumen",
+    response_model=List[EmisorResumenItem],
+    dependencies=[Depends(require_internal_key)],
+)
+async def obtener_emisores_resumen(
+    negocio_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Dashboard multi-emisor (vigencia CSD + concentracion de facturas por
+    emisor) - pensado para negocios con mas de 1 emisor Activo, aunque el
+    endpoint no lo exige (el frontend decide si mostrar la seccion segun
+    len(emisores) > 1, ver Perfil.jsx). Mismo self-only 404 que
+    obtener_resumen_negocio/listar_notificaciones.
+
+    Un GET por emisor a facturacion (resumen-mes filtrado) - hoy son a lo
+    sumo unos pocos emisores por negocio (limite_emisores del plan mas
+    alto es 10), secuencial es suficiente, sin necesidad de paralelizar."""
+    caller_negocio_id = requerir_negocio_id(x_negocio_id)
+    if negocio_id != caller_negocio_id:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+    negocio_result = await db.execute(select(Negocio).where(Negocio.id == negocio_id))
+    if negocio_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
+
+    emisores_activos = (
+        await db.execute(
+            select(Emisor).where(Emisor.negocio_id == negocio_id, Emisor.estado == "Activo")
+        )
+    ).scalars().all()
+
+    items = []
+    for e in emisores_activos:
+        resumen_facturas = await _obtener_resumen_facturas_mes(negocio_id, emisor_rfc=e.rfc)
+        facturas_mes = resumen_facturas.get("facturas_mes") if resumen_facturas is not None else None
+        dias_restantes = (e.vigencia_csd_hasta - date.today()).days if e.vigencia_csd_hasta else None
+
+        # e.firma es una tabla APARTE (rfc_titular, referencia suave - ver
+        # database.py) - se consulta por RFC, no por negocio_id, porque una
+        # e.firma puede pertenecer a un negocio_id distinto al del Emisor
+        # (caso real ya observado: RAHP7112093H0 tiene su Emisor en
+        # negocio 11 pero su e.firma quedo con negocio_id=1). Solo la fila
+        # Activa cuenta (misma semantica que "el CSD vigente hoy").
+        efirma = (
+            await db.execute(
+                select(Efirma).where(Efirma.rfc_titular == e.rfc, Efirma.estado == "Activo")
+            )
+        ).scalars().first()
+        vigencia_efirma_hasta = efirma.vigencia_hasta if efirma else None
+        dias_restantes_efirma = (vigencia_efirma_hasta - date.today()).days if vigencia_efirma_hasta else None
+
+        items.append(EmisorResumenItem(
+            rfc=e.rfc,
+            razon_social=e.razon_social,
+            facturas_mes=facturas_mes,
+            vigencia_csd_hasta=e.vigencia_csd_hasta,
+            dias_restantes=dias_restantes,
+            vigencia_efirma_hasta=vigencia_efirma_hasta,
+            dias_restantes_efirma=dias_restantes_efirma,
+            estado=e.estado,
+        ))
+    return items
 
 
 class NegocioBrandingResponse(BaseModel):
@@ -874,12 +984,20 @@ async def actualizar_emisor(
             ),
         )
 
+    # Vigencia del CSD nuevo (dashboard multi-emisor) - mismo criterio de
+    # degradacion a NULL que crear_emisor, ver comentario ahi.
+    try:
+        vigencia_csd_hasta = extraer_vigencia_hasta_de_certificado(cert_bytes)
+    except ValueError:
+        vigencia_csd_hasta = None
+
     existente.razon_social = emisor.razon_social
     existente.regimen_fiscal = emisor.regimen_fiscal
     existente.codigo_postal = emisor.codigo_postal
     existente.csd_cert_base64 = emisor.csd_cert_base64
     existente.csd_key_base64 = emisor.csd_key_base64
     existente.csd_password = emisor.csd_password
+    existente.vigencia_csd_hasta = vigencia_csd_hasta
     existente.modificado_por_rfc = x_usuario_rfc
     await db.commit()
     await db.refresh(existente)

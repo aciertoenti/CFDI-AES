@@ -7,6 +7,7 @@ import { Card, Btn, SectionTitle, SectionSub } from "../../shared/components/ato
 import { C } from "../../shared/utils/format";
 import DashboardMiCuenta from "./DashboardMiCuenta";
 import ConfiguracionMarca from "./ConfiguracionMarca";
+import EmisoresResumenDashboard from "./EmisoresResumenDashboard";
 
 // Vista de aterrizaje post-login para usuarios admin (zg5z04A):
 // una vista NEUTRAL, no ligada a un emisor concreto.
@@ -166,6 +167,14 @@ export default function Perfil() {
             </div>
           ))}
         </Card>
+
+        {/* Dashboard multi-emisor (vigencia CSD + concentracion de
+            facturas) - SOLO para negocios con mas de 1 emisor, chequeo
+            explicito aqui en el frontend (no basta con que el backend
+            devuelva una lista corta - ver EmisoresResumenDashboard.jsx). */}
+        {!loading && !error && emisores.length > 1 && (
+          <EmisoresResumenDashboard negocioId={negocioId} />
+        )}
 
         <ConfiguracionMarca />
       </div>

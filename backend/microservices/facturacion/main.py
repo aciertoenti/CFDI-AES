@@ -15,7 +15,7 @@ from fastapi import FastAPI, Header, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional, List, Union
+from typing import Literal, Optional, List, Union
 from datetime import date, datetime, timedelta
 import httpx
 import jinja2
@@ -154,6 +154,23 @@ def _calcular_isr_art96_acumulado(base_gravable: Decimal, meses: int) -> Decimal
             return (cf + excedente * pct).quantize(Decimal("0.01"))
     return Decimal("0.00")  # inalcanzable: el ultimo tramo (ls=None) siempre atrapa
 
+# ─── Contador virtual Fase 3 (zg1cYDU/zg645h8): Plataformas Tecnologicas ──────
+REGIMEN_PLATAFORMAS = "625"  # verificado contra c_RegimenFiscal (satcfdi), solo PF segun el catalogo
+
+# Retencion de ISR (Art. 113-A LISR) por categoria de actividad - tasas
+# confirmadas contra el texto de la ley con consenso multi-fuente antes de
+# codificar. Alcance DELIBERADAMENTE reducido a 3 categorias: "venta de
+# bienes/prestacion de servicios" se excluye a proposito porque la tasa
+# esta en disputa entre fuentes (1.0% del texto base de la ley vs. posible
+# 2.5% segun LIF 2026, sin verificar contra fuente oficial) - mejor no
+# ofrecer el calculo que ofrecer uno con la tasa equivocada.
+TASA_ISR_PLATAFORMAS = {
+    "transporte": Decimal("0.021"),          # transporte terrestre de pasajeros / entrega de bienes
+    "hospedaje": Decimal("0.04"),             # hospedaje
+    "contenido_digital": Decimal("0.01"),     # descarga de contenidos digitales
+}
+TASA_IVA_PLATAFORMAS_CON_RFC = Decimal("0.08")  # misma tasa para las 3 categorias
+
 load_dotenv()
 
 
@@ -274,6 +291,28 @@ class ContadorVirtualISRActEmpResponse(BaseModel):
     advertencia: str = (
         "Gastos deducibles en $0 — CFDI recibidos aún no implementado "
         "(ver zg55DWY/zg6P6HE). El ISR mostrado no descuenta ningún gasto real."
+    )
+    disclaimer: str = (
+        "Estimación informativa basada en tus CFDI emitidos. "
+        "No sustituye a tu contador ni constituye asesoría fiscal."
+    )
+
+
+class ContadorVirtualISRPlataformasResponse(BaseModel):
+    aplica: bool
+    motivo_no_aplica: Optional[str] = None
+    emisor_rfc: str
+    periodo: str  # "YYYY-MM"
+    actividad: Optional[str] = None
+    ingresos_mes: float = 0.0
+    tasa_isr_aplicada: Optional[float] = None
+    isr_retenido_mes: float = 0.0
+    iva_retenido_mes: float = 0.0
+    advertencia_umbral: str = (
+        "Este cálculo no evalúa si calificas para pago definitivo (Art. 113-B LISR, "
+        "límite $300,000 anuales combinando plataformas + sueldos) — asume que ya "
+        "estás en el esquema de pago provisional. El sistema no tiene acceso a tus "
+        "ingresos por sueldos para hacer esa evaluación."
     )
     disclaimer: str = (
         "Estimación informativa basada en tus CFDI emitidos. "
@@ -1997,6 +2036,84 @@ async def contador_virtual_isr_actividad_empresarial(
         isr_pagado_meses_anteriores=float(isr_pagado_meses_anteriores),
         isr_a_pagar_mes=float(isr_a_pagar_mes),
         iva_a_pagar_mes=float(iva_a_pagar_mes),
+    )
+
+
+@app.get(
+    "/facturas/contador-virtual/isr-plataformas",
+    response_model=ContadorVirtualISRPlataformasResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def contador_virtual_isr_plataformas(
+    emisor_rfc: str,
+    anio: int,
+    mes: int = Query(ge=1, le=12),
+    actividad: Literal["transporte", "hospedaje", "contenido_digital"] = Query(...),
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """
+    Contador virtual Fase 3 (zg1cYDU/zg645h8): retencion de ISR (Art. 113-A
+    LISR) e IVA para Actividades Empresariales via Plataformas Tecnologicas
+    (regimen 625). NO acumulado (a diferencia de Fase 2/Art. 106) - cada
+    mes se calcula aislado, retencion simple sobre el ingreso del mes.
+
+    `actividad` es Literal - un valor fuera de las 3 categorias permitidas
+    da 422 automatico de FastAPI (mismo criterio de validacion que el
+    resto del proyecto, ver comentarios "422 (no 500)" en otros endpoints),
+    antes de tocar la BD.
+
+    Alcance deliberadamente reducido a 3 categorias (transporte, hospedaje,
+    contenido digital) - "venta de bienes/prestacion de servicios" se
+    excluye a proposito, tasa en disputa entre fuentes sin verificar contra
+    fuente oficial (ver TASA_ISR_PLATAFORMAS).
+
+    NO evalua el umbral de $300,000 anuales de pago definitivo (Art. 113-B) -
+    advertencia explicita siempre en el response (advertencia_umbral), el
+    sistema no tiene acceso a ingresos por sueldos del contribuyente para
+    hacer esa evaluacion.
+    """
+    datos_emisor = await obtener_datos_emisor(emisor_rfc, x_negocio_id)
+    periodo = f"{anio:04d}-{mes:02d}"
+
+    es_persona_fisica_plataformas = (
+        datos_emisor["regimen_fiscal"] == REGIMEN_PLATAFORMAS
+        and len(emisor_rfc) == RFC_LEN_PERSONA_FISICA
+    )
+    if not es_persona_fisica_plataformas:
+        motivo = (
+            f"Tu régimen fiscal ({datos_emisor['regimen_fiscal']}) no es Actividades "
+            f"Empresariales vía Plataformas Tecnológicas ({REGIMEN_PLATAFORMAS}) - este "
+            "estimador Fase 3 solo aplica a ese régimen."
+        )
+        return ContadorVirtualISRPlataformasResponse(
+            aplica=False, motivo_no_aplica=motivo, emisor_rfc=emisor_rfc, periodo=periodo,
+        )
+
+    mes_siguiente = date(anio + 1, 1, 1) if mes == 12 else date(anio, mes + 1, 1)
+    ingresos_mes = await db.scalar(
+        select(func.coalesce(func.sum(Factura.total), 0)).where(
+            Factura.emisor_rfc == emisor_rfc,
+            Factura.estado == "Vigente",
+            Factura.fecha_timbrado >= date(anio, mes, 1),
+            Factura.fecha_timbrado < mes_siguiente,
+        )
+    )
+    ingresos_mes = Decimal(str(ingresos_mes)) if ingresos_mes else Decimal("0")
+
+    tasa_isr = TASA_ISR_PLATAFORMAS[actividad]
+    isr_retenido_mes = (ingresos_mes * tasa_isr).quantize(Decimal("0.01"))
+    iva_retenido_mes = (ingresos_mes * TASA_IVA_PLATAFORMAS_CON_RFC).quantize(Decimal("0.01"))
+
+    return ContadorVirtualISRPlataformasResponse(
+        aplica=True,
+        emisor_rfc=emisor_rfc,
+        periodo=periodo,
+        actividad=actividad,
+        ingresos_mes=float(ingresos_mes),
+        tasa_isr_aplicada=float(tasa_isr),
+        isr_retenido_mes=float(isr_retenido_mes),
+        iva_retenido_mes=float(iva_retenido_mes),
     )
 
 

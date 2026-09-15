@@ -1,6 +1,7 @@
 import useEmisores from "../../shared/hooks/useEmisores";
 import ContadorVirtual from "./ContadorVirtual";
 import ContadorVirtualActEmpresarial from "./ContadorVirtualActEmpresarial";
+import ContadorVirtualPlataformas from "./ContadorVirtualPlataformas";
 import { Placeholder } from "../../shared/layout/AppShell";
 import { SectionTitle, SectionSub } from "../../shared/components/atoms";
 
@@ -15,11 +16,13 @@ import { SectionTitle, SectionSub } from "../../shared/components/atoms";
 // roto - no lo estaba, era la pantalla equivocada). Este componente
 // elimina esa eleccion manual por completo.
 //
-// Regimenes soportados hoy: 626 (RESICO PF, Fase 1) y 612 (Actividad
-// Empresarial y Profesional, Fase 2). Cualquier otro regimen -> mensaje
-// honesto, nunca una pantalla en blanco ni un error generico.
+// Regimenes soportados hoy: 626 (RESICO PF, Fase 1), 612 (Actividad
+// Empresarial y Profesional, Fase 2) y 625 (Plataformas Tecnologicas,
+// Fase 3). Cualquier otro regimen -> mensaje honesto, nunca una pantalla
+// en blanco ni un error generico.
 const REGIMEN_RESICO = "626";
 const REGIMEN_ACTIVIDAD_EMPRESARIAL = "612";
+const REGIMEN_PLATAFORMAS = "625";
 
 export default function CalculoImpuestos(){
   const {emisores,loading,error,emisorActivoRfc} = useEmisores();
@@ -31,13 +34,15 @@ export default function CalculoImpuestos(){
 
   if (emisor.regimen_fiscal === REGIMEN_RESICO) return <ContadorVirtual/>;
   if (emisor.regimen_fiscal === REGIMEN_ACTIVIDAD_EMPRESARIAL) return <ContadorVirtualActEmpresarial/>;
+  if (emisor.regimen_fiscal === REGIMEN_PLATAFORMAS) return <ContadorVirtualPlataformas/>;
 
   return (
     <div>
       <SectionTitle>Cálculo de impuestos</SectionTitle>
       <SectionSub>
         El cálculo automático para tu régimen fiscal ({emisor.regimen_fiscal}) todavía no está disponible.
-        Hoy cubrimos RESICO Personas Físicas ({REGIMEN_RESICO}) y Actividad Empresarial y Profesional ({REGIMEN_ACTIVIDAD_EMPRESARIAL}).
+        Hoy cubrimos RESICO Personas Físicas ({REGIMEN_RESICO}), Actividad Empresarial y Profesional ({REGIMEN_ACTIVIDAD_EMPRESARIAL})
+        y Actividades Empresariales via Plataformas Tecnológicas ({REGIMEN_PLATAFORMAS}).
       </SectionSub>
     </div>
   );

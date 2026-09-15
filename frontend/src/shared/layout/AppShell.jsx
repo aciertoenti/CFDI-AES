@@ -151,7 +151,15 @@ export default function AppShell({onLogout,onCambiarPassword,usuarioActual,views
               : <div style={{fontSize:11,color:C.textMuted,whiteSpace:"nowrap"}}>Emisor: {cargandoEmisor?"…":(emisorActual?.rfc||"—")}</div>
             )}
             <NotificationBell negocioId={usuarioActual?.negocio_id} />
-            <div style={{width:30,height:30,borderRadius:"50%",background:C.primary,display:"flex",alignItems:"center",justifyContent:"center",color:C.accent,fontWeight:700,fontSize:11,flexShrink:0}}>{inicialesEmisor}</div>
+            {/* Avatar -> "Mi perfil": nunca tuvo navegacion (confirmado con
+                git log -S en todo el historial - no es una regresion, ver
+                diagnostico en el chat). role="button" exige manejar
+                Enter/Espacio a mano - un div no es focuseable/activable por
+                teclado por si solo como si fuera un <button> real. */}
+            <div onClick={()=>navegarA("perfil")}
+              onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();navegarA("perfil");}}}
+              role="button" tabIndex={0} aria-label="Ir a Mi perfil"
+              style={{width:30,height:30,borderRadius:"50%",background:C.primary,display:"flex",alignItems:"center",justifyContent:"center",color:C.accent,fontWeight:700,fontSize:11,flexShrink:0,cursor:"pointer"}}>{inicialesEmisor}</div>
             <button onClick={()=>setMostrarPasswordModal(true)} title="Cambiar contraseña"
               style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 10px",fontSize:12,color:C.textSec,cursor:"pointer",flexShrink:0}}>Cambiar contraseña</button>
             <button onClick={onLogout} title="Cerrar sesión"

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { C } from "../utils/format";
 
 export function Badge({estado}){
@@ -28,3 +29,35 @@ export function KPI({label,value,sub,dark}){
 
 export function SectionTitle({children}){return <h2 style={{fontSize:20,fontWeight:700,color:C.text,marginBottom:4}}>{children}</h2>;}
 export function SectionSub({children}){return <p style={{color:C.textSec,fontSize:13,marginBottom:18,marginTop:2}}>{children}</p>;}
+
+// Bloque colapsable generico ("Mostrar detalle" del Contador Virtual,
+// Fases 1 y 2 - zg1cYDU) - cerrado por defecto a proposito, mismo patron
+// visual de TAECONTA (resumen arriba siempre visible, detalle paso a paso
+// oculto hasta que el usuario lo pide). Reutilizable: cualquier pantalla
+// con un desglose largo puede usarlo, no exclusivo del Contador Virtual.
+export function DetalleExpandible({titulo="Mostrar detalle",children}){
+  const [abierto,setAbierto]=useState(false);
+  return (
+    <Card style={{marginBottom:12}}>
+      <div onClick={()=>setAbierto(a=>!a)} role="button" aria-expanded={abierto}
+        style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",userSelect:"none"}}>
+        <span style={{fontSize:13,fontWeight:700,color:C.text}}>{abierto?"Ocultar detalle":titulo}</span>
+        <span style={{fontSize:11,color:C.textMuted,transform:abierto?"rotate(180deg)":"none",transition:"transform .15s",display:"inline-block"}}>▾</span>
+      </div>
+      {abierto && <div style={{marginTop:12,borderTop:`1px solid ${C.border}`,paddingTop:12}}>{children}</div>}
+    </Card>
+  );
+}
+
+// Fila de una linea del detalle paso a paso: "resultado" se destaca (fin
+// de un calculo intermedio o final), "referencia" es un dato de entrada
+// plano. Mismo criterio visual en ambos motores del Contador Virtual.
+export function FilaDetalle({etiqueta,valor,tipo="referencia"}){
+  const esResultado=tipo==="resultado";
+  return (
+    <div style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderTop:`1px solid ${C.border}`,fontSize:13}}>
+      <span style={{color:esResultado?C.text:C.textSec,fontWeight:esResultado?600:400}}>{etiqueta}</span>
+      <span style={{color:esResultado?C.accent:C.text,fontWeight:esResultado?700:600,textAlign:"right"}}>{valor}</span>
+    </div>
+  );
+}

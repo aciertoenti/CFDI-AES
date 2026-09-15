@@ -2,7 +2,7 @@ import { useState } from "react";
 import useEmisores from "../../shared/hooks/useEmisores";
 import { useContadorVirtualISRResico } from "./hooks";
 import { Placeholder } from "../../shared/layout/AppShell";
-import { SectionTitle, SectionSub, Card, KPIGrid, KPI } from "../../shared/components/atoms";
+import { SectionTitle, SectionSub, Card, KPIGrid, KPI, DetalleExpandible, FilaDetalle } from "../../shared/components/atoms";
 import { C, fmt } from "../../shared/utils/format";
 
 const ADMINISTRACION_BASE = "http://localhost:8002";
@@ -54,6 +54,15 @@ export default function ContadorVirtual(){
               ⚠ El ingreso del mes excede el tope mensual normal de RESICO (~$291,666.67, equivalente al tope anual de $3.5M) — se aplicó la tasa más alta como referencia, pero esto puede indicar que ya no calificas para este régimen.
             </div>
           )}
+
+          <DetalleExpandible>
+            <FilaDetalle etiqueta="Ingreso PUE del periodo" valor={fmt(datos.ingreso_pue_incluido)}/>
+            <FilaDetalle etiqueta="Gastos deducibles" valor="No aplica — RESICO no permite deducciones"/>
+            <FilaDetalle etiqueta="Base gravable" valor={fmt(datos.ingreso_pue_incluido)} tipo="resultado"/>
+            <FilaDetalle etiqueta="Tasa aplicada (tabla RESICO por tramo de ingreso)" valor={`${(datos.tasa_aplicada*100).toFixed(2)}%`}/>
+            <FilaDetalle etiqueta="ISR provisional = Base gravable × Tasa" valor={fmt(datos.isr_estimado)} tipo="resultado"/>
+            <FilaDetalle etiqueta="IVA" valor="No aplica — este estimador no calcula IVA para RESICO"/>
+          </DetalleExpandible>
 
           <Card style={{marginBottom:12}}>
             <div style={{fontSize:11,color:C.textMuted,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.06em"}}>CFDI PUE incluidos en el cálculo</div>

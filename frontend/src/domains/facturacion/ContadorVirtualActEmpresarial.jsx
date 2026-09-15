@@ -2,7 +2,7 @@ import { useState } from "react";
 import useEmisores from "../../shared/hooks/useEmisores";
 import { useContadorVirtualISRActEmpresarial } from "./hooks";
 import { Placeholder } from "../../shared/layout/AppShell";
-import { SectionTitle, SectionSub, Card, KPIGrid, KPI } from "../../shared/components/atoms";
+import { SectionTitle, SectionSub, Card, KPIGrid, KPI, DetalleExpandible, FilaDetalle } from "../../shared/components/atoms";
 import { C, fmt } from "../../shared/utils/format";
 
 // Contador Virtual Fase 2 (zg1cYDU) - ISR Art. 106 (Actividad Empresarial
@@ -65,22 +65,15 @@ export default function ContadorVirtualActEmpresarial(){
             <KPI label="IVA a pagar este mes" value={fmt(datos.iva_a_pagar_mes)}/>
           </KPIGrid>
 
-          <Card style={{marginBottom:12}}>
-            <div style={{fontSize:11,color:C.textMuted,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.06em"}}>
-              Desglose del cálculo acumulado (Art. 106 LISR)
-            </div>
-            {[
-              ["Gastos deducibles del mes", fmt(datos.gastos_mes)],
-              ["Base gravable acumulada (ene–este mes)", fmt(datos.base_gravable_acumulada)],
-              ["ISR acumulado del ejercicio", fmt(datos.isr_acumulado)],
-              ["ISR ya pagado en meses anteriores", fmt(datos.isr_pagado_meses_anteriores)],
-            ].map(([l,v])=>(
-              <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:`1px solid ${C.border}`,fontSize:13}}>
-                <span style={{color:C.textSec}}>{l}</span>
-                <span style={{color:C.text,fontWeight:600}}>{v}</span>
-              </div>
-            ))}
-          </Card>
+          <DetalleExpandible>
+            <FilaDetalle etiqueta="Ingresos del mes" valor={fmt(datos.ingresos_mes)}/>
+            <FilaDetalle etiqueta="Gastos del mes" valor={`${fmt(datos.gastos_mes)} — pendiente CFDI recibidos`}/>
+            <FilaDetalle etiqueta="Base gravable acumulada (ene–este mes)" valor={fmt(datos.base_gravable_acumulada)} tipo="resultado"/>
+            <FilaDetalle etiqueta="ISR acumulado del ejercicio (tarifa Art. 96/106 escalada)" valor={fmt(datos.isr_acumulado)} tipo="resultado"/>
+            <FilaDetalle etiqueta="(−) ISR ya pagado en meses anteriores" valor={fmt(datos.isr_pagado_meses_anteriores)}/>
+            <FilaDetalle etiqueta="ISR a pagar este mes" valor={fmt(datos.isr_a_pagar_mes)} tipo="resultado"/>
+            <FilaDetalle etiqueta="IVA a pagar este mes = Ingresos del mes × 16%" valor={fmt(datos.iva_a_pagar_mes)} tipo="resultado"/>
+          </DetalleExpandible>
         </>
       )}
 

@@ -471,6 +471,62 @@ async def logout():
     return {"mensaje": "Sesión cerrada"}
 
 
+class UsuarioMeResponse(BaseModel):
+    # Schema EXPLICITO, no un dump directo del modelo ORM Usuario - si
+    # manana se agrega una columna nueva a Usuario (ej. un campo interno
+    # de auditoria), no se expone aqui por accidente solo por existir en
+    # la tabla. password_hash NUNCA viaja, ni aqui ni en ningun otro
+    # response de este servicio.
+    id: int
+    email: str
+    rfc_personal: str
+    usuario: Optional[str]
+    nombre: Optional[str]
+    rol: str
+    created_at: datetime
+
+
+@app.get("/auth/me", response_model=UsuarioMeResponse)
+async def obtener_perfil_propio(
+    db: AsyncSession = Depends(get_db),
+    token=Depends(verify_token),
+):
+    """Perfil.jsx (frontend) - reemplaza la lectura de datos de usuario
+    desde el JWT decodificado client-side por una consulta real a BD, por
+    el rfc_personal del propio token ya verificado (token["sub"]) - mismo
+    patron de auth que cambiar_password(), sin duplicar logica de
+    verificacion. Nunca cruza negocio_id: es el propio usuario
+    autenticado consultando sus propios datos, no un recurso ajeno.
+
+    404 (no 500) si el rfc_personal del token ya no existe en BD - caso
+    raro pero real (cuenta borrada/desactivada entre el login que emitio
+    el JWT, que vive hasta 1h, y esta llamada)."""
+    if "sub" not in token or not token["sub"]:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    result = await db.execute(select(Usuario).where(Usuario.rfc_personal == token["sub"]))
+    usuario = result.scalar_one_or_none()
+    if usuario is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # Trazabilidad de acceso (mismo patron que password_change.confirmado/
+    # password_reset.confirmado) - quien consulto su propio perfil y cuando
+    # (timestamp implicito del logger). Informativo, NO una alerta de
+    # seguridad - solo se registra el caso de exito, los 401/404 de arriba
+    # no pasan por aqui.
+    logger.info("auth_me.consultado rfc=%s", usuario.rfc_personal)
+
+    return UsuarioMeResponse(
+        id=usuario.id,
+        email=usuario.email,
+        rfc_personal=usuario.rfc_personal,
+        usuario=usuario.usuario,
+        nombre=usuario.nombre,
+        rol=usuario.rol,
+        created_at=usuario.created_at,
+    )
+
+
 # Mensaje IDENTICO exista o no la cuenta - literal compartido para que no
 # haya forma de que un caller distinga las 2 ramas por el texto exacto.
 RESET_MENSAJE_GENERICO = "Si el correo está registrado, se envió un enlace de recuperación."

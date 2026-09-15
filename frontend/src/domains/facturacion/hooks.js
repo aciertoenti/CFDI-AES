@@ -121,6 +121,30 @@ export function useContadorVirtualISRResico(emisorRfc, anio, mes) {
   return { datos, loading, error };
 }
 
+// Contador virtual Fase 2 (zg1cYDU) - ISR Art. 106 Actividad Empresarial y
+// Profesional (regimen 612), acumulado desde enero. Endpoint nuevo, NO
+// reutiliza isr-resico (mecanica distinta: tarifa progresiva acumulada vs
+// tasa unica). Mismo patron de fetch que useContadorVirtualISRResico.
+export function useContadorVirtualISRActEmpresarial(emisorRfc, anio, mes) {
+  const [datos,   setDatos]   = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState(null);
+  useEffect(() => {
+    if (!emisorRfc) { setLoading(false); return; }
+    (async () => {
+      setLoading(true); setError(null);
+      try {
+        const params = new URLSearchParams({ emisor_rfc: emisorRfc, anio: String(anio), mes: String(mes) });
+        const res = await fetchAuth(`${API_BASE}/facturas/contador-virtual/isr-actividad-empresarial?${params}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setDatos(await res.json());
+      } catch (e) { setError(e.message); }
+      finally { setLoading(false); }
+    })();
+  }, [emisorRfc, anio, mes]);
+  return { datos, loading, error };
+}
+
 // Tickets del POS ligero para la pantalla "Ventas del dia" (zg5sPJI). Mismo
 // patron que useFacturas: GET autenticado, scopeado por emisor, sin
 // paginacion (size=200, el maximo del backend). fechaDesde se manda tal

@@ -102,6 +102,58 @@ TABLA_ISR_RESICO_PF = [
     (Decimal("291666.67"), Decimal("0.0250")),
 ]
 
+# ─── Contador virtual Fase 2 (zg1cYDU): Actividad Empresarial y Profesional ────
+REGIMEN_ACTIVIDAD_EMPRESARIAL = "612"  # verificado contra c_RegimenFiscal (satcfdi), no asumido
+
+# Tarifa MENSUAL del Art. 96 LISR 2026 (Anexo 8 RMF, DOF 28-12-2025) - 11
+# tramos (limite_inferior, limite_superior o None en el ultimo, cuota_fija,
+# %excedente). Esta tabla es de RETENCION DE SUELDOS - para Actividad
+# Empresarial (Art. 106) NO se aplica tal cual, ver
+# _tarifa_acumulada_art96() abajo.
+TABLA_ISR_ART96_2026 = [
+    (Decimal("0.01"), Decimal("844.59"), Decimal("0.00"), Decimal("0.0192")),
+    (Decimal("844.60"), Decimal("7168.51"), Decimal("16.22"), Decimal("0.0640")),
+    (Decimal("7168.52"), Decimal("12598.02"), Decimal("420.95"), Decimal("0.1088")),
+    (Decimal("12598.03"), Decimal("14644.64"), Decimal("1011.68"), Decimal("0.1600")),
+    (Decimal("14644.65"), Decimal("17533.64"), Decimal("1339.14"), Decimal("0.1792")),
+    (Decimal("17533.65"), Decimal("35362.83"), Decimal("1856.84"), Decimal("0.2136")),
+    (Decimal("35362.84"), Decimal("55736.68"), Decimal("5665.16"), Decimal("0.2352")),
+    (Decimal("55736.69"), Decimal("106410.50"), Decimal("10457.09"), Decimal("0.3000")),
+    (Decimal("106410.51"), Decimal("141880.66"), Decimal("25659.23"), Decimal("0.3200")),
+    (Decimal("141880.67"), Decimal("425641.99"), Decimal("37009.69"), Decimal("0.3400")),
+    (Decimal("425642.00"), None, Decimal("133488.54"), Decimal("0.3500")),
+]
+
+
+def _tarifa_acumulada_art96(meses: int) -> list:
+    """Escala la tarifa MENSUAL del Art. 96 al periodo acumulado que pide
+    el Art. 106 para pagos provisionales de Actividad Empresarial -
+    verificado contra 3 fuentes independientes antes de codificar (ver
+    tarjeta): limite_inferior, limite_superior y cuota_fija se MULTIPLICAN
+    por los meses transcurridos del ejercicio (mes actual incluido); el
+    %excedente se mantiene igual por tramo, NO se escala. Sin esto, aplicar
+    la tabla mensual sin modificar sobre una base acumulada de varios meses
+    da un ISR muchisimo mas alto del real (empuja la base a tramos
+    superiores de forma artificial)."""
+    return [
+        (li * meses, (ls * meses) if ls is not None else None, cf * meses, pct)
+        for li, ls, cf, pct in TABLA_ISR_ART96_2026
+    ]
+
+
+def _calcular_isr_art96_acumulado(base_gravable: Decimal, meses: int) -> Decimal:
+    """ISR acumulado del ejercicio segun Art. 106 (base ya acumulada desde
+    enero hasta `meses`). base_gravable <= 0 -> 0.00 sin excepcion (no hay
+    division en esta formula, pero se maneja explicito para no devolver un
+    ISR negativo por el tramo 1 con excedente negativo)."""
+    if base_gravable <= 0:
+        return Decimal("0.00")
+    for li, ls, cf, pct in _tarifa_acumulada_art96(meses):
+        if ls is None or base_gravable <= ls:
+            excedente = base_gravable - li
+            return (cf + excedente * pct).quantize(Decimal("0.01"))
+    return Decimal("0.00")  # inalcanzable: el ultimo tramo (ls=None) siempre atrapa
+
 load_dotenv()
 
 
@@ -201,6 +253,28 @@ class ContadorVirtualISRResicoResponse(BaseModel):
     excede_tope_mensual: bool = False
     facturas_pue_incluidas: List[FacturaResumenLigero] = []
     facturas_ppd_excluidas: List[FacturaResumenLigero] = []
+    disclaimer: str = (
+        "Estimación informativa basada en tus CFDI emitidos. "
+        "No sustituye a tu contador ni constituye asesoría fiscal."
+    )
+
+
+class ContadorVirtualISRActEmpResponse(BaseModel):
+    aplica: bool
+    motivo_no_aplica: Optional[str] = None
+    emisor_rfc: str
+    periodo: str  # "YYYY-MM"
+    ingresos_mes: float = 0.0
+    gastos_mes: float = 0.0
+    base_gravable_acumulada: float = 0.0
+    isr_acumulado: float = 0.0
+    isr_pagado_meses_anteriores: float = 0.0
+    isr_a_pagar_mes: float = 0.0
+    iva_a_pagar_mes: float = 0.0
+    advertencia: str = (
+        "Gastos deducibles en $0 — CFDI recibidos aún no implementado "
+        "(ver zg55DWY/zg6P6HE). El ISR mostrado no descuenta ningún gasto real."
+    )
     disclaimer: str = (
         "Estimación informativa basada en tus CFDI emitidos. "
         "No sustituye a tu contador ni constituye asesoría fiscal."
@@ -1815,6 +1889,116 @@ async def contador_virtual_isr_resico(
             for f in ppd
         ],
     )
+
+
+async def _ingresos_acumulados_hasta(db: AsyncSession, emisor_rfc: str, anio: int, mes: int) -> Decimal:
+    """Suma Factura.total (estado='Vigente') desde el 1-ene del ejercicio
+    hasta el ultimo dia del `mes` dado, inclusive - la base acumulada que
+    pide el Art. 106 (no solo el mes en curso, a diferencia de Fase 1
+    RESICO)."""
+    mes_siguiente = date(anio + 1, 1, 1) if mes == 12 else date(anio, mes + 1, 1)
+    total = await db.scalar(
+        select(func.coalesce(func.sum(Factura.total), 0)).where(
+            Factura.emisor_rfc == emisor_rfc,
+            Factura.estado == "Vigente",
+            Factura.fecha_timbrado >= date(anio, 1, 1),
+            Factura.fecha_timbrado < mes_siguiente,
+        )
+    )
+    return Decimal(str(total)) if total else Decimal("0")
+
+
+@app.get(
+    "/facturas/contador-virtual/isr-actividad-empresarial",
+    response_model=ContadorVirtualISRActEmpResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def contador_virtual_isr_actividad_empresarial(
+    emisor_rfc: str,
+    anio: int,
+    mes: int = Query(ge=1, le=12),
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """
+    Contador virtual Fase 2 (zg1cYDU): ISR provisional ACUMULADO (Art. 106
+    LISR) para Personas Fisicas con Actividad Empresarial y Profesional
+    (regimen 612), mas IVA simple del mes. NO reutiliza Fase 1 (RESICO,
+    isr-resico arriba) - son mecanicas distintas (tasa unica vs tarifa
+    progresiva acumulada).
+
+    Alcance deliberado (decision de producto confirmada antes de
+    codificar):
+    - Gastos deducibles FIJOS en $0 - todavia no existe CFDI recibidos en
+      el sistema (esa infraestructura vive en zg55DWY/zg6P6HE, separada de
+      esta tarjeta). El ISR mostrado por lo tanto SOBRE-estima el real -
+      la advertencia va siempre en el response (ver
+      ContadorVirtualISRActEmpResponse.advertencia), nunca oculta.
+    - IVA: 16% de los ingresos del mes, SIN acreditable (mismo motivo:
+      gastos=0 implica IVA acreditable tambien en 0 por ahora).
+    - Subsidio al empleo: NO aplica (verificado antes de codificar - es
+      exclusivo de retencion de sueldos/salarios, no de Art. 106).
+
+    Tarifa Art. 96 ESCALADA por Art. 106 (verificado con 3 fuentes
+    independientes antes de codificar - limite_inferior, limite_superior
+    y cuota_fija de la tabla MENSUAL se multiplican por los meses
+    transcurridos del ejercicio; el %excedente NO se escala). Ver
+    _tarifa_acumulada_art96()/_calcular_isr_art96_acumulado() arriba.
+    """
+    datos_emisor = await obtener_datos_emisor(emisor_rfc, x_negocio_id)
+    periodo = f"{anio:04d}-{mes:02d}"
+
+    es_persona_fisica_act_emp = (
+        datos_emisor["regimen_fiscal"] == REGIMEN_ACTIVIDAD_EMPRESARIAL
+        and len(emisor_rfc) == RFC_LEN_PERSONA_FISICA
+    )
+    if not es_persona_fisica_act_emp:
+        motivo = (
+            f"Tu régimen fiscal ({datos_emisor['regimen_fiscal']}) no es Actividad Empresarial "
+            f"y Profesional ({REGIMEN_ACTIVIDAD_EMPRESARIAL}) - este estimador Fase 2 solo aplica "
+            "a ese régimen."
+        )
+        return ContadorVirtualISRActEmpResponse(
+            aplica=False, motivo_no_aplica=motivo, emisor_rfc=emisor_rfc, periodo=periodo,
+        )
+
+    ingresos_acum_mes = await _ingresos_acumulados_hasta(db, emisor_rfc, anio, mes)
+    ingresos_acum_mes_anterior = (
+        await _ingresos_acumulados_hasta(db, emisor_rfc, anio, mes - 1) if mes > 1 else Decimal("0")
+    )
+    ingresos_mes = ingresos_acum_mes - ingresos_acum_mes_anterior
+
+    # gastos_acumulados fijo en 0 (ver docstring) - se resta explicito, no
+    # se omite, para que quede claro en el codigo que el termino existe en
+    # la formula real aunque hoy valga 0.
+    gastos_acumulados = Decimal("0")
+    base_gravable_acumulada = ingresos_acum_mes - gastos_acumulados
+
+    isr_acumulado = _calcular_isr_art96_acumulado(base_gravable_acumulada, mes)
+    isr_pagado_meses_anteriores = (
+        _calcular_isr_art96_acumulado(ingresos_acum_mes_anterior - gastos_acumulados, mes - 1)
+        if mes > 1 else Decimal("0.00")
+    )
+    # max(...,0): la formula no deberia dar negativo (ingresos acumulados
+    # no decrecen, tarifa monotonamente creciente), pero una cancelacion
+    # real de una factura de un mes ya "pagado" podria producir ese caso -
+    # salvaguarda defensiva, no se espera que dispare en operacion normal.
+    isr_a_pagar_mes = max(isr_acumulado - isr_pagado_meses_anteriores, Decimal("0.00"))
+    iva_a_pagar_mes = (ingresos_mes * Decimal("0.16")).quantize(Decimal("0.01"))
+
+    return ContadorVirtualISRActEmpResponse(
+        aplica=True,
+        emisor_rfc=emisor_rfc,
+        periodo=periodo,
+        ingresos_mes=float(ingresos_mes),
+        gastos_mes=0.0,
+        base_gravable_acumulada=float(base_gravable_acumulada),
+        isr_acumulado=float(isr_acumulado),
+        isr_pagado_meses_anteriores=float(isr_pagado_meses_anteriores),
+        isr_a_pagar_mes=float(isr_a_pagar_mes),
+        iva_a_pagar_mes=float(iva_a_pagar_mes),
+    )
+
 
 async def obtener_factura_propia(uuid: str, negocio_id: int, db: AsyncSession) -> Factura:
     """

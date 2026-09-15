@@ -96,6 +96,12 @@ export default function EmisoresResumenDashboard({ negocioId }) {
       <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 10 }}>Vigencia de certificados por emisor</div>
       <div style={{ display: "grid", gap: 14 }}>
         {datos.map((e) => {
+          // Si csd_es_efirma_duplicada es true, el backend YA devuelve
+          // vigencia_csd_hasta=null (refuerzo por hash SHA-256, no solo
+          // fecha) - mismaVigencia sale false automaticamente en ese caso,
+          // sin logica extra aqui: los dos casos son mutuamente excluyentes
+          // por construccion del backend, no por una condicion duplicada
+          // en el frontend.
           const mismaVigencia = !!e.vigencia_csd_hasta && !!e.vigencia_efirma_hasta && e.vigencia_csd_hasta === e.vigencia_efirma_hasta;
           return (
             <div key={e.rfc} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px" }}>
@@ -106,7 +112,17 @@ export default function EmisoresResumenDashboard({ negocioId }) {
                   <FilaVigencia
                     tipo="CSD" colorTipo={{ bg: C.infoSoft, color: C.info }}
                     vigenciaHasta={e.vigencia_csd_hasta} diasRestantes={e.dias_restantes}
-                    textoSinDato="Sin CSD registrado"
+                    textoSinDato={
+                      // El backend ya devuelve vigencia_csd_hasta=null en
+                      // este caso (refuerzo por hash, ver
+                      // _csd_es_copia_de_efirma en main.py) - el mensaje
+                      // especifico solo cambia el TEXTO, mismo estilo
+                      // visual que "Sin CSD registrado" (nunca el tag
+                      // verde de dias restantes).
+                      e.csd_es_efirma_duplicada
+                        ? "CSD no registrado (el archivo actual es tu e.firma, no un CSD real)"
+                        : "Sin CSD registrado"
+                    }
                   />
                   <FilaVigencia
                     tipo="FIEL" colorTipo={{ bg: "#F3E8FF", color: "#7C3AED" }}

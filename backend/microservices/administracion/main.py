@@ -748,12 +748,19 @@ async def obtener_emisores_resumen(
     negocio_id: int,
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
 ):
     """Dashboard multi-emisor (vigencia CSD + concentracion de facturas por
     emisor) - pensado para negocios con mas de 1 emisor Activo, aunque el
     endpoint no lo exige (el frontend decide si mostrar la seccion segun
     len(emisores) > 1, ver Perfil.jsx). Mismo self-only 404 que
     obtener_resumen_negocio/listar_notificaciones.
+
+    Orden: mismo criterio "propio RFC primero" que listar_emisores() (ver
+    _orden_emisores_propio_primero) - antes esta query no tenia ORDER BY
+    en absoluto (orden incidental de Postgres, no deliberado), asi que el
+    emisor del propio usuario podia no aparecer primero aqui aunque si lo
+    hiciera en /admin/emisores.
 
     Un GET por emisor a facturacion (resumen-mes filtrado) - hoy son a lo
     sumo unos pocos emisores por negocio (limite_emisores del plan mas
@@ -767,7 +774,9 @@ async def obtener_emisores_resumen(
 
     emisores_activos = (
         await db.execute(
-            select(Emisor).where(Emisor.negocio_id == negocio_id, Emisor.estado == "Activo")
+            select(Emisor)
+            .where(Emisor.negocio_id == negocio_id, Emisor.estado == "Activo")
+            .order_by(*_orden_emisores_propio_primero(x_usuario_rfc))
         )
     ).scalars().all()
 
@@ -938,6 +947,29 @@ async def marcar_notificacion_leida(
     return _notificacion_to_response(notificacion)
 
 
+def _orden_emisores_propio_primero(x_usuario_rfc: Optional[str]):
+    """Orden compuesto de 3 niveles, COMPARTIDO entre listar_emisores()
+    (GET /admin/emisores) y obtener_emisores_resumen() (GET
+    /admin/negocios/{id}/emisores-resumen) - extraido aqui para no
+    duplicar la regla en dos endpoints (commits 299438131a81.../
+    7974dd66945e...):
+      1. El emisor cuyo RFC coincide con el del usuario logueado (persona
+         fisica que es tambien su propio emisor, ej. Pedro/RAHP7112093H0
+         en negocio 11) - siempre primero, sin importar estado.
+      2. Activo antes que Inactivo.
+      3. created_at desc como desempate final.
+
+    x_usuario_rfc=None (o sin match) hace que el nivel 1 compile a
+    "emisores.rfc IS NULL" - siempre falso (rfc es NOT NULL) - cae limpio
+    a los niveles 2/3, mismo caso borde ya verificado en listar_emisores.
+    """
+    return (
+        desc(Emisor.rfc == x_usuario_rfc),
+        desc(Emisor.estado == "Activo"),
+        Emisor.created_at.desc(),
+    )
+
+
 @app.get(
     "/admin/emisores",
     response_model=List[EmisorResponse],
@@ -970,11 +1002,7 @@ async def listar_emisores(
     result = await db.execute(
         select(Emisor)
         .where(Emisor.negocio_id == negocio_id)
-        .order_by(
-            desc(Emisor.rfc == x_usuario_rfc),
-            desc(Emisor.estado == "Activo"),
-            Emisor.created_at.desc(),
-        )
+        .order_by(*_orden_emisores_propio_primero(x_usuario_rfc))
     )
     return [_emisor_to_response(e) for e in result.scalars().all()]
 

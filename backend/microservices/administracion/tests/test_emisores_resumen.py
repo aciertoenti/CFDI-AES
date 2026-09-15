@@ -286,7 +286,7 @@ async def test_emisores_resumen_solo_activos_con_facturas_y_dias_por_emisor(monk
     })
     async with AsyncSessionLocal() as db:
         out = await obtener_emisores_resumen(
-            negocio_id=negocio_con_2_emisores, db=db, x_negocio_id=str(negocio_con_2_emisores),
+            negocio_id=negocio_con_2_emisores, db=db, x_negocio_id=str(negocio_con_2_emisores), x_usuario_rfc=None,
         )
 
     # Solo los 2 Activos - el Inactivo (FFFF...) NO debe aparecer.
@@ -356,7 +356,7 @@ async def test_emisores_resumen_alerta_csd_y_efirma_con_la_misma_vigencia_pero_h
 
     try:
         async with AsyncSessionLocal() as db:
-            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id))
+            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id), x_usuario_rfc=None)
         assert len(out) == 1
         item = out[0]
         assert item.vigencia_csd_hasta == misma_fecha  # NO se anula
@@ -402,7 +402,7 @@ async def test_emisores_resumen_hash_identico_anula_vigencia_csd_y_marca_duplica
 
     try:
         async with AsyncSessionLocal() as db:
-            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id))
+            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id), x_usuario_rfc=None)
         assert len(out) == 1
         item = out[0]
         assert item.csd_es_efirma_duplicada is True
@@ -445,7 +445,7 @@ async def test_emisores_resumen_certificado_corrupto_no_truena_al_comparar_hash(
 
     try:
         async with AsyncSessionLocal() as db:
-            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id))
+            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id), x_usuario_rfc=None)
         assert len(out) == 1
         item = out[0]
         assert item.csd_es_efirma_duplicada is False  # degradado, nunca lanzo
@@ -463,7 +463,7 @@ async def test_emisores_resumen_degrada_facturas_mes_si_facturacion_cae(monkeypa
     _patch_facturacion_por_rfc(monkeypatch, {})  # sin entradas -> 500 para ambos rfc
     async with AsyncSessionLocal() as db:
         out = await obtener_emisores_resumen(
-            negocio_id=negocio_con_2_emisores, db=db, x_negocio_id=str(negocio_con_2_emisores),
+            negocio_id=negocio_con_2_emisores, db=db, x_negocio_id=str(negocio_con_2_emisores), x_usuario_rfc=None,
         )
     assert len(out) == 2
     assert all(item.facturas_mes is None for item in out)
@@ -476,7 +476,7 @@ async def test_negocio_ajeno_es_404_no_403(negocio_con_2_emisores):
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await obtener_emisores_resumen(
-                negocio_id=negocio_con_2_emisores, db=db, x_negocio_id="999999",
+                negocio_id=negocio_con_2_emisores, db=db, x_negocio_id="999999", x_usuario_rfc=None,
             )
     assert exc.value.status_code == 404
 
@@ -518,7 +518,7 @@ async def test_sin_efirma_nunca_compara_hash_y_no_toca_vigencia(monkeypatch):
             "LLLL850101LL1": _FakeHttpResp(json_data={"facturas_mes": 5, "canceladas_mes": 0}),
         })
         async with AsyncSessionLocal() as db:
-            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id))
+            out = await obtener_emisores_resumen(negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id), x_usuario_rfc=None)
         assert len(out) == 1
         item = out[0]
         assert item.vigencia_csd_hasta == fecha_real  # intacta, nunca anulada
@@ -526,6 +526,70 @@ async def test_sin_efirma_nunca_compara_hash_y_no_toca_vigencia(monkeypatch):
         assert item.vigencia_efirma_hasta is None
         assert item.dias_restantes_efirma is None
         assert item.csd_es_efirma_duplicada is False
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(Emisor.__table__.delete().where(Emisor.negocio_id == negocio_id))
+            await session.execute(Negocio.__table__.delete().where(Negocio.id == negocio_id))
+            await session.commit()
+
+
+# ─── Orden: emisor del propio usuario siempre primero (commits         ──
+# ─── 299438131a81.../7974dd66945e..., ahora tambien en emisores-resumen) ─
+
+async def test_emisores_resumen_ordena_el_emisor_propio_primero(monkeypatch):
+    """3 emisores Activos (ninguno Inactivo - el desempate por estado no
+    puede ser lo que decida el orden aqui) en el mismo negocio. El emisor
+    del propio usuario autenticado NO es ni el mas reciente (eso lo es
+    OOOO...) ni el unico Activo (los 3 lo son) - si el test pasara "por
+    casualidad" con el orden natural de Postgres, este caso especifico lo
+    desenmascara: MMMM es el mas viejo, NNNN (el propio usuario) es el de
+    en medio, OOOO es el mas nuevo. Antes de este cambio, esta query no
+    tenia ORDER BY en absoluto."""
+    async with AsyncSessionLocal() as session:
+        negocio = Negocio(nombre="TEST orden propio primero", plan="despacho")
+        session.add(negocio)
+        await session.commit()
+        await session.refresh(negocio)
+        negocio_id = negocio.id
+
+        base = datetime(2026, 1, 1, 12, 0, 0)
+        emisor_viejo = Emisor(
+            negocio_id=negocio_id, rfc="MMMM850101MM1", razon_social="El mas viejo",
+            regimen_fiscal="601", codigo_postal="00000",
+            csd_cert_base64="dummy", csd_key_base64="dummy", csd_password="dummy",
+            estado="Activo", created_at=base,
+        )
+        emisor_propio = Emisor(
+            negocio_id=negocio_id, rfc="NNNN850101NN1", razon_social="El del usuario logueado",
+            regimen_fiscal="601", codigo_postal="00000",
+            csd_cert_base64="dummy", csd_key_base64="dummy", csd_password="dummy",
+            estado="Activo", created_at=base + timedelta(days=10),  # ni el mas viejo ni el mas nuevo
+        )
+        emisor_nuevo = Emisor(
+            negocio_id=negocio_id, rfc="OOOO850101OO1", razon_social="El mas nuevo",
+            regimen_fiscal="601", codigo_postal="00000",
+            csd_cert_base64="dummy", csd_key_base64="dummy", csd_password="dummy",
+            estado="Activo", created_at=base + timedelta(days=20),
+        )
+        session.add_all([emisor_viejo, emisor_propio, emisor_nuevo])
+        await session.commit()
+
+    try:
+        _patch_facturacion_por_rfc(monkeypatch, {
+            "MMMM850101MM1": _FakeHttpResp(json_data={"facturas_mes": 1, "canceladas_mes": 0}),
+            "NNNN850101NN1": _FakeHttpResp(json_data={"facturas_mes": 1, "canceladas_mes": 0}),
+            "OOOO850101OO1": _FakeHttpResp(json_data={"facturas_mes": 1, "canceladas_mes": 0}),
+        })
+        async with AsyncSessionLocal() as db:
+            out = await obtener_emisores_resumen(
+                negocio_id=negocio_id, db=db, x_negocio_id=str(negocio_id), x_usuario_rfc="NNNN850101NN1",
+            )
+        assert len(out) == 3
+        # El propio usuario SIEMPRE primero, sin importar fecha/estado.
+        assert out[0].rfc == "NNNN850101NN1"
+        # Desempate por created_at desc entre los otros 2 (regla 3, sin cambios).
+        assert out[1].rfc == "OOOO850101OO1"  # el mas nuevo de los que quedan
+        assert out[2].rfc == "MMMM850101MM1"  # el mas viejo
     finally:
         async with AsyncSessionLocal() as session:
             await session.execute(Emisor.__table__.delete().where(Emisor.negocio_id == negocio_id))

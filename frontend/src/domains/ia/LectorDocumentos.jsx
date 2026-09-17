@@ -1,9 +1,10 @@
-import { useState, useRef } from "react";
-import { API_BASE } from "../../shared/hooks/fetchAuth";
+import { useState, useRef, useEffect } from "react";
+import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
 import { useDocumentExtractor } from "./hooks";
 import { useToast } from "../../shared/layout/ToastProvider";
+import useEmisores from "../../shared/hooks/useEmisores";
 import { Card, Btn, SectionTitle, SectionSub } from "../../shared/components/atoms";
-import { C } from "../../shared/utils/format";
+import { C, fmt } from "../../shared/utils/format";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // VISTA: LECTOR IA
@@ -11,11 +12,67 @@ import { C } from "../../shared/utils/format";
 export default function LectorDocumentos(){
   const toast = useToast();
   const {extraer,loading,result,error,steps}=useDocumentExtractor();
+  const {emisorActivoRfc}=useEmisores();
   const [dragging,setDragging]=useState(false);
   const [file,setFile]=useState(null);
   const inputRef=useRef();
-  const handleFile=f=>{setFile(f);extraer(f);};
+
+  // Timbrado real desde el Lector IA (g4VVTs, 17 sep 2026) - antes el botón
+  // "Timbrar este CFDI" solo disparaba un toast decorativo (toast(`POST
+  // ${API_BASE}/facturas/timbrar — ...`)), nunca llamaba al backend.
+  // X-Idempotency-Key: se genera UNA vez por documento extraído (result
+  // nuevo), no en cada click - un reintento tras error de red reutiliza la
+  // misma key (mismo patrón ya usado en NuevaFactura.jsx), evitando
+  // timbrar el mismo CFDI dos veces por un doble-click o un reintento.
+  const [idempotencyKey,setIdempotencyKey]=useState(()=>crypto.randomUUID());
+  useEffect(()=>{ if(result) setIdempotencyKey(crypto.randomUUID()); },[result]);
+  const [timbrando,setTimbrando]=useState(false);
+  const [timbrado,setTimbrado]=useState(null);
+  const [errorTimbrado,setErrorTimbrado]=useState(null);
+
+  const handleFile=f=>{setFile(f);setTimbrado(null);setErrorTimbrado(null);extraer(f);};
   const onDrop=e=>{e.preventDefault();setDragging(false);const f=e.dataTransfer.files[0];if(f)handleFile(f);};
+
+  const timbrar=async()=>{
+    if(!emisorActivoRfc){setErrorTimbrado("No hay ningún emisor activo seleccionado — elige un emisor antes de timbrar.");return;}
+    setTimbrando(true);setErrorTimbrado(null);
+    // Reshape: ExtractionResult es plano (receptor_nombre, receptor_rfc, ...),
+    // FacturaCreate espera receptor como objeto anidado. conceptos NO se
+    // transforma - mismos 6 campos/nombres que Concepto en el backend.
+    // emisor_rfc NO viene del Lector IA (una orden de compra ajena no trae
+    // el RFC propio) - sale del emisor activo de la app, igual que el resto
+    // de los flujos de facturación.
+    const payload={
+      emisor_rfc:emisorActivoRfc,
+      receptor:{
+        nombre:result.receptor_nombre,
+        rfc:result.receptor_rfc,
+        uso_cfdi:result.receptor_uso_cfdi,
+        regimen_fiscal:result.receptor_regimen_fiscal,
+        domicilio_fiscal:result.receptor_domicilio_fiscal,
+      },
+      conceptos:result.conceptos,
+    };
+    try{
+      const res=await fetchAuth(`${API_BASE}/facturas/timbrar`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json","X-Idempotency-Key":idempotencyKey},
+        body:JSON.stringify(payload),
+      });
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok) throw new Error(data.detail||`HTTP ${res.status}`);
+      setTimbrado(data);
+      toast(`Factura timbrada — UUID ${data.uuid}`,"success");
+    }catch(e){
+      setErrorTimbrado(e.message);
+      toast(`Error al timbrar: ${e.message}`,"error");
+    }finally{
+      setTimbrando(false);
+    }
+  };
+
+  const procesarOtro=()=>{setFile(null);setTimbrado(null);setErrorTimbrado(null);};
+
   return (
     <div>
       <SectionTitle>Lector de documentos IA</SectionTitle>
@@ -59,7 +116,7 @@ export default function LectorDocumentos(){
           <Btn variant="secondary" onClick={()=>setFile(null)} style={{marginTop:10}}>Intentar con otro archivo</Btn>
         </Card>
       )}
-      {result&&(
+      {result&&!timbrado&&(
         <div style={{marginTop:14}}>
           <Card>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
@@ -76,11 +133,34 @@ export default function LectorDocumentos(){
               ))}
             </div>
           </Card>
+          {errorTimbrado&&(
+            <Card style={{marginTop:10,borderColor:C.danger,background:C.dangerSoft}}>
+              <div style={{fontSize:13,color:C.danger}}>⚠ {errorTimbrado}</div>
+            </Card>
+          )}
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginTop:10}}>
-            <Btn onClick={()=>toast(`POST ${API_BASE}/facturas/timbrar — ${result.receptor_nombre}`,"api")}>Timbrar este CFDI →</Btn>
-            <Btn variant="secondary" onClick={()=>setFile(null)}>Procesar otro documento</Btn>
+            <Btn onClick={timbrar} disabled={timbrando}>{timbrando?"Timbrando…":"Timbrar este CFDI →"}</Btn>
+            <Btn variant="secondary" onClick={procesarOtro} disabled={timbrando}>Procesar otro documento</Btn>
           </div>
         </div>
+      )}
+      {timbrado&&(
+        <Card style={{marginTop:14,borderColor:C.accentBorder,background:C.accentSoft}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#0A6B4A",letterSpacing:"0.08em",marginBottom:12,textTransform:"uppercase"}}>✓ Timbrado exitoso</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginBottom:12}}>
+            {[["UUID",timbrado.uuid],["Folio",timbrado.folio],["Estado",timbrado.estado],["Total (IVA incluido)",fmt(timbrado.total)]].map(([l,v])=>(
+              <div key={l} style={{background:"#fff",borderRadius:8,padding:"10px 12px"}}>
+                <div style={{fontSize:10,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>{l}</div>
+                <div style={{fontSize:13,fontWeight:600,color:C.text,wordBreak:"break-all"}}>{v}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+            <a href={timbrado.xml_url} target="_blank" rel="noreferrer"><Btn variant="secondary">Descargar XML</Btn></a>
+            <a href={timbrado.pdf_url} target="_blank" rel="noreferrer"><Btn variant="secondary">Descargar PDF</Btn></a>
+            <Btn variant="secondary" onClick={procesarOtro}>Procesar otro documento</Btn>
+          </div>
+        </Card>
       )}
     </div>
   );

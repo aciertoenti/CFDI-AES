@@ -75,6 +75,16 @@ services:
       # servicios leen literalmente la misma fuente; cambiarla en un solo
       # lugar (.env o aqui) los actualiza a ambos de forma atomica.
       REDIS_URL: "${REDIS_URL_AUTH:-redis://redis:6379/1}"
+      # Fix de seguridad (g4CnlY, 17 sep 2026): activado tras corregir
+      # frontend/nginx.conf para que mande X-Forwarded-For: $remote_addr
+      # (su vista real del cliente TCP, no spoofeable) en vez de
+      # $proxy_add_x_forwarded_for (que solo hacia append al valor que
+      # mandara el cliente). Antes de este fix, TRUST_PROXY_XFF=true
+      # hubiera sido inseguro (el XFF que llegaba a nginx era spoofeable);
+      # ahora es seguro porque nginx sobrescribe ese header antes de
+      # reenviarlo. Ver comentario completo junto a TRUST_PROXY_XFF en
+      # backend/api_gateway/main.py.
+      TRUST_PROXY_XFF: "true"
     depends_on: [auth, facturacion, administracion, addenda_aes, reportes, redis]
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 

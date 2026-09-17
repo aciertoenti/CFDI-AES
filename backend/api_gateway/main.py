@@ -49,14 +49,37 @@ INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
 if not INTERNAL_API_KEY:
     raise RuntimeError("INTERNAL_API_KEY no está definido. Configúralo como variable de entorno.")
 
-# Confianza en el X-Forwarded-For entrante (30 ago 2026). La topologia
-# actual NO tiene reverse proxy real delante del Gateway (docker-compose:
-# gateway expone 8000:8000 directo, el unico nginx sirve el SPA y no hace
-# proxy) - confirmado. Sin proxy de confianza, cualquier X-Forwarded-For
-# que llegue es 100% spoof del cliente. Por defecto (env ausente) el
-# Gateway lo DESCARTA y usa solo la IP TCP real (request.client.host).
-# Solo cuando se ponga un proxy/balanceador real en produccion se pone
-# TRUST_PROXY_XFF=true y se vuelve a encadenar el salto previo.
+# Confianza en el X-Forwarded-For entrante (30 ago 2026, corregido 17 sep
+# 2026 - g4CnlY). Este comentario decia "la topologia actual NO tiene
+# reverse proxy real delante del Gateway" - eso fue correcto cuando se
+# escribio (30 ago), pero dejo de serlo desde el commit beacd4e (05 sep,
+# zg5nh5Y): frontend/nginx.conf SI hace proxy real de /api/ -> gateway:8000
+# hoy. El bug real que este comentario viejo dejo pasar: con
+# TRUST_PROXY_XFF en False (su default, sin actualizar tras el cambio de
+# nginx), el Gateway ignoraba el XFF real que nginx ya mandaba bien y
+# usaba request.client.host - que ahora es la IP del CONTENEDOR de nginx
+# (la misma para TODO el trafico real), no la del cliente. Confirmado con
+# requests reales: rate-limit de password-reset paso de "spoofeable" a
+# "compartido entre todos los usuarios reales" sin que nadie lo notara.
+#
+# Fix real (17 sep 2026): nginx ahora manda X-Forwarded-For: $remote_addr
+# (su propia vista del peer TCP que le conecto - el cliente no puede
+# falsificarla via headers, ver frontend/nginx.conf). Con eso, confiar en
+# el XFF que llega DESDE nginx ya es seguro - se activa TRUST_PROXY_XFF=true
+# en el entorno del Gateway (docker-compose.yml) para este proyecto,
+# porque en este entorno TODO el trafico real pasa por nginx primero.
+#
+# Riesgo residual documentado, no eliminado: si alguien le pega
+# DIRECTAMENTE al Gateway (puerto 8000, sin pasar por nginx - ej. en
+# desarrollo local contra localhost:8000), el X-Forwarded-For que manden
+# SI se confia (TRUST_PROXY_XFF ya esta en true) y SI es spoofeable en ese
+# camino, porque ahi no hay nginx sanitizando. Aceptado como riesgo bajo:
+# el puerto 8000 no esta expuesto por Tailscale Funnel (confirmado con
+# `tailscale funnel status`, solo :3000 y :9000 lo estan) - el acceso
+# directo a :8000 solo es alcanzable desde la propia maquina/red interna
+# de Docker, no desde internet. TRUST_PROXY_XFF debe volver a False si
+# algun dia el Gateway se expone directo (sin nginx) a trafico no
+# confiable.
 TRUST_PROXY_XFF = os.environ.get("TRUST_PROXY_XFF", "").lower() in ("1", "true", "yes")
 
 SERVICES = {
@@ -213,12 +236,18 @@ async def password_reset_request_proxy(request: Request):
     #
     # Fix de seguridad (30 ago 2026): antes se reencadenaba SIEMPRE como
     # "{xff_previo}, {client_ip}". Como auth_usuarios hace rate-limit sobre
-    # xff.split(",")[0] (el PRIMER salto), y no hay reverse proxy real
-    # delante del Gateway (topologia confirmada), un atacante que mande
-    # X-Forwarded-For: <valor rotado> se salta el limite de 10/hora de
-    # password-reset por completo. Por defecto ahora se DESCARTA el XFF
-    # entrante y se manda solo la IP TCP real. El reencadenado del salto
-    # previo solo ocurre con TRUST_PROXY_XFF=true (proxy real en prod).
+    # xff.split(",")[0] (el PRIMER salto), reencadenar siempre sin
+    # verificar el origen permitia que un atacante mandara
+    # X-Forwarded-For: <valor rotado> y se saltara el limite de 10/hora.
+    #
+    # Actualizado (17 sep 2026, g4CnlY): TRUST_PROXY_XFF ahora esta en
+    # true en este entorno, porque nginx (frontend/nginx.conf) ya manda
+    # X-Forwarded-For: $remote_addr - su propia vista del cliente TCP, no
+    # spoofeable via headers. xff_previo aqui es ese valor confiable
+    # cuando el trafico vino por nginx (el camino real de produccion).
+    # Ver el comentario completo junto a la definicion de TRUST_PROXY_XFF
+    # arriba para el detalle del bug que esto corrigio y el riesgo
+    # residual documentado (acceso directo a :8000, sin nginx).
     xff_previo = forward_headers.pop("x-forwarded-for", None) or forward_headers.pop("X-Forwarded-For", None)
     if TRUST_PROXY_XFF and xff_previo:
         forward_headers["X-Forwarded-For"] = f"{xff_previo}, {client_ip}"

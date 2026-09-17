@@ -16,6 +16,22 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="CFDI – API Gateway", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["*"], allow_headers=["*"])
 
+
+# Fix de orden de rutas (g4B42Q, 16 sep 2026): declarado ANTES del proxy
+# generico "/{service}" (mas abajo) a proposito. Starlette hace match de
+# rutas en el orden en que se declaran, no por especificidad - "/health"
+# tambien cumple el patron "/{service}" (con service="health"), y ese
+# catch-all exige Depends(verify_token). Con /health declarado despues del
+# catch-all (como estaba antes), GET /health nunca llegaba a este handler:
+# lo interceptaba el proxy primero y devolvia 401 sin token, rompiendo el
+# healthcheck. Sin dependencias - debe responder 200 siempre, autenticado
+# o no, para que un orquestador (Docker, k8s) pueda usarlo como liveness
+# check real.
+@app.get("/health")
+async def health():
+    return {"service": "gateway", "status": "ok"}
+
+
 security = HTTPBearer()
 
 JWT_SECRET = os.environ.get("JWT_SECRET")
@@ -424,8 +440,3 @@ async def proxy(service: str, request: Request, path: str = "", token=Depends(ve
         return JSONResponse(content=resp.json(), status_code=resp.status_code)
     except ValueError:
         raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
-
-
-@app.get("/health")
-async def health():
-    return {"service": "gateway", "status": "ok"}

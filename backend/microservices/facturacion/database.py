@@ -115,6 +115,30 @@ class Factura(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class FacturaConsolidacionTicket(Base):
+    """Vinculo 1 factura consolidada de Publico en General <-> N TicketVenta
+    (g5b-kc, consolidacion periodica) - separada a proposito de
+    Factura.ticket_id, que sigue siendo EXCLUSIVO del flujo individual
+    (zg5UciU/pieza 5, 1 factura : 1 ticket como maximo, sin tocar). Una
+    factura consolidada no tiene Factura.ticket_id (queda NULL, igual que
+    el timbrado manual) - sus tickets viven aqui en cambio.
+
+    Referencia blanda (Integer, no ForeignKey) hacia facturas/tickets_venta -
+    mismo criterio que el resto de esta BD (ver comentario de
+    Factura.negocio_id/ticket_id): no hay modelo de tenants/FKs reales
+    todavia en este proyecto."""
+    __tablename__ = "factura_consolidacion_tickets"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    factura_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # unique: un TicketVenta solo puede formar parte de UNA factura
+    # consolidada - refuerza a nivel BD lo que el filtro estado='pendiente'
+    # del endpoint ya deberia garantizar (defensa en profundidad, mismo
+    # principio que el resto del proyecto).
+    ticket_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class BorradorFactura(Base):
     __tablename__ = "borradores_factura"
 

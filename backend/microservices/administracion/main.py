@@ -190,6 +190,11 @@ class EmisorUpdateParcial(BaseModel):
     # libera un cupo sin tocar esa logica. Reemplaza al DELETE cuando el
     # emisor tiene facturas timbradas y no se puede borrar.
     estado: Optional[str] = None
+    # Consolidacion periodica de Publico en General (g5b-kc) - "diario" |
+    # "mensual" para habilitar, None explicito en el body para deshabilitar
+    # (volver al comportamiento individual). Omitir el campo del body no la
+    # toca (exclude_unset=True abajo).
+    periodicidad_consolidacion: Optional[str] = None
 
 class EmisorResponse(BaseModel):
     rfc: str
@@ -201,6 +206,10 @@ class EmisorResponse(BaseModel):
     created_at: datetime
     creado_por_rfc: Optional[str] = None
     modificado_por_rfc: Optional[str] = None
+    # Consolidacion periodica de Publico en General (g5b-kc) - "diario" |
+    # "mensual" | None (None = deshabilitada, default para todo emisor
+    # existente/nuevo hasta que alguien la habilite explicitamente via PATCH).
+    periodicidad_consolidacion: Optional[str] = None
     # None en crear_emisor/listar (no aplica); True/False solo en
     # actualizar_emisor (PUT) - indica si facturacion confirmo haber
     # invalidado su cache del CSD viejo. False no es un error del PUT en si
@@ -445,6 +454,7 @@ def _emisor_to_response(e: Emisor, cache_invalidado: Optional[bool] = None) -> E
         created_at=e.created_at,
         creado_por_rfc=e.creado_por_rfc,
         modificado_por_rfc=e.modificado_por_rfc,
+        periodicidad_consolidacion=e.periodicidad_consolidacion,
         cache_invalidado=cache_invalidado,
     )
 
@@ -1152,6 +1162,12 @@ async def actualizar_emisor_parcial(
     datos = emisor.model_dump(exclude_unset=True)
     if datos.get("estado") and datos["estado"] not in ("Activo", "Inactivo"):
         raise HTTPException(status_code=422, detail="estado debe ser 'Activo' o 'Inactivo'")
+    if (
+        "periodicidad_consolidacion" in datos
+        and datos["periodicidad_consolidacion"] is not None
+        and datos["periodicidad_consolidacion"] not in ("diario", "mensual")
+    ):
+        raise HTTPException(status_code=422, detail="periodicidad_consolidacion debe ser 'diario', 'mensual', o null")
 
     # Reactivar un emisor (Inactivo -> Activo) vuelve a consumir un cupo del
     # plan: aplica la MISMA validacion de limite que crear_emisor (mismo

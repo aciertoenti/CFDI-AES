@@ -44,7 +44,7 @@ import storage_client
 import redis_client
 from shared.fiscal_validator import validate_regimen_fiscal, validate_uso_cfdi
 from shared.email_sender import enviar_correo
-from database import BorradorFactura, BorradorFacturaEliminado, Factura, TicketVenta, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import BorradorFactura, BorradorFacturaEliminado, Factura, FacturaConsolidacionTicket, TicketVenta, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 
@@ -93,6 +93,12 @@ REGIMEN_SIN_OBLIGACIONES = "616"  # verificado contra C756_c_RegimenFiscal (satc
 # (RFC XAXX010101000) - ver construir_comprobante y zg5UciU (03 sep 2026).
 NOMBRE_PUBLICO_EN_GENERAL = "PUBLICO EN GENERAL"  # EXACTO en mayusculas; otra capitalizacion -> CFDI40130
 USO_CFDI_SIN_EFECTOS = "S01"  # unico UsoCFDI valido con regimen 616 (c_UsoCFDI); otro -> CFDI40161
+# Consolidacion periodica de Publico en General (g5b-kc, 17 sep 2026).
+# Mapea Emisor.periodicidad_consolidacion ("diario"/"mensual") al codigo real
+# de FacturaCreate.informacion_global_periodicidad - verificado contra el
+# catalogo oficial C756_c_Periodicidad (satcfdi), no asumido:
+# 01=Diario, 02=Semanal, 03=Quincenal, 04=Mensual, 05=Bimestral.
+PERIODICIDAD_CONSOLIDACION_SAT = {"diario": "01", "mensual": "04"}
 RFC_LEN_PERSONA_FISICA = 13  # 12 = Persona Moral - el codigo 626 aplica a ambas, hay que distinguir por RFC
 TABLA_ISR_RESICO_PF = [
     (Decimal("25000.00"), Decimal("0.0100")),
@@ -922,6 +928,244 @@ async def _ejecutar_timbrado(
         pdf_url=pdf_url,
         noCertificadoSAT=resultado["no_certificado_sat"],
         creado_por_rfc=x_usuario_rfc,
+    )
+
+
+# ─── Consolidacion periodica de Publico en General (g5b-kc) ─────────────────
+# MVP con boton manual (no cron/scheduler - pregunta abierta de la tarjeta
+# original, resuelta a favor de lo mas simple por ahora). Reutiliza
+# _ejecutar_timbrado/construir_comprobante tal cual (mismo forzado de
+# RegimenFiscalReceptor=616/UsoCFDI=S01/Nombre="PUBLICO EN GENERAL" e
+# InformacionGlobal que ya usa el timbrado individual, zg5UciU) - la unica
+# logica nueva aqui es la ACUMULACION de N TicketVenta en 1 sola factura.
+
+class ConsolidarPublicoGeneralRequest(BaseModel):
+    emisor_rfc: str
+    # Ambos opcionales: si se omiten, se resuelve "el periodo vencido
+    # actual" segun Emisor.periodicidad_consolidacion (diario -> hoy;
+    # mensual -> del dia 1 del mes actual a hoy). Si se dan, DEBEN venir
+    # los dos juntos (validado abajo) - un periodo explicito gana sobre el
+    # automatico, para permitir consolidar un periodo pasado que se paso
+    # por alto.
+    fecha_desde: Optional[date] = None
+    fecha_hasta: Optional[date] = None
+
+class ConsolidarPublicoGeneralResponse(BaseModel):
+    consolidado: bool
+    mensaje: Optional[str] = None
+    factura: Optional[FacturaResponse] = None
+    n_tickets: int = 0
+    total: Optional[float] = None
+    periodo_desde: Optional[date] = None
+    periodo_hasta: Optional[date] = None
+
+
+async def _liberar_tickets_consolidacion(db: AsyncSession, ticket_ids: list) -> None:
+    """Devuelve los tickets reclamados a 'pendiente' si el timbrado fallo -
+    mismo principio que _liberar_claim_facturar (facturar_ticket), en lote.
+    Su propio fallo NUNCA debe tapar la excepcion original que motivo la
+    liberacion, por eso va envuelto en try/except que solo loggea."""
+    try:
+        await db.rollback()
+        await db.execute(
+            update(TicketVenta)
+            .where(TicketVenta.id.in_(ticket_ids))
+            .values(estado="pendiente", updated_at=func.now())
+        )
+        await db.commit()
+    except Exception:
+        logger.error(
+            "consolidar_publico_general.liberar_tickets_fallo ticket_ids=%s - "
+            "pueden quedar atascados en 'procesando', liberar manualmente "
+            "(UPDATE tickets_venta SET estado='pendiente' WHERE id IN (...))",
+            ticket_ids, exc_info=True,
+        )
+
+
+@app.post(
+    "/facturas/consolidar-publico-general",
+    response_model=ConsolidarPublicoGeneralResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def consolidar_publico_general(
+    datos: ConsolidarPublicoGeneralRequest,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+
+    # obtener_datos_emisor ya valida que el emisor exista Y pertenezca a
+    # este negocio (400 si no) - mismo guard que timbrar_factura/crear_ticket.
+    datos_emisor = await obtener_datos_emisor(datos.emisor_rfc, x_negocio_id)
+    if datos_emisor.get("estado") != "Activo":
+        raise HTTPException(
+            status_code=409,
+            detail=f"El emisor {datos.emisor_rfc} esta Inactivo - no puede consolidar.",
+        )
+    periodicidad = datos_emisor.get("periodicidad_consolidacion")
+    if not periodicidad:
+        raise HTTPException(
+            status_code=409,
+            detail=f"El emisor {datos.emisor_rfc} no tiene consolidacion periodica habilitada.",
+        )
+
+    if (datos.fecha_desde is None) != (datos.fecha_hasta is None):
+        raise HTTPException(status_code=422, detail="fecha_desde y fecha_hasta deben venir juntas o ninguna de las dos.")
+
+    if datos.fecha_desde and datos.fecha_hasta:
+        fecha_desde, fecha_hasta = datos.fecha_desde, datos.fecha_hasta
+    else:
+        # "El periodo vencido actual" - diario: hoy; mensual: del dia 1 del
+        # mes en curso a hoy. Misma logica exacta que el frontend usa para
+        # el preview ANTES de este POST (ver ConsolidarPublicoGeneralModal.jsx) -
+        # si se toca una, hay que tocar la otra.
+        hoy = date.today()
+        fecha_desde = hoy if periodicidad == "diario" else hoy.replace(day=1)
+        fecha_hasta = hoy
+    if fecha_hasta < fecha_desde:
+        raise HTTPException(status_code=422, detail="fecha_hasta no puede ser anterior a fecha_desde.")
+
+    # fecha_hora es DateTime, fecha_desde/hasta son Date - se compara con
+    # limite superior EXCLUSIVO (fecha_hasta + 1 dia) para incluir todo el
+    # dia de fecha_hasta completo, sin depender de la hora exacta.
+    desde_dt = datetime.combine(fecha_desde, datetime.min.time())
+    hasta_dt_exclusivo = datetime.combine(fecha_hasta, datetime.min.time()) + timedelta(days=1)
+
+    # Claim atomico EN LOTE - mismo principio que el claim individual de
+    # facturar_ticket (UPDATE ... WHERE estado='pendiente' ... RETURNING),
+    # aqui sobre todos los tickets del periodo a la vez. Postgres serializa
+    # los UPDATE por fila: dos consolidaciones simultaneas (o una
+    # consolidacion y una autofacturacion individual justo del mismo
+    # ticket) nunca reclaman el mismo ticket dos veces.
+    claim = await db.execute(
+        update(TicketVenta)
+        .where(
+            TicketVenta.emisor_rfc == datos.emisor_rfc,
+            TicketVenta.negocio_id == negocio_id,
+            TicketVenta.estado == "pendiente",
+            TicketVenta.fecha_hora >= desde_dt,
+            TicketVenta.fecha_hora < hasta_dt_exclusivo,
+        )
+        .values(estado="procesando", updated_at=func.now())
+        .returning(TicketVenta.id)
+    )
+    ids_reclamados = [row[0] for row in claim.fetchall()]
+    await db.commit()
+
+    if not ids_reclamados:
+        return ConsolidarPublicoGeneralResponse(
+            consolidado=False,
+            mensaje="Sin tickets pendientes en el periodo.",
+            n_tickets=0,
+            periodo_desde=fecha_desde,
+            periodo_hasta=fecha_hasta,
+        )
+
+    result = await db.execute(select(TicketVenta).where(TicketVenta.id.in_(ids_reclamados)))
+    tickets = result.scalars().all()
+
+    try:
+        # Un concepto por linea original de cada ticket (sin fusionar por
+        # clave_prod_serv) - la opcion mas simple que no pierde trazabilidad:
+        # cada linea del CFDI consolidado queda identificable a su ticket de
+        # origen por folio, visible en el XML/PDF final, sin necesitar la
+        # tabla FacturaConsolidacionTicket para auditar montos linea por
+        # linea (esa tabla sirve para la relacion factura<->tickets, no
+        # para desglosar conceptos).
+        conceptos = []
+        for t in tickets:
+            for c in json.loads(t.conceptos):
+                conceptos.append(Concepto(
+                    descripcion=f"{c['descripcion']} (Ticket {t.folio})",
+                    cantidad=c["cantidad"],
+                    # Mismo criterio que facturar_ticket: precio_base ya
+                    # trae el back-out de IVA hecho (6 decimales) desde
+                    # crear_ticket - usarlo tal cual evita un doble back-out.
+                    precio_unitario=c.get("precio_base", c["precio_unitario"]),
+                    clave_prod_serv=c["clave_prod_serv"],
+                    clave_unidad=c["clave_unidad"],
+                    iva_tasa=c["iva_tasa"],
+                ))
+
+        periodicidad_sat = PERIODICIDAD_CONSOLIDACION_SAT[periodicidad]
+        factura_create = FacturaCreate(
+            emisor_rfc=datos.emisor_rfc,
+            receptor=ReceptorCFDI(
+                nombre=NOMBRE_PUBLICO_EN_GENERAL,
+                rfc=RFC_PUBLICO_EN_GENERAL,
+                # domicilio_fiscal real no importa aqui - construir_comprobante
+                # lo sobrescribe con el CP del emisor para XAXX010101000 de
+                # todas formas (mismo criterio que el timbrado individual).
+                # Se manda ya el CP real para que quede consistente incluso
+                # antes de ese override.
+                domicilio_fiscal=datos_emisor["codigo_postal"],
+            ),
+            conceptos=conceptos,
+            # Serie propia "PG" (Publico en General consolidado) - mismo
+            # criterio ya usado para distinguir origen de un vistazo que
+            # facturar_ticket con serie="T" (vs. "A" del timbrado manual).
+            serie="PG",
+            informacion_global_periodicidad=periodicidad_sat,
+            informacion_global_meses=f"{fecha_desde.month:02d}",
+            informacion_global_ano=fecha_desde.year,
+        )
+
+        respuesta = await _ejecutar_timbrado(factura_create, negocio_id, x_usuario_rfc, db, None, None)
+    except HTTPException:
+        # Errores esperados (Finkok 502, regimen/uso invalido, etc.) -
+        # libera los tickets reclamados y re-lanza tal cual.
+        await _liberar_tickets_consolidacion(db, ids_reclamados)
+        raise
+    except Exception as e:
+        logger.error(
+            "consolidar_publico_general.error_inesperado emisor_rfc=%s ticket_ids=%s error=%s",
+            datos.emisor_rfc, ids_reclamados, e, exc_info=True,
+        )
+        await _liberar_tickets_consolidacion(db, ids_reclamados)
+        raise HTTPException(status_code=500, detail="No se pudo consolidar. Intenta de nuevo en unos minutos.")
+
+    # Exito: el CFDI YA esta timbrado en Finkok (irreversible) en este punto,
+    # exactamente igual que en facturar_ticket - si la marca final de abajo
+    # falla, NO se liberan los tickets (liberar habilitaria una doble
+    # factura); se loggea critico para arreglo manual.
+    try:
+        factura_row = await db.scalar(select(Factura).where(Factura.uuid == respuesta.uuid))
+        if factura_row is not None:
+            for tid in ids_reclamados:
+                db.add(FacturaConsolidacionTicket(factura_id=factura_row.id, ticket_id=tid))
+        else:
+            # _ejecutar_timbrado ya loggeo "FACTURA TIMBRADA EN FINKOK PERO
+            # NO SE PUDO GUARDAR EN BD" en este caso - el CFDI existe en
+            # Finkok igual, solo no hay fila Factura que enlazar todavia.
+            logger.warning(
+                "consolidar_publico_general.factura_no_encontrada uuid=%s - "
+                "no se crearon filas FacturaConsolidacionTicket, revisar "
+                "junto con el log de _ejecutar_timbrado para este uuid",
+                respuesta.uuid,
+            )
+        await db.execute(
+            update(TicketVenta)
+            .where(TicketVenta.id.in_(ids_reclamados))
+            .values(estado="consolidado", updated_at=func.now())
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.critical(
+            "consolidar_publico_general.marca_final_fallo CFDI YA TIMBRADO uuid=%s "
+            "ticket_ids=%s - tickets quedan en 'procesando', arreglar manualmente "
+            "(estado='consolidado' + fila FacturaConsolidacionTicket por cada uno)",
+            respuesta.uuid, ids_reclamados,
+        )
+
+    return ConsolidarPublicoGeneralResponse(
+        consolidado=True,
+        factura=respuesta,
+        n_tickets=len(ids_reclamados),
+        total=respuesta.total,
+        periodo_desde=fecha_desde,
+        periodo_hasta=fecha_hasta,
     )
 
 

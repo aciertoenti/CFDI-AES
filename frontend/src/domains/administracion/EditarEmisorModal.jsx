@@ -10,6 +10,9 @@ export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
     razon_social: emisor.razon_social,
     regimen_fiscal: emisor.regimen_fiscal,
     codigo_postal: emisor.codigo_postal,
+    // "" en el <select> = sin consolidacion - se convierte a null explicito
+    // al enviar (g5b-kc), nunca se manda "" al backend.
+    periodicidad_consolidacion: emisor.periodicidad_consolidacion || "",
   });
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState(null);
@@ -22,7 +25,7 @@ export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
       const res = await fetchAuth(`${API_BASE}/admin/emisores/${emisor.rfc}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, periodicidad_consolidacion: form.periodicidad_consolidacion || null }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(detalleError(data, res));
@@ -59,6 +62,18 @@ export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
           {inp("Razón social", "razon_social")}
           {inp("Régimen fiscal (código SAT)", "regimen_fiscal", { maxLength: 3 })}
           {inp("Código postal de expedición", "codigo_postal", { maxLength: 5 })}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 12, color: C.textSec, display: "block", marginBottom: 3 }}>Consolidación de Público en General</label>
+            <select
+              value={form.periodicidad_consolidacion}
+              onChange={e => setForm({ ...form, periodicidad_consolidacion: e.target.value })}
+              style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 11px", fontSize: 13, color: C.text, background: "#fff", boxSizing: "border-box" }}
+            >
+              <option value="">Sin consolidación (facturar cada venta individual)</option>
+              <option value="diario">Diaria</option>
+              <option value="mensual">Mensual</option>
+            </select>
+          </div>
           {error && <div style={{ fontSize: 12, color: C.danger, marginBottom: 14, padding: "8px 10px", background: C.dangerSoft, borderRadius: 6 }}>⚠ {error}</div>}
           <div style={{ display: "flex", gap: 8 }}>
             <Btn disabled={enviando} style={{ flex: 1 }}>{enviando ? "Guardando…" : "Guardar cambios"}</Btn>

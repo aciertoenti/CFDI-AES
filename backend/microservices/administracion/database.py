@@ -145,6 +145,13 @@ class Emisor(Base):
     # de CSD) ademas del backfill one-off para los ya existentes.
     vigencia_csd_hasta: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="Activo")
+    # Consolidacion periodica de Publico en General (g5b-kc, 17 sep 2026) -
+    # "diario" | "mensual" | NULL (NULL = consolidacion no habilitada para
+    # este emisor, comportamiento actual sin cambios: cada venta se factura
+    # individual). Extensible a "semanal"/"bimestral" despues - el nodo
+    # InformacionGlobal del SAT ya soporta esas opciones (c_Periodicidad),
+    # este campo solo no las ofrece todavia en la UI.
+    periodicidad_consolidacion: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # Auditoria (no control de seguridad) - RFC personal (X-Usuario-Rfc, ver
     # api_gateway) de quien dio de alta el emisor. Nullable a proposito: dato
     # de auditoria, no se rechaza el alta si falta, y los emisores previos a

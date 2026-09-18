@@ -152,6 +152,12 @@ class Emisor(Base):
     # InformacionGlobal del SAT ya soporta esas opciones (c_Periodicidad),
     # este campo solo no las ofrece todavia en la UI.
     periodicidad_consolidacion: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Color de marca del ticket impreso (g7VQns, 18 sep 2026) - hex de 7
+    # caracteres, mismo formato/longitud que Negocio.color_primario (arriba
+    # en este archivo). NULL = sin color propio, facturacion cae al color
+    # del negocio (Negocio.color_primario) y de ahi a un default fijo si
+    # tampoco existe - ver la resolucion en crear_ticket, facturacion/main.py.
+    color_primario: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
     # Auditoria (no control de seguridad) - RFC personal (X-Usuario-Rfc, ver
     # api_gateway) de quien dio de alta el emisor. Nullable a proposito: dato
     # de auditoria, no se rechaza el alta si falta, y los emisores previos a

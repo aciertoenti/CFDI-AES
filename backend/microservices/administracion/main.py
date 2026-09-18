@@ -195,6 +195,11 @@ class EmisorUpdateParcial(BaseModel):
     # (volver al comportamiento individual). Omitir el campo del body no la
     # toca (exclude_unset=True abajo).
     periodicidad_consolidacion: Optional[str] = None
+    # Color de marca del ticket impreso (g7VQns) - hex de 7 caracteres
+    # (#RRGGBB), None explicito en el body para quitarlo (vuelve a caer al
+    # color del negocio/default). Omitir el campo del body no lo toca
+    # (exclude_unset=True abajo) - mismo criterio que periodicidad_consolidacion.
+    color_primario: Optional[str] = None
 
 class EmisorResponse(BaseModel):
     rfc: str
@@ -210,6 +215,9 @@ class EmisorResponse(BaseModel):
     # "mensual" | None (None = deshabilitada, default para todo emisor
     # existente/nuevo hasta que alguien la habilite explicitamente via PATCH).
     periodicidad_consolidacion: Optional[str] = None
+    # Color de marca del ticket impreso (g7VQns, 18 sep 2026) - None para
+    # todo emisor existente/nuevo hasta que alguien lo configure via PATCH.
+    color_primario: Optional[str] = None
     # None en crear_emisor/listar (no aplica); True/False solo en
     # actualizar_emisor (PUT) - indica si facturacion confirmo haber
     # invalidado su cache del CSD viejo. False no es un error del PUT en si
@@ -455,6 +463,7 @@ def _emisor_to_response(e: Emisor, cache_invalidado: Optional[bool] = None) -> E
         creado_por_rfc=e.creado_por_rfc,
         modificado_por_rfc=e.modificado_por_rfc,
         periodicidad_consolidacion=e.periodicidad_consolidacion,
+        color_primario=e.color_primario,
         cache_invalidado=cache_invalidado,
     )
 
@@ -1168,6 +1177,14 @@ async def actualizar_emisor_parcial(
         and datos["periodicidad_consolidacion"] not in ("diario", "mensual")
     ):
         raise HTTPException(status_code=422, detail="periodicidad_consolidacion debe ser 'diario', 'mensual', o null")
+    # Reusa _validar_color_primario (definida mas abajo en este archivo,
+    # junto a /admin/config - Python resuelve la referencia al llamarse,
+    # no al definirse, asi que el orden de aparicion en el modulo no
+    # importa) - mismo regex/mensaje de error que ya usa el color del
+    # negocio, para no tener 2 fuentes de verdad de "que es un hex valido"
+    # en el mismo servicio.
+    if "color_primario" in datos and datos["color_primario"] is not None:
+        _validar_color_primario(datos["color_primario"])
 
     # Reactivar un emisor (Inactivo -> Activo) vuelve a consumir un cupo del
     # plan: aplica la MISMA validacion de limite que crear_emisor (mismo

@@ -6,6 +6,13 @@ Jinja2 + convertido a PDF con weasyprint (crear_ticket en main.py) - NO
 requiere CSS externo ni assets fuera de este archivo (el QR llega ya
 como data URI base64 embebido, generado en Python con la libreria
 qrcode antes de renderizar).
+
+Personalizacion de color (g7VQns, 18 sep 2026): {{ color_primario }} ya
+viene resuelto desde Python (Emisor.color_primario -> Negocio.color_primario
+-> COLOR_TICKET_DEFAULT, ver crear_ticket en main.py) - esta plantilla
+solo lo aplica, nunca decide el fallback. Aplicado solo al encabezado
+(.emisor) y al acento del total (.total-row); los grises estructurales
+(bordes, notas) se dejan neutros a proposito.
 -->
 <!DOCTYPE html>
 <html lang="es">
@@ -21,7 +28,7 @@ qrcode antes de renderizar).
     margin: 0;
   }
   .centro { text-align: center; }
-  .emisor { font-weight: bold; font-size: 12pt; margin-bottom: 2px; }
+  .emisor { font-weight: bold; font-size: 12pt; margin-bottom: 2px; color: {{ color_primario }}; }
   .rfc { font-size: 9pt; color: #444; margin-bottom: 8px; }
   .meta { font-size: 9pt; margin-bottom: 2px; }
   hr { border: none; border-top: 1px dashed #999; margin: 8px 0; }
@@ -29,7 +36,7 @@ qrcode antes de renderizar).
   th { text-align: left; border-bottom: 1px solid #333; padding-bottom: 3px; }
   td { padding: 3px 0; vertical-align: top; }
   .num { text-align: right; white-space: nowrap; }
-  .total-row { font-weight: bold; font-size: 12pt; text-align: right; padding-top: 8px; }
+  .total-row { font-weight: bold; font-size: 12pt; text-align: right; padding-top: 8px; color: {{ color_primario }}; }
   /* El precio del ticket se captura CON IVA INCLUIDO (05 sep 2026,
      zg5njsY): {{ total }} ya es el monto final que paga el cliente. La
      nota solo confirma que el IVA ya esta dentro - sin monto de pesos a

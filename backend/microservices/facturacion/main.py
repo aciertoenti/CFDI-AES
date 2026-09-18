@@ -341,6 +341,13 @@ PUBLIC_APP_URL = os.environ.get("PUBLIC_APP_URL", "http://localhost:8000")
 # FileSystemLoader relativo a este archivo, no al cwd del proceso, para que
 # funcione sin importar desde donde se lance uvicorn.
 _jinja_env = jinja2.Environment(loader=jinja2.FileSystemLoader(Path(__file__).resolve().parent / "templates"))
+
+# Personalizacion de color del PDF del ticket (g7VQns, 18 sep 2026). Mismo
+# valor que el body de ticket_pdf.html ya usaba hardcodeado para el
+# encabezado/acento del total (color: #111, heredado del body) - eligiendolo
+# como default se logra que un ticket sin color configurado en NINGUN nivel
+# (emisor ni negocio) se vea IDENTICO a como se veia antes de este cambio.
+COLOR_TICKET_DEFAULT = "#111111"
 # Clave servicio-a-servicio (#42), extraida a backend/shared/internal_key.py
 # (14 ago 2026, refactor/shared-internal-key, ver import arriba) - antes
 # vivia copiada aqui, identica a la de administracion/ia. La misma
@@ -1523,6 +1530,22 @@ async def crear_ticket(
         qrcode.make(qr_url).save(qr_buffer, format="PNG")
         qr_data_uri = "data:image/png;base64," + base64.b64encode(qr_buffer.getvalue()).decode("ascii")
 
+        # Color del ticket (g7VQns): Emisor.color_primario si el emisor lo
+        # configuro, si no el color_primario del negocio (mismo dato/mismo
+        # helper que ya usa el portal publico de autofacturacion - ver
+        # _obtener_branding_negocio, NO se duplica la llamada a
+        # administracion), si tampoco existe el default fijo de arriba.
+        # DENTRO del mismo try/except best-effort que el resto del PDF: un
+        # fallo de administracion aqui no debe tumbar la venta ya creada,
+        # solo el ticket sale con el color default (mismo criterio que
+        # _obtener_branding_negocio ya aplica para el portal publico).
+        branding_negocio = await _obtener_branding_negocio(negocio_id)
+        color_primario = (
+            datos_emisor.get("color_primario")
+            or branding_negocio.get("color_primario")
+            or COLOR_TICKET_DEFAULT
+        )
+
         template = _jinja_env.get_template("ticket_pdf.html")
         html_renderizado = template.render(
             razon_social=datos_emisor.get("razon_social", ticket.emisor_rfc),
@@ -1533,6 +1556,7 @@ async def crear_ticket(
             total=float(nuevo.total),
             qr_data_uri=qr_data_uri,
             numero_cliente=numero_cliente,
+            color_primario=color_primario,
         )
         pdf_bytes = weasyprint.HTML(string=html_renderizado).write_pdf()
         storage_client.subir_pdf(nuevo.qr_token, pdf_bytes)

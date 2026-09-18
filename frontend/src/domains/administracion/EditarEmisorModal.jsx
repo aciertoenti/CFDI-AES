@@ -4,6 +4,14 @@ import { API_BASE, fetchAuth } from "../../shared/hooks/fetchAuth";
 import { Btn, Card } from "../../shared/components/atoms";
 import { C, detalleError } from "../../shared/utils/format";
 
+// Mismo regex/color por defecto que ConfiguracionMarca.jsx (color del
+// negocio) - aqui el default solo es para el swatch <input type="color">
+// cuando el campo esta vacio (type="color" no acepta "" como value), NUNCA
+// se manda como valor real si el usuario no elige nada (ver submit: "" ->
+// null explicito, igual que periodicidad_consolidacion).
+const HEX_VALIDO = /^#[0-9A-Fa-f]{6}$/;
+const COLOR_SWATCH_DEFAULT = "#00C896";
+
 export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
   const toast = useToast();
   const [form, setForm] = useState({
@@ -13,6 +21,9 @@ export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
     // "" en el <select> = sin consolidacion - se convierte a null explicito
     // al enviar (g5b-kc), nunca se manda "" al backend.
     periodicidad_consolidacion: emisor.periodicidad_consolidacion || "",
+    // "" = sin color propio (usa el fallback del negocio) - mismo criterio
+    // que periodicidad_consolidacion, se convierte a null explicito al enviar.
+    color_primario: emisor.color_primario || "",
   });
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState(null);
@@ -25,7 +36,11 @@ export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
       const res = await fetchAuth(`${API_BASE}/admin/emisores/${emisor.rfc}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, periodicidad_consolidacion: form.periodicidad_consolidacion || null }),
+        body: JSON.stringify({
+          ...form,
+          periodicidad_consolidacion: form.periodicidad_consolidacion || null,
+          color_primario: form.color_primario || null,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(detalleError(data, res));
@@ -73,6 +88,24 @@ export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
               <option value="diario">Diaria</option>
               <option value="mensual">Mensual</option>
             </select>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 12, color: C.textSec, display: "block", marginBottom: 3 }}>Color del ticket impreso (opcional)</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <input
+                type="color"
+                value={HEX_VALIDO.test(form.color_primario) ? form.color_primario : COLOR_SWATCH_DEFAULT}
+                onChange={e => setForm({ ...form, color_primario: e.target.value })}
+                style={{ width: 40, height: 32, padding: 0, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", flexShrink: 0 }}
+              />
+              <input
+                type="text"
+                value={form.color_primario}
+                onChange={e => setForm({ ...form, color_primario: e.target.value })}
+                placeholder="Usa el color del negocio"
+                style={{ flex: 1, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, fontFamily: "monospace", color: C.text, background: "#fff", boxSizing: "border-box" }}
+              />
+            </div>
           </div>
           {error && <div style={{ fontSize: 12, color: C.danger, marginBottom: 14, padding: "8px 10px", background: C.dangerSoft, borderRadius: 6 }}>⚠ {error}</div>}
           <div style={{ display: "flex", gap: 8 }}>

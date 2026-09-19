@@ -58,7 +58,17 @@ export default function ChatFiscal(){
   //     propio endpoint, ver reportes/main.py), asi que este numero
   //     representa solo lo vigente, no lo cancelado.
   //   - proximo_vencimiento_iva: calculo puro de fecha (dia 17 del mes
-  //     siguiente, regla del regimen 625), sin backend.
+  //     siguiente), sin backend - PERO gateado por regimen_fiscal del
+  //     emisor activo (fix g7mPmw, 19 sep 2026): la regla del dia 17 es
+  //     especifica del regimen 625 (Plataformas Tecnologicas), no una
+  //     regla general de IVA. Antes de este fix se aplicaba siempre, sin
+  //     importar el regimen real - mostrando una fecha de vencimiento
+  //     inventada/incorrecta a emisores de cualquier otro regimen (p.ej.
+  //     RESICO/626, que ademas ni siquiera calcula IVA por diseno,
+  //     confirmado en g645io). Fuera del 625 no hay una regla de
+  //     vencimiento equivalente implementada, asi que queda en null
+  //     explicito - mismo patron que facturas_vencidas/iva_pendiente mas
+  //     abajo (null = "no aplica/no calculado", nunca un valor inventado).
   // Campos en null a proposito, SIN fuente real hoy (confirmado con grep
   // en todo backend/microservices/**/*.py y con SELECT DISTINCT estado
   // contra Postgres real) - ver g7gg8k (Fase 2) para la decision de
@@ -80,7 +90,7 @@ export default function ChatFiscal(){
     facturas_vigentes: facturas.filter(f=>f.estado==="Vigente").length,
     facturas_vencidas: null,
     total_mes_actual: reporteMensual?.meses?.[0]?.vigente?.total ?? null,
-    proximo_vencimiento_iva: calcularProximoVencimientoIVA(),
+    proximo_vencimiento_iva: emisorActual?.regimen_fiscal === "625" ? calcularProximoVencimientoIVA() : null,
     iva_pendiente: null,
     cuentas_por_cobrar: null,
   };

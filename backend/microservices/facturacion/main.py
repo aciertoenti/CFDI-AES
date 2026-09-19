@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import calendar
 import io
 import json
 import logging
@@ -21,6 +22,14 @@ import httpx
 import jinja2
 import qrcode
 import weasyprint
+# Cierre automatico de consolidacion (g7imYM pieza 3, 18 sep 2026) -
+# AsyncIOScheduler (no BackgroundScheduler): corre en el MISMO event loop
+# asyncio que el resto del servicio, asi el job puede hacer
+# await db_session/await httpx directo sin cruzar threads - AsyncSessionLocal
+# (asyncpg) no es thread-safe, BackgroundScheduler ejecutaria el job en un
+# thread aparte y forzaria malabares tipo run_coroutine_threadsafe sin
+# necesidad real, cuando este servicio ya es 100% async de punta a punta.
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,7 +53,7 @@ import storage_client
 import redis_client
 from shared.fiscal_validator import validate_regimen_fiscal, validate_uso_cfdi
 from shared.email_sender import enviar_correo
-from database import BorradorFactura, BorradorFacturaEliminado, Factura, FacturaConsolidacionTicket, TicketVenta, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import AsyncSessionLocal, BorradorFactura, BorradorFacturaEliminado, Factura, FacturaConsolidacionTicket, TicketVenta, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from shared.negocio_id import requerir_negocio_id
 from shared.internal_key import INTERNAL_API_KEY, require_internal_key
 
@@ -184,7 +193,38 @@ load_dotenv()
 async def lifespan(app: FastAPI):
     await create_tables()
     await stamp_head_si_es_ambiente_nuevo()
+    # Cierre automatico de consolidacion (g7imYM pieza 3) - un solo job
+    # recurrente, registrado aqui (se vuelve a registrar solo al reiniciar
+    # el contenedor, sin estado persistente - si el proceso se cae y
+    # reinicia, el proximo tick simplemente evalua "ahora" de nuevo, no
+    # hay colas ni jobs perdidos que recuperar). _job_cierre_automatico_
+    # consolidacion se define mas abajo en este archivo (junto al endpoint
+    # manual que reutiliza) - referencia hacia adelante valida en Python
+    # (se resuelve al llamarse, no al definirse), mismo patron ya usado en
+    # administracion/main.py para _validar_color_primario.
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        _job_cierre_automatico_consolidacion,
+        "interval",
+        minutes=INTERVALO_SCHEDULER_MINUTOS,
+        id="cierre_automatico_consolidacion",
+        # Hallazgo real (evidencia en vivo, 18 sep 2026): el default de
+        # APScheduler (misfire_grace_time=1s) hizo que un tick real se
+        # saltara por completo (WARNING "was missed by 0:00:01") cuando el
+        # tick anterior tardo unos segundos de mas (weasyprint/Finkok real).
+        # Se amplia a lo ancho de la propia ventana de deteccion (5 min) -
+        # un tick "tarde" sigue siendo util aqui (la ventana de
+        # _debe_disparar_cierre_automatico es la que de verdad decide si
+        # corresponde disparar, no la puntualidad del propio scheduler).
+        misfire_grace_time=INTERVALO_SCHEDULER_MINUTOS * 60,
+    )
+    scheduler.start()
+    logger.info(
+        "cierre_automatico.scheduler_iniciado intervalo_minutos=%s",
+        INTERVALO_SCHEDULER_MINUTOS,
+    )
     yield
+    scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="CFDI – Servicio de Facturación", version="2.0.0", lifespan=lifespan)
@@ -989,50 +1029,88 @@ async def _liberar_tickets_consolidacion(db: AsyncSession, ticket_ids: list) -> 
         )
 
 
-@app.post(
-    "/facturas/consolidar-publico-general",
-    response_model=ConsolidarPublicoGeneralResponse,
+def _resolver_periodo_actual(periodicidad: str) -> tuple:
+    """"El periodo vencido actual" - diario: hoy; mensual: del dia 1 del mes
+    en curso a hoy. UNICA fuente de esta logica (g7imYM, 18 sep 2026 -
+    extraida de consolidar_publico_general): reutilizada por ese mismo
+    endpoint manual, por el recordatorio de administracion (GET
+    /facturas/tickets/pendientes-antes-de-periodo, mas abajo) y por el
+    scheduler de cierre automatico (_job_cierre_automatico_consolidacion).
+    El frontend SI tiene su propia copia por necesidad de arquitectura
+    (ConsolidarPublicoGeneralModal.jsx, periodoActual() - un componente
+    React no puede importar esta funcion Python) - si se toca esta, hay
+    que tocar esa tambien, documentado en ambos lados."""
+    hoy = date.today()
+    fecha_desde = hoy if periodicidad == "diario" else hoy.replace(day=1)
+    return fecha_desde, hoy
+
+
+class TicketsPendientesAntesDePeriodoResponse(BaseModel):
+    n_pendientes: int
+
+
+@app.get(
+    "/facturas/tickets/pendientes-antes-de-periodo",
+    response_model=TicketsPendientesAntesDePeriodoResponse,
     dependencies=[Depends(require_internal_key)],
 )
-async def consolidar_publico_general(
-    datos: ConsolidarPublicoGeneralRequest,
+async def contar_tickets_pendientes_antes_de_periodo(
+    emisor_rfc: str,
+    periodicidad: Literal["diario", "mensual"],
     db: AsyncSession = Depends(get_db),
-    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
-    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
 ):
-    negocio_id = requerir_negocio_id(x_negocio_id)
+    """Recordatorio de consolidacion pendiente (g7imYM pieza 2, consumido
+    por administracion:listar_notificaciones). Cuenta TicketVenta
+    'pendiente' con fecha_hora ANTERIOR al inicio del periodo actual de
+    esta periodicidad (ayer o antes si es diario, mes pasado o antes si es
+    mensual) - reutiliza _resolver_periodo_actual (MISMA funcion que
+    consolidar_publico_general y el scheduler de cierre automatico) para
+    saber donde empieza "el periodo actual": si ese calculo cambia, este
+    conteo cambia con el automaticamente, sin logica duplicada.
 
-    # obtener_datos_emisor ya valida que el emisor exista Y pertenezca a
-    # este negocio (400 si no) - mismo guard que timbrar_factura/crear_ticket.
-    datos_emisor = await obtener_datos_emisor(datos.emisor_rfc, x_negocio_id)
-    if datos_emisor.get("estado") != "Activo":
-        raise HTTPException(
-            status_code=409,
-            detail=f"El emisor {datos.emisor_rfc} esta Inactivo - no puede consolidar.",
+    SIN X-Negocio-Id/scoping de tenant a proposito: emisor_rfc es
+    global-unico (UNIQUE en administracion.emisores) - no hay riesgo de
+    fuga cross-tenant por consultar solo por RFC. El caller (administracion)
+    ya valido que este RFC pertenece al negocio que esta consultando antes
+    de llamar aqui, con datos de SU PROPIA base de datos."""
+    fecha_desde, _ = _resolver_periodo_actual(periodicidad)
+    limite_dt = datetime.combine(fecha_desde, datetime.min.time())
+    n = await db.scalar(
+        select(func.count(TicketVenta.id)).where(
+            TicketVenta.emisor_rfc == emisor_rfc,
+            TicketVenta.estado == "pendiente",
+            TicketVenta.fecha_hora < limite_dt,
         )
-    periodicidad = datos_emisor.get("periodicidad_consolidacion")
-    if not periodicidad:
-        raise HTTPException(
-            status_code=409,
-            detail=f"El emisor {datos.emisor_rfc} no tiene consolidacion periodica habilitada.",
-        )
+    )
+    return TicketsPendientesAntesDePeriodoResponse(n_pendientes=n or 0)
 
-    if (datos.fecha_desde is None) != (datos.fecha_hasta is None):
-        raise HTTPException(status_code=422, detail="fecha_desde y fecha_hasta deben venir juntas o ninguna de las dos.")
 
-    if datos.fecha_desde and datos.fecha_hasta:
-        fecha_desde, fecha_hasta = datos.fecha_desde, datos.fecha_hasta
-    else:
-        # "El periodo vencido actual" - diario: hoy; mensual: del dia 1 del
-        # mes en curso a hoy. Misma logica exacta que el frontend usa para
-        # el preview ANTES de este POST (ver ConsolidarPublicoGeneralModal.jsx) -
-        # si se toca una, hay que tocar la otra.
-        hoy = date.today()
-        fecha_desde = hoy if periodicidad == "diario" else hoy.replace(day=1)
-        fecha_hasta = hoy
-    if fecha_hasta < fecha_desde:
-        raise HTTPException(status_code=422, detail="fecha_hasta no puede ser anterior a fecha_desde.")
+async def _consolidar_publico_general_interno(
+    emisor_rfc: str,
+    negocio_id: int,
+    datos_emisor: dict,
+    periodicidad: str,
+    fecha_desde: date,
+    fecha_hasta: date,
+    x_usuario_rfc: Optional[str],
+    db: AsyncSession,
+) -> ConsolidarPublicoGeneralResponse:
+    """Logica real de consolidacion (claim atomico + timbrado + marca
+    final) - extraida de consolidar_publico_general (g7imYM pieza 3, 18 sep
+    2026) para que el endpoint HTTP manual (boton, g5b-kc) Y el job del
+    scheduler de cierre automatico (_job_cierre_automatico_consolidacion)
+    llamen EXACTAMENTE a esta misma funcion, sin duplicar nada de esto. El
+    caller ya debe haber resuelto negocio_id/datos_emisor, validado
+    Activo/periodicidad_consolidacion, y resuelto fecha_desde/fecha_hasta
+    (via _resolver_periodo_actual o explicitas) - esta funcion no repite
+    esas validaciones, asume que ya se hicieron.
 
+    Es precisamente este claim atomico (UPDATE ... WHERE estado='pendiente'
+    ... RETURNING) el que hace que el boton manual y el cierre automatico
+    nunca interfieran entre si: sea cual sea el que llegue primero, el
+    otro simplemente no encuentra tickets 'pendiente' que reclamar y
+    responde consolidado=False - la MISMA respuesta que ya existia para
+    "no hay nada que consolidar", sin caso especial nuevo."""
     # fecha_hora es DateTime, fecha_desde/hasta son Date - se compara con
     # limite superior EXCLUSIVO (fecha_hasta + 1 dia) para incluir todo el
     # dia de fecha_hasta completo, sin depender de la hora exacta.
@@ -1048,7 +1126,7 @@ async def consolidar_publico_general(
     claim = await db.execute(
         update(TicketVenta)
         .where(
-            TicketVenta.emisor_rfc == datos.emisor_rfc,
+            TicketVenta.emisor_rfc == emisor_rfc,
             TicketVenta.negocio_id == negocio_id,
             TicketVenta.estado == "pendiente",
             TicketVenta.fecha_hora >= desde_dt,
@@ -1097,7 +1175,7 @@ async def consolidar_publico_general(
 
         periodicidad_sat = PERIODICIDAD_CONSOLIDACION_SAT[periodicidad]
         factura_create = FacturaCreate(
-            emisor_rfc=datos.emisor_rfc,
+            emisor_rfc=emisor_rfc,
             receptor=ReceptorCFDI(
                 nombre=NOMBRE_PUBLICO_EN_GENERAL,
                 rfc=RFC_PUBLICO_EN_GENERAL,
@@ -1127,7 +1205,7 @@ async def consolidar_publico_general(
     except Exception as e:
         logger.error(
             "consolidar_publico_general.error_inesperado emisor_rfc=%s ticket_ids=%s error=%s",
-            datos.emisor_rfc, ids_reclamados, e, exc_info=True,
+            emisor_rfc, ids_reclamados, e, exc_info=True,
         )
         await _liberar_tickets_consolidacion(db, ids_reclamados)
         raise HTTPException(status_code=500, detail="No se pudo consolidar. Intenta de nuevo en unos minutos.")
@@ -1173,6 +1251,171 @@ async def consolidar_publico_general(
         total=respuesta.total,
         periodo_desde=fecha_desde,
         periodo_hasta=fecha_hasta,
+    )
+
+
+@app.post(
+    "/facturas/consolidar-publico-general",
+    response_model=ConsolidarPublicoGeneralResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def consolidar_publico_general(
+    datos: ConsolidarPublicoGeneralRequest,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+):
+    """Endpoint manual (boton, g5b-kc) - resuelve negocio_id/datos_emisor/
+    periodo desde el request HTTP y valida Activo/periodicidad, luego
+    delega el trabajo real a _consolidar_publico_general_interno (MISMA
+    funcion que usa el scheduler de cierre automatico, g7imYM pieza 3 -
+    ver ese job mas abajo en este archivo)."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+
+    # obtener_datos_emisor ya valida que el emisor exista Y pertenezca a
+    # este negocio (400 si no) - mismo guard que timbrar_factura/crear_ticket.
+    datos_emisor = await obtener_datos_emisor(datos.emisor_rfc, x_negocio_id)
+    if datos_emisor.get("estado") != "Activo":
+        raise HTTPException(
+            status_code=409,
+            detail=f"El emisor {datos.emisor_rfc} esta Inactivo - no puede consolidar.",
+        )
+    periodicidad = datos_emisor.get("periodicidad_consolidacion")
+    if not periodicidad:
+        raise HTTPException(
+            status_code=409,
+            detail=f"El emisor {datos.emisor_rfc} no tiene consolidacion periodica habilitada.",
+        )
+
+    if (datos.fecha_desde is None) != (datos.fecha_hasta is None):
+        raise HTTPException(status_code=422, detail="fecha_desde y fecha_hasta deben venir juntas o ninguna de las dos.")
+
+    if datos.fecha_desde and datos.fecha_hasta:
+        fecha_desde, fecha_hasta = datos.fecha_desde, datos.fecha_hasta
+    else:
+        fecha_desde, fecha_hasta = _resolver_periodo_actual(periodicidad)
+    if fecha_hasta < fecha_desde:
+        raise HTTPException(status_code=422, detail="fecha_hasta no puede ser anterior a fecha_desde.")
+
+    return await _consolidar_publico_general_interno(
+        datos.emisor_rfc, negocio_id, datos_emisor, periodicidad,
+        fecha_desde, fecha_hasta, x_usuario_rfc, db,
+    )
+
+
+# ─── Cierre automatico de consolidacion - red de seguridad (g7imYM pieza 3) ──
+# NO reemplaza el boton manual (g5b-kc): corre cada INTERVALO_SCHEDULER_
+# MINUTOS minutos, y si el admin ya consolido a mano antes de que le toque
+# el turno a este job, el claim atomico de _consolidar_publico_general_
+# interno simplemente no encuentra tickets 'pendiente' - responde
+# consolidado=False, exactamente igual que si el usuario hubiera dado clic
+# sin tener nada pendiente. Esta es la propiedad que lo hace una red de
+# seguridad y no un mecanismo competidor.
+
+INTERVALO_SCHEDULER_MINUTOS = 5
+# Marca de auditoria para creado_por_rfc (String(20) en BD - ver
+# Factura.creado_por_rfc en database.py, "SISTEMA_CIERRE_AUTOMATICO" no
+# entra) - distingue en la propia Factura/consulta de auditoria una
+# consolidacion disparada por este job de una hecha a mano (ahi
+# creado_por_rfc trae el RFC real del usuario que dio clic).
+USUARIO_RFC_CIERRE_AUTOMATICO = "SISTEMA_AUTO"
+
+
+def _debe_disparar_cierre_automatico(periodicidad: str, hora_cierre_hhmm: str, ahora: datetime) -> bool:
+    """True si 'ahora' cae dentro de la ventana de los proximos
+    INTERVALO_SCHEDULER_MINUTOS minutos DESDE hora_cierre_hhmm (g7imYM
+    pieza 3) - ventana [hora_cierre, hora_cierre + intervalo), no depende
+    de que el job corra en el segundo exacto configurado. Para "mensual"
+    exige ADEMAS que hoy sea el ultimo dia calendario del mes (calendar.
+    monthrange) - "diario" dispara la ventana todos los dias sin ese
+    chequeo extra.
+
+    Funcion pura (sin I/O) a proposito - se puede probar con cualquier
+    'ahora' inventado sin tocar la BD ni esperar al reloj real, y es
+    exactamente lo que hace la evidencia de este cambio para el caso
+    'mensual + ultimo dia del mes' (hoy 18 sep 2026 no lo es de verdad)."""
+    hora_cierre = datetime.strptime(hora_cierre_hhmm, "%H:%M").time()
+    objetivo = ahora.replace(hour=hora_cierre.hour, minute=hora_cierre.minute, second=0, microsecond=0)
+    en_ventana = objetivo <= ahora < objetivo + timedelta(minutes=INTERVALO_SCHEDULER_MINUTOS)
+    if not en_ventana:
+        return False
+    if periodicidad == "mensual":
+        ultimo_dia_del_mes = calendar.monthrange(ahora.year, ahora.month)[1]
+        return ahora.day == ultimo_dia_del_mes
+    return True  # "diario": la ventana sola ya es suficiente
+
+
+async def _job_cierre_automatico_consolidacion() -> None:
+    """Corrida del scheduler (cada INTERVALO_SCHEDULER_MINUTOS min, ver
+    lifespan). Pide a administracion el listado GLOBAL de emisores con
+    cierre automatico habilitado (GET /admin/emisores/consolidacion-
+    automatica - unico endpoint de ese servicio pensado para un caller sin
+    negocio_id propio, ver docstring alli) y, para cada uno que caiga en su
+    ventana, llama a _consolidar_publico_general_interno - la MISMA funcion
+    que usa el endpoint manual, nunca una copia.
+
+    Sesion de BD nueva POR EMISOR (async with AsyncSessionLocal()), no una
+    sola para todo el tick: un fallo (Finkok 502, timeout, lo que sea)
+    consolidando el emisor N no debe afectar la sesion/transaccion del
+    emisor N+1 - mismo aislamiento que tendrian 2 requests HTTP separados
+    al endpoint manual."""
+    logger.debug("cierre_automatico.tick_inicio ahora=%s", datetime.now().isoformat())
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{ADMINISTRACION_URL}/admin/emisores/consolidacion-automatica",
+                headers={"X-Internal-Key": INTERNAL_API_KEY},
+            )
+        if resp.status_code != 200:
+            logger.warning("cierre_automatico.tick_administracion_respondio status=%s", resp.status_code)
+            return
+        emisores = resp.json()
+    except httpx.RequestError as e:
+        logger.warning("cierre_automatico.tick_administracion_no_responde error=%s", e)
+        return
+
+    ahora = datetime.now()
+    n_disparos = 0
+    for e in emisores:
+        if not _debe_disparar_cierre_automatico(e["periodicidad_consolidacion"], e["hora_cierre_automatico"], ahora):
+            continue
+        fecha_desde, fecha_hasta = _resolver_periodo_actual(e["periodicidad_consolidacion"])
+        async with AsyncSessionLocal() as db:
+            try:
+                respuesta = await _consolidar_publico_general_interno(
+                    emisor_rfc=e["rfc"],
+                    negocio_id=e["negocio_id"],
+                    datos_emisor=e,
+                    periodicidad=e["periodicidad_consolidacion"],
+                    fecha_desde=fecha_desde,
+                    fecha_hasta=fecha_hasta,
+                    x_usuario_rfc=USUARIO_RFC_CIERRE_AUTOMATICO,
+                    db=db,
+                )
+            except Exception as exc:
+                logger.error(
+                    "cierre_automatico.error emisor_rfc=%s negocio_id=%s error=%s",
+                    e["rfc"], e["negocio_id"], exc, exc_info=True,
+                )
+                continue
+            if respuesta.consolidado:
+                n_disparos += 1
+                logger.info(
+                    "cierre_automatico.disparo emisor_rfc=%s negocio_id=%s hora_configurada=%s "
+                    "periodicidad=%s n_tickets=%s total=%s uuid=%s",
+                    e["rfc"], e["negocio_id"], e["hora_cierre_automatico"],
+                    e["periodicidad_consolidacion"], respuesta.n_tickets, respuesta.total,
+                    respuesta.factura.uuid if respuesta.factura else None,
+                )
+            else:
+                logger.debug(
+                    "cierre_automatico.sin_pendientes emisor_rfc=%s negocio_id=%s - "
+                    "nada que hacer (ya consolidado a mano, o sin ventas en el periodo)",
+                    e["rfc"], e["negocio_id"],
+                )
+    logger.debug(
+        "cierre_automatico.tick_fin ahora=%s emisores_evaluados=%s disparos=%s",
+        ahora.isoformat(), len(emisores), n_disparos,
     )
 
 

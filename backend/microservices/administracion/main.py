@@ -15,7 +15,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Optional, List
 
 import httpx
@@ -118,6 +118,34 @@ async def _obtener_resumen_facturas_mes(negocio_id: int, emisor_rfc: Optional[st
         return None
 
 
+async def _contar_tickets_pendientes_consolidacion(emisor_rfc: str, periodicidad: str) -> Optional[int]:
+    """Recordatorio de consolidacion pendiente (g7imYM pieza 2). Pregunta a
+    facturacion cuantos TicketVenta 'pendiente' tiene este emisor con
+    fecha_hora ANTERIOR al inicio del periodo actual (ayer si es diario,
+    mes pasado si es mensual) - facturacion resuelve ese limite con
+    _resolver_periodo_actual, la MISMA funcion que ya usa
+    consolidar_publico_general y el scheduler de cierre automatico, asi que
+    el limite nunca se duplica ni se desincroniza entre los 3 lugares.
+
+    None si no se pudo obtener (mismo criterio de degradacion que
+    _obtener_resumen_facturas_mes) - listar_notificaciones simplemente no
+    genera el recordatorio esta vez, sin romper el resto de la respuesta."""
+    if not INTERNAL_API_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{FACTURACION_URL}/facturas/tickets/pendientes-antes-de-periodo",
+                params={"emisor_rfc": emisor_rfc, "periodicidad": periodicidad},
+                headers={"X-Internal-Key": INTERNAL_API_KEY},
+            )
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("n_pendientes")
+    except httpx.RequestError:
+        return None
+
+
 def _calcular_porcentaje_cancelacion(facturas_mes: int, canceladas_mes: int) -> float:
     """0.0 si no hubo facturas este mes - evita ZeroDivisionError. El
     frontend decide el empty state mirando facturas_mes == 0 (no este
@@ -200,6 +228,11 @@ class EmisorUpdateParcial(BaseModel):
     # color del negocio/default). Omitir el campo del body no lo toca
     # (exclude_unset=True abajo) - mismo criterio que periodicidad_consolidacion.
     color_primario: Optional[str] = None
+    # Cierre automatico de consolidacion (g7imYM pieza 3) - string "HH:MM"
+    # (24h), None explicito en el body para desactivarlo (vuelve a ser
+    # 100% manual). Omitir el campo del body no lo toca (exclude_unset=True
+    # abajo) - mismo criterio que periodicidad_consolidacion/color_primario.
+    hora_cierre_automatico: Optional[str] = None
 
 class EmisorResponse(BaseModel):
     rfc: str
@@ -218,6 +251,10 @@ class EmisorResponse(BaseModel):
     # Color de marca del ticket impreso (g7VQns, 18 sep 2026) - None para
     # todo emisor existente/nuevo hasta que alguien lo configure via PATCH.
     color_primario: Optional[str] = None
+    # Cierre automatico de consolidacion (g7imYM pieza 3, 18 sep 2026) -
+    # string "HH:MM" (convertido desde time en _emisor_to_response), None
+    # para todo emisor existente/nuevo hasta que alguien lo configure.
+    hora_cierre_automatico: Optional[str] = None
     # None en crear_emisor/listar (no aplica); True/False solo en
     # actualizar_emisor (PUT) - indica si facturacion confirmo haber
     # invalidado su cache del CSD viejo. False no es un error del PUT en si
@@ -388,6 +425,14 @@ def _notificacion_to_response(n: Notificacion) -> NotificacionResponse:
 
 UMBRAL_PLAN_CERCA_LIMITE = 0.80
 TIPO_PLAN_CERCA_LIMITE = "plan_cerca_limite"
+# Recordatorio de consolidacion pendiente (g7imYM pieza 2) - el "tipo" real
+# guardado en BD lleva el RFC del emisor pegado como sufijo (ver
+# listar_notificaciones), porque el UNIQUE(negocio_id, tipo, periodo) de la
+# tabla no distingue emisor por si solo y un negocio puede tener varios
+# emisores con periodicidad_consolidacion, cada uno con su propio backlog
+# independiente - sin el sufijo, el ON CONFLICT DO NOTHING del segundo
+# emisor pisaria (no crearia) el recordatorio del primero.
+TIPO_CONSOLIDACION_PENDIENTE = "consolidacion_pendiente"
 
 
 class ClienteCreate(BaseModel):
@@ -464,6 +509,7 @@ def _emisor_to_response(e: Emisor, cache_invalidado: Optional[bool] = None) -> E
         modificado_por_rfc=e.modificado_por_rfc,
         periodicidad_consolidacion=e.periodicidad_consolidacion,
         color_primario=e.color_primario,
+        hora_cierre_automatico=e.hora_cierre_automatico.strftime("%H:%M") if e.hora_cierre_automatico else None,
         cache_invalidado=cache_invalidado,
     )
 
@@ -882,15 +928,18 @@ async def listar_notificaciones(
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
     """Alertas proactivas (zg6k9Ok, primera implementacion: plan cerca del
-    limite). Generacion LAZY - sin scheduler (confirmado que no existe
-    ninguno en el proyecto antes de disenar esto): esta consulta es el
-    unico disparador. Reutiliza _obtener_resumen_facturas_mes (mismo
-    helper que obtener_resumen_negocio, zg6k9Pw) en vez de duplicar la
-    logica de facturas_mes/limite.
+    limite; g7imYM pieza 2, segunda implementacion: consolidacion
+    pendiente). Generacion LAZY - sin scheduler propio de administracion
+    (esta consulta sigue siendo el unico disparador de AMBAS alertas; el
+    scheduler que si existe desde g7imYM pieza 3 vive en facturacion y es
+    para otra cosa - consolidar automaticamente, no para generar estas
+    notificaciones). Reutiliza _obtener_resumen_facturas_mes / _contar_
+    tickets_pendientes_consolidacion (mismo criterio: helpers dedicados en
+    vez de duplicar logica de negocio dentro del endpoint).
 
-    Si facturacion no responde, simplemente no se evalua el umbral esta
-    vez (no es un error - la proxima consulta lo vuelve a intentar,
-    mismo criterio de degradacion que el resumen)."""
+    Si facturacion no responde, simplemente no se evalua ese umbral esta
+    vez (no es un error - la proxima consulta lo vuelve a intentar, mismo
+    criterio de degradacion en ambas alertas)."""
     caller_negocio_id = requerir_negocio_id(x_negocio_id)
     if negocio_id != caller_negocio_id:
         raise HTTPException(status_code=404, detail=f"Negocio {negocio_id} no encontrado")
@@ -918,6 +967,45 @@ async def listar_notificaciones(
             stmt = pg_insert(Notificacion).values(
                 negocio_id=negocio_id,
                 tipo=TIPO_PLAN_CERCA_LIMITE,
+                mensaje=mensaje,
+                periodo=periodo,
+                leida=False,
+            ).on_conflict_do_nothing(
+                index_elements=["negocio_id", "tipo", "periodo"],
+            )
+            await db.execute(stmt)
+            await db.commit()
+
+    # Recordatorio de consolidacion pendiente (g7imYM pieza 2) - mismo
+    # patron LAZY de arriba, un emisor a la vez. Solo emisores Activos con
+    # periodicidad_consolidacion configurada son candidatos (los demas ni
+    # tienen consolidacion habilitada, nada que recordar).
+    emisores_consolidacion = (
+        await db.execute(
+            select(Emisor).where(
+                Emisor.negocio_id == negocio_id,
+                Emisor.estado == "Activo",
+                Emisor.periodicidad_consolidacion.isnot(None),
+            )
+        )
+    ).scalars().all()
+    for emisor in emisores_consolidacion:
+        n_pendientes = await _contar_tickets_pendientes_consolidacion(
+            emisor.rfc, emisor.periodicidad_consolidacion
+        )
+        if n_pendientes:  # None (facturacion no respondio) o 0 -> nada que avisar
+            periodo = datetime.now().strftime("%Y-%m")
+            plural = "s" if n_pendientes != 1 else ""
+            mensaje = (
+                f"Tienes {n_pendientes} ticket{plural} pendiente{plural} de consolidar "
+                f"en {emisor.razon_social}."
+            )
+            # Mismo tipo por emisor (ver TIPO_CONSOLIDACION_PENDIENTE) - el
+            # sufijo _{rfc} es lo que hace que el UNIQUE(negocio_id, tipo,
+            # periodo) trate a cada emisor como un evento independiente.
+            stmt = pg_insert(Notificacion).values(
+                negocio_id=negocio_id,
+                tipo=f"{TIPO_CONSOLIDACION_PENDIENTE}_{emisor.rfc}",
                 mensaje=mensaje,
                 periodo=periodo,
                 leida=False,
@@ -1022,6 +1110,34 @@ async def listar_emisores(
         select(Emisor)
         .where(Emisor.negocio_id == negocio_id)
         .order_by(*_orden_emisores_propio_primero(x_usuario_rfc))
+    )
+    return [_emisor_to_response(e) for e in result.scalars().all()]
+
+
+@app.get(
+    "/admin/emisores/consolidacion-automatica",
+    response_model=List[EmisorResponse],
+    dependencies=[Depends(require_internal_key)],
+)
+async def listar_emisores_consolidacion_automatica(db: AsyncSession = Depends(get_db)):
+    """Listado GLOBAL (TODOS los negocios, sin X-Negocio-Id) de emisores con
+    cierre automatico habilitado - g7imYM pieza 3. Consumido UNICAMENTE por
+    el scheduler de facturacion (job cada 5 min, ver _job_cierre_automatico_
+    consolidacion en ese servicio) - nunca por el frontend ni por ningun
+    caller con sesion de usuario real. Por eso NO exige X-Negocio-Id: el
+    scheduler no representa a un negocio en particular, evalua a todos de
+    una sola pasada (evita N llamadas, una por negocio, desde facturacion).
+
+    Solo Activo Y con AMBOS periodicidad_consolidacion Y
+    hora_cierre_automatico configurados - un emisor con solo uno de los 2
+    nunca aparece aqui, asi el scheduler no tiene que repetir ese chequeo:
+    "aparece en esta lista" ya IMPLICA "es candidato a evaluar"."""
+    result = await db.execute(
+        select(Emisor).where(
+            Emisor.estado == "Activo",
+            Emisor.periodicidad_consolidacion.isnot(None),
+            Emisor.hora_cierre_automatico.isnot(None),
+        )
     )
     return [_emisor_to_response(e) for e in result.scalars().all()]
 
@@ -1185,6 +1301,14 @@ async def actualizar_emisor_parcial(
     # en el mismo servicio.
     if "color_primario" in datos and datos["color_primario"] is not None:
         _validar_color_primario(datos["color_primario"])
+    # Reusa _validar_hora_cierre_automatico (misma seccion que
+    # _validar_color_primario, definida mas abajo) - valida el formato Y
+    # devuelve el objeto time ya parseado, que se usa mas abajo al aplicar
+    # el campo (la columna es Time, no String - un setattr con el string
+    # crudo "23:30" rompiria en el proximo db.commit()).
+    hora_cierre_parseada: Optional[time] = None
+    if "hora_cierre_automatico" in datos and datos["hora_cierre_automatico"] is not None:
+        hora_cierre_parseada = _validar_hora_cierre_automatico(datos["hora_cierre_automatico"])
 
     # Reactivar un emisor (Inactivo -> Activo) vuelve a consumir un cupo del
     # plan: aplica la MISMA validacion de limite que crear_emisor (mismo
@@ -1217,6 +1341,11 @@ async def actualizar_emisor_parcial(
             )
 
     for campo, valor in datos.items():
+        # Unico campo del PATCH cuyo tipo en BD (Time) no coincide con el
+        # tipo que llega en el body (str "HH:MM") - se sustituye por el
+        # objeto time ya validado/parseado arriba, en vez del string crudo.
+        if campo == "hora_cierre_automatico":
+            valor = hora_cierre_parseada
         setattr(existente, campo, valor)
     existente.modificado_por_rfc = x_usuario_rfc
     await db.commit()
@@ -2034,6 +2163,23 @@ def _validar_color_primario(valor: str) -> None:
             status_code=422,
             detail="color_primario debe ser un hex de 7 caracteres, ej. #00C896",
         )
+
+
+# Cierre automatico de consolidacion (g7imYM pieza 3) - HH:MM 24h estricto,
+# sin segundos (a diferencia de time.fromisoformat, que aceptaria "23:30:15"
+# o incluso solo "23" en Python 3.11+) - el <input type="time"> del frontend
+# manda exactamente este formato, y es lo que el scheduler de facturacion
+# espera de vuelta en EmisorResponse.
+_HORA_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _validar_hora_cierre_automatico(valor: str) -> time:
+    if not _HORA_HHMM_RE.match(valor):
+        raise HTTPException(
+            status_code=422,
+            detail="hora_cierre_automatico debe tener formato HH:MM (24h), ej. 23:30",
+        )
+    return datetime.strptime(valor, "%H:%M").time()
 
 
 @app.get(

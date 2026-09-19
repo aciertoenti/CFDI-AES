@@ -102,6 +102,19 @@ services:
     # administracion (GET /admin/emisores/{rfc}/csd-descifrado), no de un
     # archivo estatico en disco. Ver INTERNAL_API_KEY abajo.
     environment:
+      # Hallazgo real (g7imYM pieza 3, 18 sep 2026): el contenedor corria
+      # en UTC por default (sin TZ, confirmado con `date` dentro del
+      # contenedor vs. el host) - datetime.now() aqui es la MISMA funcion
+      # que ya usaba periodicidad_consolidacion (_resolver_periodo_actual,
+      # "hoy"/"este mes") y que ahora ademas compara hora_cierre_automatico
+      # (un valor que el admin escribe esperando SU hora local, via
+      # <input type="time">). Sin esto, "cierre a las 14:00" disparaba a
+      # las 8:00am hora real de Mexico (UTC-6) - efecto colateral
+      # deseado: tambien alinea el "hoy"/"este mes" de la consolidacion
+      # periodica (g5b-kc) con el dia calendario real de Mexico, no el de
+      # UTC (que ya estaba desalineado desde antes, sin que nadie lo
+      # hubiera notado por no depender de un input explicito de hora).
+      TZ: "America/Mexico_City"
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER_FACTURAS:-cfdi}:${POSTGRES_PASSWORD_FACTURAS:-secret_facturas}@postgres_facturas/${POSTGRES_DB_FACTURAS:-cfdi_facturas}"
       REDIS_URL: "redis://redis:6379/0"
       MINIO_URL: "http://minio:9000"

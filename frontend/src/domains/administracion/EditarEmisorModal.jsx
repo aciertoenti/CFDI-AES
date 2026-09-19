@@ -24,6 +24,11 @@ export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
     // "" = sin color propio (usa el fallback del negocio) - mismo criterio
     // que periodicidad_consolidacion, se convierte a null explicito al enviar.
     color_primario: emisor.color_primario || "",
+    // Cierre automatico (g7imYM pieza 3) - "" = sin hora configurada
+    // (sigue 100% manual), se convierte a null explicito al enviar. El
+    // <input type="time"> ya devuelve "HH:MM" nativo - mismo formato que
+    // el backend valida/guarda, sin conversion adicional aqui.
+    hora_cierre_automatico: emisor.hora_cierre_automatico || "",
   });
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState(null);
@@ -40,6 +45,12 @@ export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
           ...form,
           periodicidad_consolidacion: form.periodicidad_consolidacion || null,
           color_primario: form.color_primario || null,
+          // Si se quito la periodicidad, la hora tambien se limpia aunque
+          // el campo (deshabilitado/oculto, ver abajo) todavia tuviera un
+          // valor viejo en el estado - evita un "hora sin periodicidad"
+          // huerfano en BD que el usuario ya no puede ver ni editar desde
+          // aqui sin antes volver a habilitar la periodicidad.
+          hora_cierre_automatico: form.periodicidad_consolidacion ? (form.hora_cierre_automatico || null) : null,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -89,6 +100,20 @@ export default function EditarEmisorModal({ emisor, onCerrar, recargar }) {
               <option value="mensual">Mensual</option>
             </select>
           </div>
+          {form.periodicidad_consolidacion && (
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 12, color: C.textSec, display: "block", marginBottom: 3 }}>Cierre automático - hora de México (opcional)</label>
+              <input
+                type="time"
+                value={form.hora_cierre_automatico}
+                onChange={e => setForm({ ...form, hora_cierre_automatico: e.target.value })}
+                style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 11px", fontSize: 13, color: C.text, background: "#fff", boxSizing: "border-box" }}
+              />
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>
+                Red de seguridad: si a esta hora sigue habiendo tickets pendientes del periodo, se consolidan automáticamente. Vacío = 100% manual (como hoy).
+              </div>
+            </div>
+          )}
           <div style={{ marginBottom: 12 }}>
             <label style={{ fontSize: 12, color: C.textSec, display: "block", marginBottom: 3 }}>Color del ticket impreso (opcional)</label>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

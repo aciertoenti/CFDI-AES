@@ -16,7 +16,7 @@ de "Series" en la UI (todavia mock, tarea aparte).
 """
 import asyncio
 import os
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Optional
 
@@ -24,7 +24,7 @@ from alembic import command
 from alembic.config import Config
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, SmallInteger, String, Text, TypeDecorator, UniqueConstraint, func, inspect, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, SmallInteger, String, Text, Time, TypeDecorator, UniqueConstraint, func, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -158,6 +158,16 @@ class Emisor(Base):
     # del negocio (Negocio.color_primario) y de ahi a un default fijo si
     # tampoco existe - ver la resolucion en crear_ticket, facturacion/main.py.
     color_primario: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+    # Cierre automatico de consolidacion (g7imYM pieza 3, 18 sep 2026) - hora
+    # local del dia (HH:MM, sin zona horaria explicita - mismo supuesto que
+    # el resto del proyecto, que ya asume un solo huso horario operativo)
+    # en la que el scheduler de facturacion intenta consolidar. NULL = sin
+    # cierre automatico, 100% manual (comportamiento de g5b-kc sin cambios).
+    # Independiente de periodicidad_consolidacion en la BD (no hay CHECK
+    # cruzado) - el scheduler exige AMBOS no-nulos antes de evaluar un
+    # emisor (ver listar_emisores_consolidacion_automatica), asi que un
+    # estado "hora sin periodicidad" es inofensivo aunque exista.
+    hora_cierre_automatico: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
     # Auditoria (no control de seguridad) - RFC personal (X-Usuario-Rfc, ver
     # api_gateway) de quien dio de alta el emisor. Nullable a proposito: dato
     # de auditoria, no se rechaza el alta si falta, y los emisores previos a

@@ -21,3 +21,10 @@ qrcode
 # nativo, sin tabla ni migracion) y mismo patron de modulo singleton que
 # auth_usuarios/redis_client.py - ver redis_client.py en este servicio.
 redis
+# APScheduler (18 sep 2026, g7imYM pieza 3): cierre automatico de
+# consolidacion de Publico en General - primer scheduler del proyecto
+# (confirmado antes de agregarlo que no existia ninguno, ver comentario en
+# zg6k9Ok/administracion). AsyncIOScheduler especificamente (no
+# BackgroundScheduler) - corre en el mismo event loop asyncio que el resto
+# del servicio, ver comentario junto al import en main.py.
+apscheduler

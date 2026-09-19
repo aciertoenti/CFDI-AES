@@ -2,9 +2,14 @@ import { useMemo, useState } from "react";
 import useBreakpoint from "../../shared/hooks/useBreakpoint";
 import useEmisores from "../../shared/hooks/useEmisores";
 import { useTickets } from "./hooks";
-import { SectionTitle, KPIGrid, KPI, Card } from "../../shared/components/atoms";
+import { SectionTitle, KPIGrid, KPI, Card, Btn } from "../../shared/components/atoms";
 import { Placeholder } from "../../shared/layout/AppShell";
 import { C, fmt } from "../../shared/utils/format";
+// Movido aqui desde Emisores.jsx (18 sep 2026) - misma regla de negocio
+// (visible solo si el emisor ACTIVO tiene periodicidad_consolidacion), el
+// componente del modal se reutiliza tal cual, sin duplicar. Emisores.jsx
+// ya NO lo muestra - ver la nota junto al boton mas abajo.
+import ConsolidarPublicoGeneralModal from "../administracion/ConsolidarPublicoGeneralModal";
 
 // Pantalla "Ventas del dia" (zg5sPJI, Sesion B): listado de tickets del POS
 // ligero del dia (o de un dia elegido "en adelante"). Reutiliza el patron
@@ -59,13 +64,26 @@ const CHIPS = [
 
 export default function VentaDiaria() {
   const { isMobile } = useBreakpoint();
-  const { emisorActivoRfc } = useEmisores();
+  // emisorActivo (objeto completo, no solo el rfc) - mismo patron que
+  // Emisores.jsx/EditarEmisorModal.jsx para leer periodicidad_consolidacion.
+  // Viene del mismo EmisoresProvider compartido: si el usuario cambia de
+  // emisor en el selector del header, esto se re-deriva solo (contexto
+  // reactivo de React), sin recargar la pagina.
+  const { emisorActivoRfc, emisorActivo } = useEmisores();
   const [fecha, setFecha] = useState(hoyLocal());
   const { tickets, loading, error, recargar } = useTickets(emisorActivoRfc, fecha);
 
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState(null);
   const esHoy = fecha === hoyLocal();
+
+  // Consolidacion de Publico en General (movido desde Emisores.jsx, 18 sep
+  // 2026) - mismo criterio de visibilidad: solo si el emisor ACTIVO tiene
+  // periodicidad_consolidacion habilitada. recargar aqui es el de
+  // useTickets (arriba) - al consolidar con exito, la tabla de tickets se
+  // refresca sola (los reclamados dejan de aparecer como "Pendiente"), sin
+  // necesitar ningun callback adicional especifico de esta pantalla.
+  const [mostrandoConsolidar, setMostrandoConsolidar] = useState(false);
 
   // id del ticket cuya apertura de portal fue bloqueada por el navegador
   // (popup blocker) -> se muestra aviso + link visible de respaldo en esa fila.
@@ -104,7 +122,14 @@ export default function VentaDiaria() {
 
   return (
     <div>
-      <SectionTitle>Ventas del día</SectionTitle>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <SectionTitle>Ventas del día</SectionTitle>
+        {emisorActivo?.periodicidad_consolidacion && (
+          <Btn type="button" variant="secondary" onClick={() => setMostrandoConsolidar(true)}>
+            Consolidar Público en General
+          </Btn>
+        )}
+      </div>
 
       <KPIGrid>
         <KPI label="Total del día" value={fmt(totalDia)} dark />
@@ -225,6 +250,14 @@ export default function VentaDiaria() {
         El filtro de fecha trae los tickets <strong>desde ese día en adelante</strong> (no un día exacto).
         Muestra hasta 200 tickets; para un volumen mayor por día habrá que agregar paginación.
       </div>
+
+      {mostrandoConsolidar && emisorActivo && (
+        <ConsolidarPublicoGeneralModal
+          emisor={emisorActivo}
+          onCerrar={() => setMostrandoConsolidar(false)}
+          recargar={recargar}
+        />
+      )}
     </div>
   );
 }

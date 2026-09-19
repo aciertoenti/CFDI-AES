@@ -11,6 +11,17 @@ import { C, fmt } from "../../shared/utils/format";
 // razonable de precio).
 const FILA_VACIA = { descripcion: "", cantidad: 1, precio_unitario: 0 };
 
+// Las 4 formas de pago reales de un POS fisico de mostrador (g7r6Uc, 18
+// sep 2026) - claves del catalogo SAT c_FormaPago, mismas 4 que valida el
+// backend (FORMAS_PAGO_POS_VALIDAS en facturacion/main.py). Sin
+// cheque/monedero electronico/otros: no hay caso de uso hoy.
+const FORMAS_PAGO = [
+  { value: "01", label: "Efectivo" },
+  { value: "03", label: "Transferencia" },
+  { value: "04", label: "Tarjeta de crédito" },
+  { value: "28", label: "Tarjeta de débito" },
+];
+
 export default function NuevoTicket(){
   const toast = useToast();
   // Sin selector de emisor: el ticket siempre es del emisor activo actual
@@ -18,6 +29,10 @@ export default function NuevoTicket(){
   const { emisorActivo: emisor, emisorInactivo } = useEmisores();
 
   const [conceptos, setConceptos] = useState([{ ...FILA_VACIA }]);
+  // "" = nada elegido todavia (fuerza al operador a elegir explicitamente,
+  // sin default silencioso que pudiera no corresponder a la venta real) -
+  // requerido para poder generar el ticket, ver el guard en crearTicket.
+  const [formaPago, setFormaPago] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [resultado, setResultado] = useState(null);
 
@@ -51,6 +66,10 @@ export default function NuevoTicket(){
       toast("Completa descripción, cantidad y precio en todos los conceptos", "warning");
       return;
     }
+    if (!formaPago) {
+      toast("Elige la forma de pago de la venta", "warning");
+      return;
+    }
     setEnviando(true); setResultado(null);
     try {
       const res = await fetchAuth(`${API_BASE}/facturas/tickets`, {
@@ -63,6 +82,7 @@ export default function NuevoTicket(){
             cantidad: parseFloat(c.cantidad),
             precio_unitario: parseFloat(c.precio_unitario),
           })),
+          forma_pago: formaPago,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -76,7 +96,11 @@ export default function NuevoTicket(){
     }
   };
 
-  const otroTicket = () => { setConceptos([{ ...FILA_VACIA }]); setResultado(null); };
+  // formaPago tambien se limpia (no se conserva la anterior) - mismo
+  // criterio de "sin default silencioso" que su eleccion inicial: cada
+  // ticket nuevo exige una eleccion explicita, para no arrastrar por
+  // accidente la forma de pago de la venta previa a esta.
+  const otroTicket = () => { setConceptos([{ ...FILA_VACIA }]); setFormaPago(""); setResultado(null); };
 
   return (
     <div>
@@ -127,6 +151,17 @@ export default function NuevoTicket(){
           );
         })}
         <Btn variant="secondary" type="button" onClick={agregarFila}>+ Agregar concepto</Btn>
+        <div style={{marginTop:16}}>
+          <label style={{fontSize:12,color:C.textSec,display:"block",marginBottom:3}}>Forma de pago</label>
+          <select
+            value={formaPago}
+            onChange={e=>setFormaPago(e.target.value)}
+            style={{width:"100%",maxWidth:260,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 11px",fontSize:13,color:C.text,background:"#fff",boxSizing:"border-box"}}
+          >
+            <option value="">Selecciona…</option>
+            {FORMAS_PAGO.map(f=><option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+        </div>
         {/* precio_unitario se captura CON IVA INCLUIDO: el total mostrado ES
             el monto final que paga el cliente, no hace falta advertir que se
             sumara algo. Debajo, desglose informativo de cuanto de ese total

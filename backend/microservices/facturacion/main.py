@@ -1045,6 +1045,33 @@ def _resolver_periodo_actual(periodicidad: str) -> tuple:
     return fecha_desde, hoy
 
 
+def _forma_pago_ticket_mayor_monto(tickets) -> str:
+    """Forma de pago del CFDI consolidado (g7r6Uc, 18 sep 2026) - regla
+    real del SAT confirmada contra 8 fuentes independientes (no supuesta):
+    una factura global NO se separa por forma de pago (pueden mezclarse
+    efectivo/tarjeta/transferencia en un mismo CFDI), pero el campo debe
+    llevar la clave del TICKET DE MAYOR MONTO del periodo consolidado - NO
+    la mas repetida, NO un valor fijo.
+
+    Empate en el monto maximo con formas de pago distintas: el SAT
+    permite elegir cualquiera de las empatadas - el criterio de desempate
+    aqui (el primero por fecha_hora, orden de creacion) es una DECISION DE
+    IMPLEMENTACION simple, no una regla del SAT en si.
+
+    min() con key=(-total, fecha_hora) en vez de max(tickets, key=total):
+    max() por si solo con una lista sin ORDER BY (ver la query que la
+    genera) no garantiza CUAL de los empatados devuelve de forma
+    deterministica - este key compuesto si, sin depender del orden en que
+    Postgres devolvio las filas.
+
+    Ticket sin forma_pago capturada (creado antes de g7r6Uc) cae al mismo
+    fallback "99" (Por definir, FORMA_PAGO_FALLBACK_SIN_CAPTURAR) que ya
+    usa facturar_ticket - nunca rompe el calculo, ni siquiera si resulta
+    ser justo el ticket de mayor monto del lote."""
+    ticket_mayor = min(tickets, key=lambda t: (-t.total, t.fecha_hora))
+    return ticket_mayor.forma_pago or FORMA_PAGO_FALLBACK_SIN_CAPTURAR
+
+
 class TicketsPendientesAntesDePeriodoResponse(BaseModel):
     n_pendientes: int
 
@@ -1149,6 +1176,7 @@ async def _consolidar_publico_general_interno(
 
     result = await db.execute(select(TicketVenta).where(TicketVenta.id.in_(ids_reclamados)))
     tickets = result.scalars().all()
+    forma_pago_consolidada = _forma_pago_ticket_mayor_monto(tickets)
 
     try:
         # Un concepto por linea original de cada ticket (sin fusionar por
@@ -1187,6 +1215,11 @@ async def _consolidar_publico_general_interno(
                 domicilio_fiscal=datos_emisor["codigo_postal"],
             ),
             conceptos=conceptos,
+            # forma_pago del ticket de MAYOR MONTO del lote (g7r6Uc, 18 sep
+            # 2026, ver _forma_pago_ticket_mayor_monto) - ANTES caia al
+            # default fijo del modelo ("03") sin importar los tickets
+            # reales que se estaban consolidando.
+            forma_pago=forma_pago_consolidada,
             # Serie propia "PG" (Publico en General consolidado) - mismo
             # criterio ya usado para distinguir origen de un vistazo que
             # facturar_ticket con serie="T" (vs. "A" del timbrado manual).
@@ -1655,9 +1688,35 @@ async def eliminar_borrador(
 # si consume un folio real (SerieFolio serie="TICKET") y es lo que el
 # cliente ve/escanea.
 
+# Alcance deliberadamente angosto (g7r6Uc, 18 sep 2026) - las 4 formas de
+# pago reales de un POS fisico de mostrador. Verificado contra el catalogo
+# SAT real (C756_c_FormaPago, via satcfdi): "01"=Efectivo,
+# "03"=Transferencia electronica de fondos, "04"=Tarjeta de credito,
+# "28"=Tarjeta de debito. NO se agrega cheque/monedero electronico/otros -
+# no hay caso de uso hoy; ampliar esta lista (y el selector de
+# NuevoTicket.jsx) si aparece uno real.
+FORMAS_PAGO_POS_VALIDAS = {"01", "03", "04", "28"}
+# Fallback para tickets creados ANTES de este cambio, sin forma_pago
+# capturada (ver TicketVenta.forma_pago) - "99" (Por definir) es la clave
+# real del catalogo SAT para exactamente este caso ("no se sabe/no se
+# especifico"), NO un valor inventado. Confirmado compatible con
+# metodo_pago="PUE" (el unico que usa este proyecto) contra el propio
+# codigo fuente de satcfdi (create/cfd/cfdi40.py, Comprobante.from_nomina
+# usa metodo_pago="PUE" + forma_pago="99" en su propio ejemplo de
+# referencia) - no es una suposicion.
+FORMA_PAGO_FALLBACK_SIN_CAPTURAR = "99"
+
+
 class TicketCreate(BaseModel):
     emisor_rfc: str
     conceptos: List[Concepto]
+    # Requerido (sin default) - decision explicita para NO repetir el mismo
+    # hueco que ya existia (tickets viejos sin este dato en absoluto, ver
+    # g7r6Uc). Un body sin este campo da 422 automatico de Pydantic, antes
+    # de tocar la BD. Retrocompatibilidad: NO aplica hacia atras - los
+    # tickets ya creados antes de este cambio simplemente quedan con
+    # forma_pago=NULL en la columna (nullable a proposito), no se reescriben.
+    forma_pago: str
 
 class TicketResponse(BaseModel):
     id: int
@@ -1677,6 +1736,9 @@ class TicketResponse(BaseModel):
     # el frontend debe ocultar/deshabilitar el boton de descarga en ese caso,
     # no asumir que siempre existe.
     pdf_url: Optional[str] = None
+    # Eco de lo capturado (g7r6Uc) - None solo en tickets previos a este
+    # cambio, nunca en uno nuevo (TicketCreate.forma_pago es requerido).
+    forma_pago: Optional[str] = None
 
 @app.post("/facturas/tickets", response_model=TicketResponse, status_code=201, dependencies=[Depends(require_internal_key)])
 async def crear_ticket(
@@ -1697,6 +1759,11 @@ async def crear_ticket(
         raise HTTPException(
             status_code=409,
             detail=f"El emisor {ticket.emisor_rfc} esta Inactivo - no puede generar tickets.",
+        )
+    if ticket.forma_pago not in FORMAS_PAGO_POS_VALIDAS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"forma_pago debe ser una de {sorted(FORMAS_PAGO_POS_VALIDAS)} (catalogo SAT c_FormaPago).",
         )
 
     # Total SIEMPRE calculado en el servidor desde los conceptos, nunca
@@ -1742,6 +1809,7 @@ async def crear_ticket(
         estado="pendiente",
         qr_token=qr_token,
         creado_por_rfc=x_usuario_rfc,
+        forma_pago=ticket.forma_pago,
     )
     db.add(nuevo)
     await db.commit()
@@ -1837,6 +1905,7 @@ async def crear_ticket(
         # solo regenera una URL firmada, no vuelve a subir nada. None si
         # el bloque de arriba fallo (pdf_generado_at sigue en None).
         pdf_url=storage_client.url_pdf(nuevo.qr_token) if nuevo.pdf_generado_at else None,
+        forma_pago=nuevo.forma_pago,
     )
 
 
@@ -2168,6 +2237,12 @@ async def facturar_ticket(
                 Concepto(**{**c, "precio_unitario": c.get("precio_base", c["precio_unitario"])})
                 for c in json.loads(ticket.conceptos)
             ],
+            # forma_pago real del ticket (g7r6Uc, 18 sep 2026) - ANTES caia
+            # en silencio al default fijo del modelo ("03", Transferencia)
+            # sin importar como se cobro realmente. Fallback "99" (Por
+            # definir, FORMA_PAGO_FALLBACK_SIN_CAPTURAR) solo para tickets
+            # creados antes de este cambio, que nunca capturaron el dato.
+            forma_pago=ticket.forma_pago or FORMA_PAGO_FALLBACK_SIN_CAPTURAR,
             serie="T",
         )
 

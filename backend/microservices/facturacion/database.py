@@ -253,6 +253,19 @@ class TicketVenta(Base):
     # String(20): "NC" + 12 digitos = 14 chars exactos, margen igual que
     # TicketVenta.estado (no ajustado al limite exacto).
     numero_cliente: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Forma de pago real de la venta (g7r6Uc, 18 sep 2026) - clave del
+    # catalogo SAT c_FormaPago, verificada contra el catalogo real de
+    # satcfdi (C756_c_FormaPago): "01"=Efectivo, "03"=Transferencia
+    # electronica de fondos, "04"=Tarjeta de credito, "28"=Tarjeta de
+    # debito - las 4 unicas que el POS Lite permite capturar hoy (alcance
+    # deliberadamente angosto, ver FORMAS_PAGO_POS_VALIDAS en main.py;
+    # ampliar esa lista si se agrega un metodo nuevo, ej. monedero
+    # electronico). Nullable: tickets creados ANTES de este cambio no lo
+    # tienen y no se rellenan retroactivamente (mismo criterio que
+    # creado_por_rfc) - ver el fallback "99" (Por definir, tambien del
+    # catalogo SAT real) en facturar_ticket y _consolidar_publico_general_
+    # interno para ese caso.
+    forma_pago: Mapped[Optional[str]] = mapped_column(String(2), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("emisor_rfc", "folio", name="uq_ticket_venta_emisor_folio"),

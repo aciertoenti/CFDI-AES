@@ -7,9 +7,10 @@ Mezcla los 2 patrones ya usados en esta suite:
   - mockea main.httpx.AsyncClient para simular facturas_mes (mismo patron
     que test_resumen_negocio.py) - no depende de facturacion real.
   - usa Postgres real (AsyncSessionLocal) para la tabla notificaciones - el
-    UNIQUE(negocio_id, tipo, periodo) y el ON CONFLICT DO NOTHING son
-    justamente lo que hay que probar contra la BD real, un mock no lo
-    cubriria (mismo criterio que test_listar_emisores_orden.py).
+    UNIQUE(negocio_id, tipo, periodo) y el ON CONFLICT DO UPDATE (g7sjeM,
+    19 sep 2026 - antes DO NOTHING, ver el hallazgo real de mensaje
+    congelado) son justamente lo que hay que probar contra la BD real, un
+    mock no lo cubriria (mismo criterio que test_listar_emisores_orden.py).
 """
 import asyncio
 from datetime import datetime, timedelta
@@ -136,6 +137,56 @@ async def test_llamadas_concurrentes_no_duplican_por_el_unique_constraint(negoci
         )
         filas = result.scalars().all()
     assert len(filas) == 1, "2 requests concurrentes insertaron un duplicado - el UNIQUE no esta protegiendo"
+
+
+# ─── g7sjeM: el mensaje se actualiza dentro del mismo periodo, "leida" no ──
+
+async def test_mensaje_se_actualiza_si_el_conteo_cambia(negocio_temporal, monkeypatch):
+    """Antes (ON CONFLICT DO NOTHING): el mensaje quedaba congelado con el
+    valor de la primera llamada. Ahora (DO UPDATE): la segunda llamada,
+    con un conteo real distinto, debe actualizar el mensaje - misma fila
+    (mismo id, mismo UNIQUE), no una nueva."""
+    _patch_facturacion(monkeypatch, facturas_mes=21)  # 21/25 = 84%
+    async with AsyncSessionLocal() as session:
+        primera = await main.listar_notificaciones(
+            negocio_id=negocio_temporal, db=session, x_negocio_id=str(negocio_temporal),
+        )
+    assert primera[0].mensaje == "Has usado el 84% de tus facturas incluidas este mes (21 de 25)."
+    id_original = primera[0].id
+
+    _patch_facturacion(monkeypatch, facturas_mes=24)  # 24/25 = 96% - conteo real cambio
+    async with AsyncSessionLocal() as session:
+        segunda = await main.listar_notificaciones(
+            negocio_id=negocio_temporal, db=session, x_negocio_id=str(negocio_temporal),
+        )
+    assert len(segunda) == 1, "debe seguir siendo 1 sola fila, no una nueva"
+    assert segunda[0].id == id_original
+    assert segunda[0].mensaje == "Has usado el 96% de tus facturas incluidas este mes (24 de 25)."
+
+
+async def test_actualizar_mensaje_no_resetea_leida(negocio_temporal, monkeypatch):
+    """Si el usuario ya marco la notificacion como leida, un recalculo del
+    mensaje (conteo real distinto) NO debe resetear leida a False - eso
+    seria spam/regresion, exactamente lo que ON CONFLICT DO NOTHING evitaba
+    y que DO UPDATE (sin "leida" en set_) debe seguir evitando."""
+    _patch_facturacion(monkeypatch, facturas_mes=21)
+    async with AsyncSessionLocal() as session:
+        creadas = await main.listar_notificaciones(
+            negocio_id=negocio_temporal, db=session, x_negocio_id=str(negocio_temporal),
+        )
+    async with AsyncSessionLocal() as session:
+        await main.marcar_notificacion_leida(
+            negocio_id=negocio_temporal, notif_id=creadas[0].id, db=session, x_negocio_id=str(negocio_temporal),
+        )
+
+    _patch_facturacion(monkeypatch, facturas_mes=25)  # 25/25 = 100% - conteo real cambio
+    async with AsyncSessionLocal() as session:
+        out = await main.listar_notificaciones(
+            negocio_id=negocio_temporal, db=session, x_negocio_id=str(negocio_temporal),
+        )
+    assert len(out) == 1
+    assert out[0].mensaje == "Has usado el 100% de tus facturas incluidas este mes (25 de 25)."
+    assert out[0].leida is True, "el recalculo del mensaje reseteo leida a False - regresion real"
 
 
 # ─── periodo: una notificacion de un mes anterior no bloquea la del mes actual ──

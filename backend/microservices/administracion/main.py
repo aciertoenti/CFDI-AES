@@ -959,19 +959,29 @@ async def listar_notificaciones(
                 f"Has usado el {porcentaje}% de tus facturas incluidas este mes "
                 f"({facturas_mes} de {limite})."
             )
-            # ON CONFLICT DO NOTHING (no SELECT-then-INSERT): el UNIQUE
-            # (negocio_id, tipo, periodo) es lo que hace esto seguro ante 2
-            # requests concurrentes al mismo endpoint - un SELECT previo
+            # ON CONFLICT DO UPDATE (g7sjeM, 19 sep 2026 - antes DO NOTHING):
+            # el UNIQUE (negocio_id, tipo, periodo) sigue siendo la unica
+            # fuente de "es la misma notificacion de este mes" (no
+            # SELECT-then-INSERT, misma razon que antes: un SELECT previo
             # dejaria una ventana de carrera real entre el SELECT y el
-            # INSERT (ver test que reproduce esto con 2 llamadas reales).
+            # INSERT, ver test de concurrencia). El cambio es que ahora SI
+            # se actualiza mensaje cada vez que se recalcula dentro del
+            # mismo periodo - antes se congelaba con el valor de la
+            # PRIMERA vez que se cruzo el umbral, y podia quedar
+            # desactualizado en cualquier direccion (hallazgo real, ver
+            # g7sjeM). set_ deliberadamente NO incluye "leida": conserva
+            # su valor actual (columna omitida del SET = sin tocar en
+            # Postgres) - si el usuario ya la marco leida, actualizar el
+            # mensaje NO la resetea a False, eso si seria spam/regresion.
             stmt = pg_insert(Notificacion).values(
                 negocio_id=negocio_id,
                 tipo=TIPO_PLAN_CERCA_LIMITE,
                 mensaje=mensaje,
                 periodo=periodo,
                 leida=False,
-            ).on_conflict_do_nothing(
+            ).on_conflict_do_update(
                 index_elements=["negocio_id", "tipo", "periodo"],
+                set_={"mensaje": mensaje},
             )
             await db.execute(stmt)
             await db.commit()
@@ -1003,14 +1013,20 @@ async def listar_notificaciones(
             # Mismo tipo por emisor (ver TIPO_CONSOLIDACION_PENDIENTE) - el
             # sufijo _{rfc} es lo que hace que el UNIQUE(negocio_id, tipo,
             # periodo) trate a cada emisor como un evento independiente.
+            # ON CONFLICT DO UPDATE (g7sjeM, 19 sep 2026 - mismo cambio y
+            # mismo razonamiento que el bloque de plan_cerca_limite arriba):
+            # el mensaje se recalcula en cada llamada dentro del mismo
+            # periodo en vez de congelarse en el primer valor - "leida" NO
+            # esta en set_, conserva su valor actual.
             stmt = pg_insert(Notificacion).values(
                 negocio_id=negocio_id,
                 tipo=f"{TIPO_CONSOLIDACION_PENDIENTE}_{emisor.rfc}",
                 mensaje=mensaje,
                 periodo=periodo,
                 leida=False,
-            ).on_conflict_do_nothing(
+            ).on_conflict_do_update(
                 index_elements=["negocio_id", "tipo", "periodo"],
+                set_={"mensaje": mensaje},
             )
             await db.execute(stmt)
             await db.commit()

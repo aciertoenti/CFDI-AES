@@ -18,6 +18,23 @@ function periodoActual(periodicidad) {
 export default function ConsolidarPublicoGeneralModal({ emisor, onCerrar, recargar }) {
   const periodicidad = emisor.periodicidad_consolidacion;
   const { desde, hasta } = periodoActual(periodicidad);
+
+  // Rango manual (opcional, colapsado por default) - caso real que lo
+  // motiva: backlog de tickets pendientes de semanas atras que nunca
+  // entran en el periodo "vencido actual" (diario=hoy). Inicializado UNA
+  // vez con el periodo automatico (useState lazy, no se resetea si el
+  // usuario colapsa/expande el toggle - no se le pierde lo que ya
+  // escribio). Mientras rangoManualActivo es false, el comportamiento es
+  // IDENTICO al de antes (sin regresion): mismas fechas automaticas,
+  // mismo POST sin fecha_desde/fecha_hasta.
+  const [mostrarRangoManual, setMostrarRangoManual] = useState(false);
+  const [desdeManual, setDesdeManual] = useState(() => desde);
+  const [hastaManual, setHastaManual] = useState(() => hasta);
+  const rangoInvalido = mostrarRangoManual && hastaManual < desdeManual;
+
+  const desdeEfectivo = mostrarRangoManual ? desdeManual : desde;
+  const hastaEfectivo = mostrarRangoManual ? hastaManual : hasta;
+
   const [cargando, setCargando] = useState(true);
   const [tickets, setTickets] = useState([]);
   const [errorPreview, setErrorPreview] = useState(null);
@@ -26,6 +43,10 @@ export default function ConsolidarPublicoGeneralModal({ emisor, onCerrar, recarg
   const [errorConsolidar, setErrorConsolidar] = useState(null);
 
   useEffect(() => {
+    // Rango manual invalido (hasta < desde): no se consulta el preview -
+    // mismo error que rechazaria el backend, mostrado antes de gastar una
+    // llamada de red.
+    if (rangoInvalido) { setTickets([]); setCargando(false); setErrorPreview(null); return; }
     let cancelado = false;
     (async () => {
       setCargando(true); setErrorPreview(null);
@@ -38,11 +59,12 @@ export default function ConsolidarPublicoGeneralModal({ emisor, onCerrar, recarg
         // el preview cuente lo mismo que el POST real va a consolidar, se
         // pide fecha_hasta+1 dia aqui tambien - mismo ajuste, aplicado del
         // lado del cliente porque no se toca listar_tickets (fuera de
-        // alcance de g5b-kc).
-        const hastaSiguienteDia = new Date(`${hasta}T00:00:00Z`);
+        // alcance de g5b-kc). Se aplica igual sobre hastaEfectivo (automatico
+        // o manual, el que este activo).
+        const hastaSiguienteDia = new Date(`${hastaEfectivo}T00:00:00Z`);
         hastaSiguienteDia.setUTCDate(hastaSiguienteDia.getUTCDate() + 1);
         const hastaParaQuery = hastaSiguienteDia.toISOString().slice(0, 10);
-        const url = `${API_BASE}/facturas/tickets?emisor_rfc=${encodeURIComponent(emisor.rfc)}&estado=pendiente&fecha_desde=${desde}&fecha_hasta=${hastaParaQuery}&size=200`;
+        const url = `${API_BASE}/facturas/tickets?emisor_rfc=${encodeURIComponent(emisor.rfc)}&estado=pendiente&fecha_desde=${desdeEfectivo}&fecha_hasta=${hastaParaQuery}&size=200`;
         const res = await fetchAuth(url);
         const data = await res.json().catch(() => ([]));
         if (!res.ok) throw new Error(detalleError(data, res));
@@ -54,22 +76,29 @@ export default function ConsolidarPublicoGeneralModal({ emisor, onCerrar, recarg
       }
     })();
     return () => { cancelado = true; };
-  }, [emisor.rfc, desde, hasta]);
+  }, [emisor.rfc, desdeEfectivo, hastaEfectivo, rangoInvalido]);
 
   const totalPendiente = tickets.reduce((acc, t) => acc + t.total, 0);
 
   const confirmar = async () => {
+    if (rangoInvalido) return; // guard extra - el boton ya queda disabled
     setConsolidando(true); setErrorConsolidar(null);
     try {
-      // Sin fecha_desde/fecha_hasta a proposito: el backend resuelve el
-      // MISMO periodo que este modal ya mostro en el preview (misma logica
-      // exacta, ver periodoActual arriba) - no se manda lo ya calculado
-      // aqui para no arriesgar un desfase si el reloj del cliente difiere
-      // del servidor.
+      // Sin rango manual activo: NO se manda fecha_desde/fecha_hasta a
+      // proposito (comportamiento identico a antes de este cambio) - el
+      // backend resuelve el MISMO periodo que este modal ya mostro en el
+      // preview (misma logica exacta, ver periodoActual arriba), sin
+      // arriesgar un desfase si el reloj del cliente difiere del servidor.
+      // CON rango manual activo: se manda el rango explicito elegido - el
+      // backend lo usa tal cual, ganando sobre el calculo automatico
+      // (ya implementado en g5b-kc, sin cambios de backend para esto).
+      const body = mostrarRangoManual
+        ? { emisor_rfc: emisor.rfc, fecha_desde: desdeManual, fecha_hasta: hastaManual }
+        : { emisor_rfc: emisor.rfc };
       const res = await fetchAuth(`${API_BASE}/facturas/consolidar-publico-general`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ emisor_rfc: emisor.rfc }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(detalleError(data, res));
@@ -90,23 +119,64 @@ export default function ConsolidarPublicoGeneralModal({ emisor, onCerrar, recarg
 
         {!resultado && (
           <>
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 16, fontSize: 13 }}>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13 }}>
               <div style={{ color: C.textSec, marginBottom: 4 }}>
-                Periodo ({periodicidad === "diario" ? "diario" : "mensual"}): <strong style={{ color: C.text }}>{desde}</strong> a <strong style={{ color: C.text }}>{hasta}</strong>
+                Periodo ({mostrarRangoManual ? "rango manual" : (periodicidad === "diario" ? "diario" : "mensual")}): <strong style={{ color: C.text }}>{desdeEfectivo}</strong> a <strong style={{ color: C.text }}>{hastaEfectivo}</strong>
               </div>
-              {cargando && <div style={{ color: C.textMuted }}>Cargando tickets pendientes…</div>}
-              {errorPreview && <div style={{ color: C.danger }}>⚠ {errorPreview}</div>}
-              {!cargando && !errorPreview && (
+              {rangoInvalido && <div style={{ color: C.danger }}>⚠ La fecha "hasta" no puede ser anterior a "desde".</div>}
+              {!rangoInvalido && cargando && <div style={{ color: C.textMuted }}>Cargando tickets pendientes…</div>}
+              {!rangoInvalido && errorPreview && <div style={{ color: C.danger }}>⚠ {errorPreview}</div>}
+              {!rangoInvalido && !cargando && !errorPreview && (
                 <div style={{ color: C.text }}>
                   <strong>{tickets.length}</strong> ticket{tickets.length === 1 ? "" : "s"} pendiente{tickets.length === 1 ? "" : "s"} · Total: <strong>{fmt(totalPendiente)}</strong>
                 </div>
               )}
             </div>
 
+            {!mostrarRangoManual ? (
+              <button
+                type="button"
+                onClick={() => setMostrarRangoManual(true)}
+                style={{ background: "none", border: "none", padding: 0, marginBottom: 16, fontSize: 12, color: C.textMuted, textDecoration: "underline", cursor: "pointer" }}
+              >
+                Elegir un rango de fechas distinto
+              </button>
+            ) : (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                  <label style={{ flex: 1, fontSize: 12, color: C.textSec }}>
+                    Desde
+                    <input
+                      type="date"
+                      value={desdeManual}
+                      onChange={e => setDesdeManual(e.target.value)}
+                      style={{ display: "block", width: "100%", marginTop: 3, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 13, boxSizing: "border-box" }}
+                    />
+                  </label>
+                  <label style={{ flex: 1, fontSize: 12, color: C.textSec }}>
+                    Hasta
+                    <input
+                      type="date"
+                      value={hastaManual}
+                      onChange={e => setHastaManual(e.target.value)}
+                      style={{ display: "block", width: "100%", marginTop: 3, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 13, boxSizing: "border-box" }}
+                    />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMostrarRangoManual(false)}
+                  style={{ background: "none", border: "none", padding: 0, fontSize: 12, color: C.textMuted, textDecoration: "underline", cursor: "pointer" }}
+                >
+                  Usar periodo automático ({periodicidad === "diario" ? "diario" : "mensual"})
+                </button>
+              </div>
+            )}
+
             {errorConsolidar && <div style={{ fontSize: 12, color: C.danger, marginBottom: 14, padding: "8px 10px", background: C.dangerSoft, borderRadius: 6 }}>⚠ {errorConsolidar}</div>}
 
             <div style={{ display: "flex", gap: 8 }}>
-              <Btn onClick={confirmar} disabled={cargando || consolidando || tickets.length === 0} style={{ flex: 1 }}>
+              <Btn onClick={confirmar} disabled={rangoInvalido || cargando || consolidando || tickets.length === 0} style={{ flex: 1 }}>
                 {consolidando ? "Consolidando…" : `Consolidar ${tickets.length || ""} ticket${tickets.length === 1 ? "" : "s"}`.trim()}
               </Btn>
               <Btn type="button" variant="secondary" onClick={onCerrar} disabled={consolidando}>Cancelar</Btn>

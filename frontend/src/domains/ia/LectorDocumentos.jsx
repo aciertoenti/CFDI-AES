@@ -25,7 +25,43 @@ export default function LectorDocumentos(){
   // misma key (mismo patrón ya usado en NuevaFactura.jsx), evitando
   // timbrar el mismo CFDI dos veces por un doble-click o un reintento.
   const [idempotencyKey,setIdempotencyKey]=useState(()=>crypto.randomUUID());
-  useEffect(()=>{ if(result) setIdempotencyKey(crypto.randomUUID()); },[result]);
+  // Revisión editable + umbral de confianza (g7gsWQ, 21 sep 2026) - "result"
+  // (del hook, useDocumentExtractor) queda intacto como la extracción cruda
+  // de la IA; "editado" es la copia que el usuario puede corregir y la que
+  // de verdad alimenta el payload de timbrado. Se re-siembra cada vez que
+  // llega un "result" nuevo (documento nuevo), junto con idempotencyKey -
+  // mismo effect, mismo disparador.
+  const [editado,setEditado]=useState(null);
+  const [tocado,setTocado]=useState(false);
+  useEffect(()=>{
+    if(result){
+      setIdempotencyKey(crypto.randomUUID());
+      setEditado({
+        receptor_nombre:result.receptor_nombre,
+        receptor_rfc:result.receptor_rfc,
+        receptor_uso_cfdi:result.receptor_uso_cfdi,
+        receptor_regimen_fiscal:result.receptor_regimen_fiscal,
+        receptor_domicilio_fiscal:result.receptor_domicilio_fiscal,
+        conceptos:(result.conceptos||[]).map(c=>({...c})),
+      });
+      setTocado(false);
+    }
+  },[result]);
+  const actualizarCampo=(campo,valor)=>{setEditado(prev=>({...prev,[campo]:valor}));setTocado(true);};
+  const actualizarConcepto=(idx,campo,valor)=>{
+    setEditado(prev=>({...prev,conceptos:prev.conceptos.map((c,i)=>i===idx?{...c,[campo]:valor}:c)}));
+    setTocado(true);
+  };
+  // Umbral de partida (no es un valor final - ajustar cuando haya datos
+  // reales de qué tan calibrada está result.confianza.general, que hoy la
+  // IA reporta de 0 a 1). Sin campo de confianza en la respuesta ->
+  // confianzaBaja queda en false a propósito (degradar a "sin bloqueo" en
+  // vez de romper o bloquear por un dato ausente, mismo criterio usado toda
+  // la sesión para campos opcionales sin fuente).
+  const UMBRAL_CONFIANZA=0.70;
+  const confianzaGeneral=result?.confianza?.general;
+  const confianzaBaja=typeof confianzaGeneral==="number"&&confianzaGeneral<UMBRAL_CONFIANZA;
+  const timbrarBloqueado=confianzaBaja&&!tocado;
   const [timbrando,setTimbrando]=useState(false);
   const [timbrado,setTimbrado]=useState(null);
   const [errorTimbrado,setErrorTimbrado]=useState(null);
@@ -42,16 +78,19 @@ export default function LectorDocumentos(){
     // emisor_rfc NO viene del Lector IA (una orden de compra ajena no trae
     // el RFC propio) - sale del emisor activo de la app, igual que el resto
     // de los flujos de facturación.
+    // "editado" (no "result") alimenta el payload (g7gsWQ) - si el usuario
+    // corrigió algo en la revisión, el CFDI timbrado refleja el valor
+    // corregido, nunca el original crudo de la IA.
     const payload={
       emisor_rfc:emisorActivoRfc,
       receptor:{
-        nombre:result.receptor_nombre,
-        rfc:result.receptor_rfc,
-        uso_cfdi:result.receptor_uso_cfdi,
-        regimen_fiscal:result.receptor_regimen_fiscal,
-        domicilio_fiscal:result.receptor_domicilio_fiscal,
+        nombre:editado.receptor_nombre,
+        rfc:editado.receptor_rfc,
+        uso_cfdi:editado.receptor_uso_cfdi,
+        regimen_fiscal:editado.receptor_regimen_fiscal,
+        domicilio_fiscal:editado.receptor_domicilio_fiscal,
       },
-      conceptos:result.conceptos,
+      conceptos:editado.conceptos,
     };
     try{
       const res=await fetchAuth(`${API_BASE}/facturas/timbrar`,{
@@ -116,30 +155,83 @@ export default function LectorDocumentos(){
           <Btn variant="secondary" onClick={()=>setFile(null)} style={{marginTop:10}}>Intentar con otro archivo</Btn>
         </Card>
       )}
-      {result&&!timbrado&&(
+      {result&&editado&&!timbrado&&(
         <div style={{marginTop:14}}>
           <Card>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
-              <div style={{fontSize:12,fontWeight:700,color:C.text,textTransform:"uppercase",letterSpacing:"0.06em"}}>Datos extraídos por IA</div>
-              <span style={{fontSize:11,fontWeight:600,color:"#0A6B4A"}}>✓ {Math.round((result.confianza?.general||.95)*100)}% confianza</span>
+              <div style={{fontSize:12,fontWeight:700,color:C.text,textTransform:"uppercase",letterSpacing:"0.06em"}}>Datos extraídos por IA — revisa y corrige antes de timbrar</div>
+              <span style={{fontSize:11,fontWeight:600,color:confianzaBaja?C.danger:"#0A6B4A"}}>{confianzaBaja?"⚠":"✓"} {Math.round((confianzaGeneral??.95)*100)}% confianza</span>
             </div>
+            {/* Campos editables (g7gsWQ, 21 sep 2026) - antes eran texto de
+                solo lectura; regimen_fiscal y domicilio_fiscal ni siquiera se
+                mostraban (se mandaban "a ciegas" en el payload de timbrado
+                sin que el usuario los viera). "editado" alimenta estos
+                inputs, nunca "result" directo - result queda intacto como
+                referencia de lo que la IA extrajo originalmente. */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10}}>
-              {[["Receptor",result.receptor_nombre],["RFC",result.receptor_rfc],["Uso CFDI",result.receptor_uso_cfdi],["Método pago",result.metodo_pago],["Orden",result.numero_orden],["Addenda",result.addenda_detectada||"—"]].map(([l,v])=>(
-                <div key={l} style={{background:C.surface,borderRadius:8,padding:"10px 12px",position:"relative"}}>
+              {[
+                ["receptor_nombre","Receptor"],
+                ["receptor_rfc","RFC"],
+                ["receptor_uso_cfdi","Uso CFDI"],
+                ["receptor_regimen_fiscal","Régimen fiscal receptor"],
+                ["receptor_domicilio_fiscal","Domicilio fiscal (CP)"],
+              ].map(([campo,l])=>(
+                <div key={campo} style={{background:C.surface,borderRadius:8,padding:"10px 12px",position:"relative"}}>
+                  <div style={{fontSize:10,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>{l}</div>
+                  <input value={editado[campo]||""} onChange={e=>actualizarCampo(campo,e.target.value)}
+                    style={{width:"100%",border:"none",background:"transparent",fontSize:13,fontWeight:600,color:C.text,padding:0,paddingRight:26}}/>
+                  <span style={{position:"absolute",top:8,right:8,fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:8,background:"#EBF8FF",color:C.info}}>IA</span>
+                </div>
+              ))}
+              {[["Método pago",result.metodo_pago],["Orden",result.numero_orden],["Addenda",result.addenda_detectada||"—"]].map(([l,v])=>(
+                <div key={l} style={{background:C.surface,borderRadius:8,padding:"10px 12px"}}>
                   <div style={{fontSize:10,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>{l}</div>
                   <div style={{fontSize:13,fontWeight:600,color:C.text}}>{v||"—"}</div>
-                  <span style={{position:"absolute",top:8,right:8,fontSize:9,fontWeight:600,padding:"2px 6px",borderRadius:8,background:"#EBF8FF",color:C.info}}>IA</span>
+                </div>
+              ))}
+            </div>
+            {/* Conceptos (g7gsWQ) - antes no se mostraban en absoluto, se
+                mandaban directo de result.conceptos al payload sin que el
+                usuario los viera ni pudiera corregirlos. */}
+            <div style={{fontSize:10,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.06em",margin:"16px 0 8px"}}>Conceptos</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {editado.conceptos.map((c,idx)=>(
+                <div key={idx} style={{background:C.surface,borderRadius:8,padding:"10px 12px",display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:8}}>
+                  {[
+                    ["descripcion","Descripción","text"],
+                    ["cantidad","Cantidad","number"],
+                    ["precio_unitario","Precio unitario","number"],
+                    ["clave_prod_serv","Clave prod/serv","text"],
+                    ["clave_unidad","Clave unidad","text"],
+                    ["iva_tasa","Tasa IVA","number"],
+                  ].map(([campo,l,tipo])=>(
+                    <div key={campo}>
+                      <div style={{fontSize:9,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:2}}>{l}</div>
+                      <input type={tipo} step={tipo==="number"?"any":undefined} value={c[campo]??""}
+                        onChange={e=>actualizarConcepto(idx,campo,tipo==="number"?(e.target.value===""?"":Number(e.target.value)):e.target.value)}
+                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,background:"#fff",fontSize:12,color:C.text,padding:"4px 6px",boxSizing:"border-box"}}/>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>
           </Card>
+          {confianzaBaja&&(
+            <Card style={{marginTop:10,borderColor:timbrarBloqueado?C.danger:C.accentBorder,background:timbrarBloqueado?C.dangerSoft:C.accentSoft}}>
+              <div style={{fontSize:13,color:timbrarBloqueado?C.danger:"#0A6B4A"}}>
+                {timbrarBloqueado
+                  ?`⚠ Confianza baja (${Math.round(confianzaGeneral*100)}%) - revisa los datos antes de timbrar. Toca al menos un campo para confirmar que los revisaste.`
+                  :`✓ Datos revisados - puedes timbrar aunque la confianza reportada sea baja (${Math.round(confianzaGeneral*100)}%).`}
+              </div>
+            </Card>
+          )}
           {errorTimbrado&&(
             <Card style={{marginTop:10,borderColor:C.danger,background:C.dangerSoft}}>
               <div style={{fontSize:13,color:C.danger}}>⚠ {errorTimbrado}</div>
             </Card>
           )}
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginTop:10}}>
-            <Btn onClick={timbrar} disabled={timbrando}>{timbrando?"Timbrando…":"Timbrar este CFDI →"}</Btn>
+            <Btn onClick={timbrar} disabled={timbrando||timbrarBloqueado}>{timbrando?"Timbrando…":"Timbrar este CFDI →"}</Btn>
             <Btn variant="secondary" onClick={procesarOtro} disabled={timbrando}>Procesar otro documento</Btn>
           </div>
         </div>

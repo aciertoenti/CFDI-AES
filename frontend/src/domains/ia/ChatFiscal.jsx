@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import useBreakpoint from "../../shared/hooks/useBreakpoint";
 import useEmisores from "../../shared/hooks/useEmisores";
 import { useFiscalChat } from "./hooks";
-import { useFacturas, useReporteMensual } from "../facturacion/hooks";
+import { useFacturas, useReporteMensual, useContadorVirtualISRActEmpresarial } from "../facturacion/hooks";
 import { Card, Btn, SectionTitle } from "../../shared/components/atoms";
 import { C } from "../../shared/utils/format";
 
@@ -38,6 +38,23 @@ export default function ChatFiscal(){
   // facturas_vigentes/vencidas (por emisor activo), total_mes_actual queda
   // a nivel negocio porque no existe hoy un endpoint de reporte por-emisor.
   const {datos:reporteMensual,loading:loadingReporte}=useReporteMensual(1);
+  // iva_pendiente (g7gg8k, parte real - 21 sep 2026): solo regimen 612
+  // implementado esta ronda. regimen 625 (contador_virtual_isr_plataformas)
+  // exige "actividad" (transporte/hospedaje/contenido_digital) como
+  // parametro OBLIGATORIO sin default - confirmado en
+  // ContadorVirtualPlataformas.jsx que es un selector MANUAL, sin
+  // preseleccion, decision de producto deliberada ("confirmado con
+  // Pedro") - no existe ningun lugar en el sistema donde el emisor tenga
+  // esa actividad guardada, asi que Chat Fiscal (que arma el contexto
+  // SIN interaccion del usuario) no tiene como llamar ese motor todavia.
+  // 625 queda en null junto con 626, documentado abajo. Solo se pide el
+  // hook cuando aplica (emisorRfc=null si no es 612) para no gastar una
+  // llamada de red que se va a ignorar.
+  const esRegimen612=emisorActual?.regimen_fiscal==="612";
+  const hoy=new Date();
+  const {datos:datosIvaActEmp,loading:loadingIvaActEmp}=useContadorVirtualISRActEmpresarial(
+    esRegimen612?emisorActivoRfc:null, hoy.getFullYear(), hoy.getMonth()+1,
+  );
   const [input,setInput]=useState("");
   // Modo del chat (20 ago 2026, tarjeta 2mSpU) - "cuenta" es el default para
   // no cambiar el comportamiento existente de nadie que ya use el chat.
@@ -69,29 +86,53 @@ export default function ChatFiscal(){
   //     vencimiento equivalente implementada, asi que queda en null
   //     explicito - mismo patron que facturas_vencidas/iva_pendiente mas
   //     abajo (null = "no aplica/no calculado", nunca un valor inventado).
+  //   - iva_pendiente (g7gg8k, 21 sep 2026): resuelto con los motores
+  //     REALES del Contador Virtual, NO un calculo aparte - 2 motores con
+  //     semanticas distintas, que solo comparten el NOMBRE del campo aqui:
+  //       * regimen 612 (Actividad Empresarial): contador_virtual_isr_
+  //         actividad-empresarial -> iva_a_pagar_mes ("a pagar", 16% del
+  //         ingreso del mes, sin acreditable - ver advertencia propia del
+  //         motor). Implementado esta ronda.
+  //       * regimen 625 (Plataformas): contador_virtual_isr_plataformas ->
+  //         iva_retenido_mes ("retenido", 8% del ingreso del mes) - NO
+  //         implementado todavia: el motor exige "actividad" (transporte/
+  //         hospedaje/contenido_digital) como parametro obligatorio sin
+  //         default, y es un selector MANUAL sin preseleccion (decision de
+  //         producto ya tomada, ver ContadorVirtualPlataformas.jsx) - no
+  //         hay de donde sacarlo sin interaccion del usuario. Queda en
+  //         null junto con 626 hasta que exista un lugar para capturarlo.
+  //       * regimen 626 (RESICO) y cualquier otro: sin motor de IVA en
+  //         absoluto (ContadorVirtualISRResicoResponse no declara ningun
+  //         campo de IVA - confirmado en su schema, no solo "sale null").
+  //     Si la llamada al motor correspondiente falla (o no aplica, ver
+  //     datos.aplica), degrada a null - nunca un valor inventado.
   // Campos en null a proposito, SIN fuente real hoy (confirmado con grep
   // en todo backend/microservices/**/*.py y con SELECT DISTINCT estado
-  // contra Postgres real) - ver g7gg8k (Fase 2) para la decision de
-  // producto/fiscal pendiente antes de implementarlos:
+  // contra Postgres real) - ver g7gg8k para la decision de producto/fiscal
+  // pendiente antes de implementarlos:
   //   - facturas_vencidas: Factura.estado nunca toma el valor "Vencida"
   //     en el backend real (no hay columna de fecha de vencimiento) - el
   //     filtro equivalente en FacturasGeneradas.jsx es codigo muerto hoy
   //     (siempre 0). Reportar 0 aqui seria tan enganoso como el mock
   //     original, asi que queda en null en vez de un 0 que aparente ser
   //     un calculo real.
-  //   - iva_pendiente / cuentas_por_cobrar: sin calculo fiscal equivalente
-  //     en ningun microservicio hoy.
+  //   - cuentas_por_cobrar: confirmado (21 sep 2026) que el sistema no
+  //     tiene NINGUN tracking de Complementos de Pago (REP) - cero
+  //     relacion Factura<->pago en el modelo de datos - y que
+  //     metodo_pago="PPD" no se usa en la practica (0 de 56 facturas
+  //     reales). No es una consulta faltante, es infraestructura que no
+  //     existe - fuera de alcance de g7gg8k, ver hallazgo en la tarjeta.
   // JSON.stringify (en useFiscalChat) serializa null como el literal
   // `null`, no como undefined - el backend (ia/main.py, contexto_cuenta:
   // Optional[dict]) lo acepta sin romper y lo muestra tal cual en el
   // prompt real a Claude (confirmado leyendo _construir_system_prompt).
-  const cuentaCtxListo = !loadingFacturas && !loadingReporte;
+  const cuentaCtxListo = !loadingFacturas && !loadingReporte && !loadingIvaActEmp;
   const contextoCuenta = {
     facturas_vigentes: facturas.filter(f=>f.estado==="Vigente").length,
     facturas_vencidas: null,
     total_mes_actual: reporteMensual?.meses?.[0]?.vigente?.total ?? null,
     proximo_vencimiento_iva: emisorActual?.regimen_fiscal === "625" ? calcularProximoVencimientoIVA() : null,
-    iva_pendiente: null,
+    iva_pendiente: esRegimen612&&datosIvaActEmp?.aplica ? datosIvaActEmp.iva_a_pagar_mes : null,
     cuentas_por_cobrar: null,
   };
 

@@ -744,13 +744,43 @@ async def conciliar_banco(req: ConciliationRequest, _: str = Depends(require_int
     Cruza facturas emitidas con depósitos bancarios.
     Devuelve pares conciliados, discrepancias y pendientes.
     """
-    data_str = json.dumps(req.dict(), ensure_ascii=False, indent=2)
+    # _factura_para_prompt_ia() (g7ilnY) reutilizada aqui (g4pAxA, 21 sep
+    # 2026) - sin caller real hoy (ningun frontend llama /ia/conciliar
+    # todavia), pero "facturas: list" no esta tipado: si un caller futuro
+    # reenvia GET /facturas tal cual (lo mas natural), traeria
+    # xml_url/pdf_url/noCertificadoSAT sin filtrar, mismo riesgo que tenia
+    # detectar_anomalias antes del fix - se filtra preventivamente en el
+    # backend, no se espera a que aparezca el caller.
+    req_dict = req.dict()
+    req_dict["facturas"] = [_factura_para_prompt_ia(f) for f in req_dict.get("facturas", [])]
+    data_str = json.dumps(req_dict, ensure_ascii=False, indent=2)
     messages = [
         {"role": "user", "content": f"Concilia estas facturas con los depósitos bancarios:\n\n{data_str}"}
     ]
     try:
+        # thinking_disabled=True + max_tokens 3000->6144 (g4pAxA/g7ilnY, 21
+        # sep 2026): mismo bug de detectar_anomalias, reproducido aqui con
+        # datos reales antes de este fix (36 facturas reales de
+        # EKU9003173C9 + depositos sinteticos) - con 3 depositos,
+        # thinking_tokens=1661/3000 (55% del presupuesto, sobrevivio de
+        # milagro); con 16 depositos, thinking_tokens=2485/3000 (83%),
+        # stop_reason=max_tokens, JSON real cortado a la mitad
+        # ("Unterminated string") - el mismo 422 "Error en conciliacion"
+        # que devolveria este endpoint hoy.
+        # Calculo de 6144 (no arbitrario): en la corrida de 16 depositos,
+        # el texto real (no-thinking) que alcanzo a salir antes del corte
+        # fue de 515 tokens (output_tokens=3000 - thinking_tokens=2485)
+        # para ~2 de hasta 16 posibles entradas "conciliados" completas.
+        # Cada entrada "conciliados" ronda ~230 caracteres (~115 tokens a
+        # ~2 chars/token); en el peor caso (los 16 depositos concilian) el
+        # array completo ronda 16*115=~1840 tokens, mas
+        # sin_conciliar_facturas/depositos/totales/resumen (~300-400
+        # tokens de overhead) = ~2200-2300 tokens reales necesarios en el
+        # peor caso observado. 6144 deja mas de 2.5x de margen sobre esa
+        # estimacion (mismo criterio de margen amplio que 4096 le dio a
+        # detectar_anomalias sobre su uso real de ~1900).
         raw = await call_claude(
-            messages, CONCILIATION_SYSTEM, max_tokens=3000, call_site="conciliar_banco"
+            messages, CONCILIATION_SYSTEM, max_tokens=6144, call_site="conciliar_banco", thinking_disabled=True
         )
     except ClaudeRespuestaVaciaError as e:
         raise HTTPException(

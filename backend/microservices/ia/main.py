@@ -142,22 +142,34 @@ def anthropic_headers() -> dict:
         "content-type": "application/json",
     }
 
-def _payload_claude(messages: list, system: str, max_tokens: int, stream: bool = False) -> dict:
-    # `thinking` NO se envia deliberadamente. Los prompts de este servicio
-    # piden respuestas cortas / JSON estricto; con extended thinking activado
-    # el presupuesto de max_tokens se gastaria en tokens de razonamiento y la
-    # respuesta podria quedar sin ningun bloque de texto (stop_reason=
-    # max_tokens) - justo el fallo que este modulo maneja abajo. Omitir la
-    # clave es el default documentado del Messages API (thinking desactivado).
-    # No se pasa {"type": "disabled"} explicito porque no se pudo verificar
-    # que ese valor sea aceptado con anthropic-version=2023-06-01 para este
-    # modelo; ante la duda, no se agrega (ver investigacion zg4pAxA).
+def _payload_claude(messages: list, system: str, max_tokens: int, stream: bool = False, thinking_disabled: bool = False) -> dict:
+    # CORRECCION (g7ilnY, 21 sep 2026) a la nota que vivia aqui: se asumia que
+    # omitir `thinking` lo dejaba desactivado por default. FALSO para
+    # claude-sonnet-5+ - confirmado con logs reales de produccion
+    # (detectar_anomalias, tipos_bloque=['thinking'], texto vacio) y con una
+    # llamada real de verificacion a la API: el thinking adaptativo viene
+    # ACTIVADO por default al omitir el parametro, y consume el MISMO
+    # presupuesto de max_tokens que la respuesta final - con max_tokens chico
+    # (2000) se agotaba entero en razonamiento, dejando 0 tokens para el
+    # texto (justo el stop_reason=max_tokens sin texto que este modulo
+    # maneja abajo).
+    #
+    # thinking_disabled=True SI fue confirmado aceptado por la API para este
+    # modelo (HTTP 200, thinking_tokens=0 en el usage real) - la duda de la
+    # nota anterior (investigacion zg4pAxA) queda resuelta. Sigue siendo
+    # opt-in por call_site (no global) porque solo se investigo y confirmo
+    # para detectar_anomalias (g7ilnY); los demas call sites de call_claude
+    # (extraer_documento, identificar_proveedor, chat_fiscal,
+    # conciliar_banco, generar_resumen) comparten el mismo riesgo en teoria
+    # pero no se tocaron - ver hallazgo aparte en el cierre de g7ilnY.
     payload = {
         "model": CLAUDE_MODEL,
         "max_tokens": max_tokens,
         "system": system,
         "messages": messages,
     }
+    if thinking_disabled:
+        payload["thinking"] = {"type": "disabled"}
     if stream:
         payload["stream"] = True
     return payload
@@ -199,13 +211,13 @@ async def _stream_eventos_claude(payload: dict) -> AsyncGenerator[dict, None]:
 
 
 async def call_claude(
-    messages: list, system: str, max_tokens: int = 1024, *, call_site: str = "desconocido"
+    messages: list, system: str, max_tokens: int = 1024, *, call_site: str = "desconocido", thinking_disabled: bool = False
 ) -> str:
     """Llama al Messages API y devuelve el texto. Si la respuesta no trae
     texto utilizable, REINTENTA una vez con los mismos parametros; si el
     reintento tampoco trae texto, lanza ClaudeRespuestaVaciaError con el
     stop_reason y el call_site (nunca un 502 generico sin contexto)."""
-    payload = _payload_claude(messages, system, max_tokens)
+    payload = _payload_claude(messages, system, max_tokens, thinking_disabled=thinking_disabled)
     for intento in range(1, _MAX_INTENTOS_CLAUDE + 1):
         data = await _post_claude(payload)
         texto = _extraer_texto(data)
@@ -635,19 +647,42 @@ class Anomaly(BaseModel):
     accion_recomendada: str
     fecha_deteccion: str
 
+# Campos de FacturaResponse (facturacion/main.py) sin ningun valor analitico
+# para detectar anomalias - son URLs de descarga firmadas (g7ilnY, 21 sep
+# 2026): con las 36 facturas reales de EKU9003173C9 que reprodujeron el bug,
+# xml_url+pdf_url por si solos eran ~68% del payload completo (25 de 37 KB),
+# puro ruido que igual se le mandaba a la IA. Se excluyen aqui (no en el
+# frontend) para que cualquier caller futuro de este endpoint quede
+# protegido, no solo Anomalias.jsx.
+_CAMPOS_FACTURA_SIN_VALOR_ANALITICO = {"xml_url", "pdf_url", "noCertificadoSAT"}
+
+def _factura_para_prompt_ia(factura: dict) -> dict:
+    return {k: v for k, v in factura.items() if k not in _CAMPOS_FACTURA_SIN_VALOR_ANALITICO}
+
 @app.post("/ia/anomalias", response_model=List[Anomaly])
 async def detectar_anomalias(req: AnomalyRequest, _: str = Depends(require_internal_key)):
     """
     Analiza el conjunto de facturas y pagos en busca de anomalías.
     Se ejecuta en background cada hora vía tarea Celery.
     """
-    data_str = json.dumps(req.dict(), ensure_ascii=False, indent=2)
+    req_dict = req.dict()
+    req_dict["facturas"] = [_factura_para_prompt_ia(f) for f in req_dict.get("facturas", [])]
+    data_str = json.dumps(req_dict, ensure_ascii=False, indent=2)
     messages = [
         {"role": "user", "content": f"Analiza estas facturas y pagos y detecta anomalías:\n\n{data_str}"}
     ]
     try:
+        # max_tokens=4096 + thinking_disabled=True (g7ilnY, 21 sep 2026):
+        # verificado con una llamada real a la API - con thinking activado
+        # (el default al omitir el parametro, contra lo que asumia la nota
+        # vieja de este archivo) el modelo agotaba max_tokens=2000 entero en
+        # razonamiento antes de emitir el JSON. thinking_disabled confirmado
+        # aceptado por la API (HTTP 200, thinking_tokens=0 en el usage real);
+        # 4096 confirmado suficiente para el caso real de 36 facturas de
+        # EKU9003173C9 (uso real: 1866 tokens de salida, stop_reason=
+        # end_turn, con margen).
         raw = await call_claude(
-            messages, ANOMALY_SYSTEM, max_tokens=2000, call_site="detectar_anomalias"
+            messages, ANOMALY_SYSTEM, max_tokens=4096, call_site="detectar_anomalias", thinking_disabled=True
         )
     except ClaudeRespuestaVaciaError as e:
         raise HTTPException(

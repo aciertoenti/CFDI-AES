@@ -23,6 +23,8 @@ import httpx
 import main
 import pytest
 import pytest_asyncio
+from certs_reales_sat import CSD_REALES, FIEL_REALES
+from certs_reales_sat import PASSWORD as PASSWORD_CERTS_REALES
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -76,6 +78,63 @@ def _cert_sintetico_base64(**kwargs) -> str:
     return base64.b64encode(_cert_sintetico_der(**kwargs)).decode()
 
 
+# Password fija SOLO para este helper (par cert/key sintetico, sin validez
+# fiscal) - a diferencia de generar_csd_sintetico.py (password aleatoria por
+# archivo en disco), aqui no hay archivo que proteger: el par vive en memoria
+# durante el test y se descarta al terminar.
+_PASSWORD_CSD_SINTETICO = "test-password-csd-sintetico"
+
+
+def _cert_y_key_sinteticos_csd(*, rfc: str, dias_vigencia: int, otro_rfc_representante: str = "TEST010101TS1") -> tuple[str, str, str]:
+    """Como _cert_sintetico_der, pero con 2 diferencias necesarias desde
+    zg7DuHM: (1) el KeyUsage queda con el perfil REAL de un CSD (solo
+    digital_signature+content_commitment, sin ExtendedKeyUsage) - el mismo
+    patron confirmado empiricamente sobre los 9 certificados reales de
+    certs_reales_sat.py - para que _validar_certificado_es_csd() lo acepte;
+    (2) devuelve TAMBIEN la llave privada real (DER, PKCS8, cifrada), no la
+    descarta, para que _validar_cert_key_pairing() tenga con que emparejar.
+
+    _cert_sintetico_der() (sin extensiones, llave descartada) se deja
+    intacto para los demas tests de este archivo que no pasan por
+    crear_emisor/actualizar_emisor (construyen el Emisor directo en BD) - no
+    les afecta la nueva validacion y no necesitan este costo extra.
+
+    Devuelve (cert_base64, key_base64, password)."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    nombre = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "TEST CSD SINTETICO (perfil CSD real)"),
+        x509.NameAttribute(NameOID.X500_UNIQUE_IDENTIFIER, f"{rfc} / {otro_rfc_representante}"),
+    ])
+    ahora = datetime.now(timezone.utc)
+    vence = ahora + timedelta(days=dias_vigencia)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(nombre)
+        .issuer_name(nombre)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(vence - timedelta(days=1))
+        .not_valid_after(vence)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True, content_commitment=True, key_encipherment=False,
+                data_encipherment=False, key_agreement=False, key_cert_sign=False,
+                crl_sign=False, encipher_only=False, decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_b64 = base64.b64encode(cert.public_bytes(serialization.Encoding.DER)).decode()
+    key_der = key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.BestAvailableEncryption(_PASSWORD_CSD_SINTETICO.encode()),
+    )
+    key_b64 = base64.b64encode(key_der).decode()
+    return cert_b64, key_b64, _PASSWORD_CSD_SINTETICO
+
+
 # ─── extraer_vigencia_hasta_de_certificado (parseo puro) ────────────────────
 
 def test_extrae_vigencia_hasta_de_cert_valido():
@@ -125,15 +184,18 @@ async def negocio_temporal():
 
 async def test_alta_de_emisor_puebla_vigencia_automaticamente(negocio_temporal):
     rfc = "BBBB850101BB1"
-    cert_b64 = _cert_sintetico_base64(rfc=rfc, dias_vigencia=365)
+    # zg7DuHM: crear_emisor ahora valida tipo CSD + par cert<->key, asi que
+    # ya no basta un cert sintetico sin extensiones + una key "dummy" (ver
+    # _cert_y_key_sinteticos_csd) - el par debe ser real y de perfil CSD.
+    cert_b64, key_b64, password = _cert_y_key_sinteticos_csd(rfc=rfc, dias_vigencia=365)
     body = EmisorCreate(
         razon_social="TEST alta con vigencia",
         rfc=rfc,
         regimen_fiscal="601",
         codigo_postal="00000",
         csd_cert_base64=cert_b64,
-        csd_key_base64="dummy-no-se-valida-la-key-en-crear-emisor",
-        csd_password="dummy",
+        csd_key_base64=key_b64,
+        csd_password=password,
     )
     async with AsyncSessionLocal() as db:
         out = await crear_emisor(
@@ -150,23 +212,26 @@ async def test_alta_de_emisor_puebla_vigencia_automaticamente(negocio_temporal):
 
 async def test_reemplazo_de_csd_repuebla_vigencia(negocio_temporal):
     rfc = "CCCC850101CC1"
-    cert_viejo = _cert_sintetico_base64(rfc=rfc, dias_vigencia=10)
+    # zg7DuHM: mismo motivo que test_alta_de_emisor_puebla_vigencia_automaticamente
+    # arriba - crear_emisor Y actualizar_emisor ahora exigen par real de
+    # perfil CSD, no "dummy".
+    cert_viejo, key_viejo, password_viejo = _cert_y_key_sinteticos_csd(rfc=rfc, dias_vigencia=10)
     async with AsyncSessionLocal() as db:
         await crear_emisor(
             emisor=EmisorCreate(
                 razon_social="TEST reemplazo", rfc=rfc, regimen_fiscal="601", codigo_postal="00000",
-                csd_cert_base64=cert_viejo, csd_key_base64="dummy", csd_password="dummy",
+                csd_cert_base64=cert_viejo, csd_key_base64=key_viejo, csd_password=password_viejo,
             ),
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None,
         )
 
-    cert_nuevo = _cert_sintetico_base64(rfc=rfc, dias_vigencia=800)
+    cert_nuevo, key_nuevo, password_nuevo = _cert_y_key_sinteticos_csd(rfc=rfc, dias_vigencia=800)
     async with AsyncSessionLocal() as db:
         out = await actualizar_emisor(
             rfc=rfc,
             emisor=EmisorCreate(
                 razon_social="TEST reemplazo", rfc=rfc, regimen_fiscal="601", codigo_postal="00000",
-                csd_cert_base64=cert_nuevo, csd_key_base64="dummy", csd_password="dummy",
+                csd_cert_base64=cert_nuevo, csd_key_base64=key_nuevo, csd_password=password_nuevo,
             ),
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
@@ -595,3 +660,210 @@ async def test_emisores_resumen_ordena_el_emisor_propio_primero(monkeypatch):
             await session.execute(Emisor.__table__.delete().where(Emisor.negocio_id == negocio_id))
             await session.execute(Negocio.__table__.delete().where(Negocio.id == negocio_id))
             await session.commit()
+
+
+
+
+# ─── zg7DuHM: CSD real vs e.firma (FIEL) real + cert<->key pairing ─────────
+#
+# Usa los 9 certificados REALES de prueba del SAT tal cual viven en
+# certs_test/ (embebidos en certs_reales_sat.py, ver docstring ahi de por
+# que no se leen de disco en tiempo de test) - instruccion explicita de
+# zg7DuHM Cambio 4: usarlos directo, no generar nada sintetico para este
+# bloque.
+#
+# _validar_certificado_es_csd/_validar_cert_key_pairing se prueban DIRECTO
+# como funciones puras sobre los 9 certificados, sin pasar por
+# crear_emisor/actualizar_emisor: 3 de los 5 RFC de CSD_REALES
+# (EKU9003173C9, IIA040805DZ4, IVD920810GU2) YA tienen un Emisor real
+# registrado en la BD de este entorno (datos reales de sesiones de dev
+# previas - uno de ellos es justo RAHP7112093H0/Pedro, ver Cambio 5) -
+# crear_emisor() valida unicidad de RFC GLOBAL (main.py, no por negocio),
+# asi que insertar un emisor nuevo con esos RFC chocaria (409) con datos
+# reales sin relacion con lo que este test quiere probar. Confirmado
+# empiricamente (SELECT directo a la BD, 21 sep 2026) antes de escribir
+# esto - no es una suposicion. Las funciones puras no tocan la BD, asi que
+# cubren los 9 certificados sin este problema.
+#
+# La integracion end-to-end (que crear_emisor/actualizar_emisor SI llamen a
+# estas funciones, con negocio/BD real) se prueba aparte, mas abajo, solo
+# con los 2 RFC de CSD_REALES/FIEL_REALES que SI estan libres en este
+# entorno (MISC491214B86, XIQB891116QE4) - confirmado antes de escribir
+# este test que ningun Emisor real usa esos 2 RFC.
+
+def _cert_real(cert_b64: str) -> x509.Certificate:
+    return x509.load_der_x509_certificate(base64.b64decode(cert_b64))
+
+
+def _real_por_rfc(lista, rfc):
+    return next(r for r in lista if r[0] == rfc)
+
+
+@pytest.mark.parametrize("rfc,tipo,cert_b64,key_b64", CSD_REALES, ids=[r[0] for r in CSD_REALES])
+def test_validar_certificado_es_csd_acepta_los_5_csd_reales(rfc, tipo, cert_b64, key_b64):
+    from main import _validar_certificado_es_csd
+    _validar_certificado_es_csd(_cert_real(cert_b64))  # no debe lanzar nada
+
+
+@pytest.mark.parametrize("rfc,tipo,cert_b64,key_b64", FIEL_REALES, ids=[r[0] for r in FIEL_REALES])
+def test_validar_certificado_es_csd_rechaza_las_4_fiel_reales(rfc, tipo, cert_b64, key_b64):
+    from main import _validar_certificado_es_csd
+    with pytest.raises(HTTPException) as exc_info:
+        _validar_certificado_es_csd(_cert_real(cert_b64))
+    assert exc_info.value.status_code == 422
+    assert "e.firma (FIEL)" in exc_info.value.detail
+    assert "no a un CSD" in exc_info.value.detail
+
+
+def test_validar_certificado_es_csd_sin_keyusage_no_dice_que_es_fiel():
+    """Ajuste de seguimiento zg7DuHM (21 sep 2026): un certificado sin
+    KeyUsage (ni ExtendedKeyUsage) NO confirma que sea una e.firma - solo
+    confirma que le falta una extension basica esperada. Antes de este
+    ajuste, este caso reusaba por error el mismo mensaje de "es una
+    e.firma (FIEL)" que el check de ExtendedKeyUsage. _cert_sintetico_der
+    (arriba, sin ninguna extension) es exactamente este caso - lo usan
+    muchos otros tests de este archivo, pero ninguno pasaba antes por
+    _validar_certificado_es_csd (construyen el Emisor directo en BD), asi
+    que esta rama no tenia cobertura hasta este test."""
+    from main import _validar_certificado_es_csd
+    cert_bytes = _cert_sintetico_der(rfc="ZZZZ800101ZZ1", dias_vigencia=365)
+    cert = x509.load_der_x509_certificate(cert_bytes)
+    with pytest.raises(HTTPException) as exc_info:
+        _validar_certificado_es_csd(cert)
+    assert exc_info.value.status_code == 422
+    assert "e.firma (FIEL)" not in exc_info.value.detail
+    assert "falta" in exc_info.value.detail and "KeyUsage" in exc_info.value.detail
+
+
+def test_validar_cert_key_pairing_acepta_par_real_correcto():
+    from main import _validar_cert_key_pairing
+    _rfc, _tipo, cert_b64, key_b64 = CSD_REALES[0]
+    cert = _cert_real(cert_b64)
+    key_bytes = base64.b64decode(key_b64)
+    _validar_cert_key_pairing(cert, key_bytes, PASSWORD_CERTS_REALES)  # no debe lanzar nada
+
+
+def test_validar_cert_key_pairing_rechaza_par_real_cruzado():
+    """cert de un CSD real + key de OTRO CSD real (ambos individualmente
+    validos, pero NO son el mismo par) - debe rechazarlo por mismatch, no
+    por alguna otra razon incidental."""
+    from main import _validar_cert_key_pairing
+    _rfc_a, _tipo_a, cert_a_b64, _key_a_b64 = CSD_REALES[0]
+    _rfc_b, _tipo_b, _cert_b_b64, key_b_b64 = CSD_REALES[1]
+    cert_a = _cert_real(cert_a_b64)
+    key_b_bytes = base64.b64decode(key_b_b64)
+    with pytest.raises(HTTPException) as exc_info:
+        _validar_cert_key_pairing(cert_a, key_b_bytes, PASSWORD_CERTS_REALES)
+    assert exc_info.value.status_code == 422
+    assert "no corresponde al certificado" in exc_info.value.detail
+
+
+# ─── Integracion end-to-end (crear_emisor/actualizar_emisor reales) ────────
+# Solo con los 2 RFC libres en este entorno (ver nota arriba) - confirma que
+# el wiring dentro del endpoint real es correcto, no solo las funciones puras.
+
+async def test_csd_real_es_aceptado_por_crear_emisor_end_to_end(negocio_temporal):
+    rfc, _tipo, cert_b64, key_b64 = _real_por_rfc(CSD_REALES, "XIQB891116QE4")
+    async with AsyncSessionLocal() as db:
+        out = await crear_emisor(
+            emisor=EmisorCreate(
+                razon_social=f"TEST CSD real {rfc}", rfc=rfc, regimen_fiscal="601", codigo_postal="00000",
+                csd_cert_base64=cert_b64, csd_key_base64=key_b64, csd_password=PASSWORD_CERTS_REALES,
+            ),
+            db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None,
+        )
+    assert out.rfc == rfc
+
+
+async def test_fiel_real_es_rechazada_por_crear_emisor_end_to_end(negocio_temporal):
+    """Caso real que motivo zg7DuHM (RAHP7112093H0/Pedro subio su e.firma
+    en vez de su CSD y, antes de este fix, el backend la acepto sin
+    avisar) - reproducido aqui end-to-end con un RFC libre en este entorno."""
+    rfc, _tipo, cert_b64, key_b64 = _real_por_rfc(FIEL_REALES, "XIQB891116QE4")
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            await crear_emisor(
+                emisor=EmisorCreate(
+                    razon_social=f"TEST FIEL real {rfc}", rfc=rfc, regimen_fiscal="601", codigo_postal="00000",
+                    csd_cert_base64=cert_b64, csd_key_base64=key_b64, csd_password=PASSWORD_CERTS_REALES,
+                ),
+                db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None,
+            )
+    assert exc_info.value.status_code == 422
+    assert "e.firma (FIEL)" in exc_info.value.detail
+    async with AsyncSessionLocal() as db:
+        fila = (await db.execute(select(Emisor).where(Emisor.rfc == rfc))).scalar_one_or_none()
+    assert fila is None
+
+
+async def test_csd_real_es_aceptado_por_actualizar_emisor_end_to_end(negocio_temporal):
+    rfc, _tipo, cert_b64, key_b64 = _real_por_rfc(CSD_REALES, "MISC491214B86")
+    async with AsyncSessionLocal() as db:
+        await crear_emisor(
+            emisor=EmisorCreate(
+                razon_social="TEST alta previa", rfc=rfc, regimen_fiscal="601", codigo_postal="00000",
+                csd_cert_base64=cert_b64, csd_key_base64=key_b64, csd_password=PASSWORD_CERTS_REALES,
+            ),
+            db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None,
+        )
+    async with AsyncSessionLocal() as db:
+        out = await actualizar_emisor(
+            rfc=rfc,
+            emisor=EmisorCreate(
+                razon_social="TEST rotacion CSD real", rfc=rfc, regimen_fiscal="601", codigo_postal="00000",
+                csd_cert_base64=cert_b64, csd_key_base64=key_b64, csd_password=PASSWORD_CERTS_REALES,
+            ),
+            db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
+        )
+    assert out.rfc == rfc
+
+
+async def test_fiel_real_es_rechazada_por_actualizar_emisor_end_to_end(negocio_temporal):
+    """Este es el endpoint EXACTO (PUT) donde ocurrio el caso real de
+    zg7DuHM (Pedro/RAHP7112093H0)."""
+    rfc_csd, _tipo, cert_csd_b64, key_csd_b64 = _real_por_rfc(CSD_REALES, "MISC491214B86")
+    async with AsyncSessionLocal() as db:
+        await crear_emisor(
+            emisor=EmisorCreate(
+                razon_social="TEST alta previa (CSD real)", rfc=rfc_csd, regimen_fiscal="601", codigo_postal="00000",
+                csd_cert_base64=cert_csd_b64, csd_key_base64=key_csd_b64, csd_password=PASSWORD_CERTS_REALES,
+            ),
+            db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None,
+        )
+    _rfc_fiel, _tipo_fiel, cert_fiel_b64, key_fiel_b64 = _real_por_rfc(FIEL_REALES, "MISC491214B86")
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            await actualizar_emisor(
+                rfc=rfc_csd,
+                emisor=EmisorCreate(
+                    razon_social="TEST rotacion con FIEL por error", rfc=rfc_csd, regimen_fiscal="601", codigo_postal="00000",
+                    csd_cert_base64=cert_fiel_b64, csd_key_base64=key_fiel_b64, csd_password=PASSWORD_CERTS_REALES,
+                ),
+                db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
+            )
+    assert exc_info.value.status_code == 422
+    assert "e.firma (FIEL)" in exc_info.value.detail
+    async with AsyncSessionLocal() as db:
+        fila = (await db.execute(select(Emisor).where(Emisor.rfc == rfc_csd))).scalar_one()
+    assert fila.csd_cert_base64 == cert_csd_b64
+
+
+async def test_cert_key_cruzados_reales_es_rechazado_por_crear_emisor_end_to_end(negocio_temporal):
+    """Mismatch real end-to-end: cert real de XIQB891116QE4 + llave real de
+    MISC491214B86 (ambos RFC libres en este entorno)."""
+    rfc_a, _tipo_a, cert_a_b64, _key_a_b64 = _real_por_rfc(CSD_REALES, "XIQB891116QE4")
+    _rfc_b, _tipo_b, _cert_b_b64, key_b_b64 = _real_por_rfc(CSD_REALES, "MISC491214B86")
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            await crear_emisor(
+                emisor=EmisorCreate(
+                    razon_social="TEST cert/key cruzados", rfc=rfc_a, regimen_fiscal="601", codigo_postal="00000",
+                    csd_cert_base64=cert_a_b64, csd_key_base64=key_b_b64, csd_password=PASSWORD_CERTS_REALES,
+                ),
+                db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc=None,
+            )
+    assert exc_info.value.status_code == 422
+    assert "no corresponde al certificado" in exc_info.value.detail
+    async with AsyncSessionLocal() as db:
+        fila = (await db.execute(select(Emisor).where(Emisor.rfc == rfc_a))).scalar_one_or_none()
+    assert fila is None

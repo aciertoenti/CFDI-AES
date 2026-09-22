@@ -19,8 +19,10 @@ from datetime import date, datetime, time, timezone
 from typing import Optional, List
 
 import httpx
+from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_der_private_key
 from cryptography.x509 import load_der_x509_certificate
+from cryptography.x509.oid import ExtensionOID
 from fastapi import FastAPI, File, Header, HTTPException, Query, Depends, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -539,6 +541,93 @@ def _cliente_to_response(c: Cliente) -> ClienteResponse:
 
 # ─── Emisores ──────────────────────────────────────────────────────────────────
 
+def _validar_certificado_es_csd(cert: x509.Certificate) -> None:
+    """Rechaza si el certificado es una e.firma (FIEL) en vez de un
+    CSD. Basado en investigacion zg7DuHM (21 sep 2026): confirmado
+    empiricamente sobre 9 certificados reales del SAT (5 CSD + 4 FIEL,
+    certs_test/) que el CSD NO tiene ExtendedKeyUsage y su KeyUsage
+    carece de data_encipherment/key_agreement, mientras la FIEL SI
+    tiene ambos. Certificados inspeccionados son de ambiente UAT/pruebas
+    del SAT, no de produccion real - se asume el mismo perfil en
+    produccion (practica estandar de PKI), sin confirmacion directa
+    contra un certificado de produccion.
+
+    Fail-closed (422) ante cualquiera de las 2 senales de FIEL, y
+    tambien si KeyUsage mismo estuviera ausente (nunca visto en los 9
+    certificados reales inspeccionados, pero un certificado que no trae
+    ni siquiera esa extension basica es sospechoso por si solo - mismo
+    criterio fail-closed, nunca dejar que reviente como 500). No hay
+    modo "warning": la ausencia de ExtendedKeyUsage es la senal POSITIVA
+    de que es un CSD valido, no un dato faltante por version vieja.
+
+    Loggea explicitamente CUAL de los checks fallo, para que un futuro
+    falso positivo (ej. el SAT cambia el perfil de un CSD real) sea
+    diagnosticable sin repetir la investigacion de cero.
+    """
+    mensaje_es_fiel = (
+        "El certificado corresponde a una e.firma (FIEL), no a un CSD - "
+        "sube el Certificado de Sello Digital correcto."
+    )
+    try:
+        eku = cert.extensions.get_extension_for_oid(ExtensionOID.EXTENDED_KEY_USAGE)
+    except x509.ExtensionNotFound:
+        eku = None
+    if eku is not None:
+        logger.warning(
+            "validar_certificado_es_csd.rechazado motivo=ExtendedKeyUsage_presente oids=%s",
+            [u.dotted_string for u in eku.value],
+        )
+        raise HTTPException(status_code=422, detail=mensaje_es_fiel)
+
+    try:
+        key_usage = cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value
+    except x509.ExtensionNotFound:
+        # NO es la misma senal que "es FIEL" - la ausencia de EKU arriba SI
+        # confirma FIEL (los 9 certificados reales, CSD y FIEL, siempre
+        # tienen KeyUsage), pero que falte KeyUsage mismo no dice CUAL es
+        # el tipo real, solo que el certificado no trae ni siquiera esa
+        # extension basica esperada - mensaje distinto a proposito
+        # (hallazgo de seguimiento zg7DuHM, 21 sep 2026).
+        logger.warning("validar_certificado_es_csd.rechazado motivo=KeyUsage_ausente")
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "El certificado no tiene el perfil esperado de un CSD (falta "
+                "la extension KeyUsage) - verifica que sea el certificado "
+                "correcto."
+            ),
+        )
+    if key_usage.data_encipherment or key_usage.key_agreement:
+        logger.warning(
+            "validar_certificado_es_csd.rechazado motivo=KeyUsage_perfil_fiel "
+            "data_encipherment=%s key_agreement=%s",
+            key_usage.data_encipherment, key_usage.key_agreement,
+        )
+        raise HTTPException(status_code=422, detail=mensaje_es_fiel)
+
+
+def _validar_cert_key_pairing(cert: x509.Certificate, key_bytes: bytes, password: str) -> None:
+    """Confirma que la llave privada subida corresponda al certificado
+    subido (par cert<->key) - gap de higiene independiente de zg7DuHM:
+    ni crear_emisor ni actualizar_emisor lo validaban antes de este
+    cambio (a diferencia de la e.firma, ver _validar_material_efirma
+    paso 6, zg55DWY). Mismo patron de esas ~6 lineas, NO se reutiliza
+    esa funcion completa - esta acoplada a conceptos de e.firma
+    (consentimiento, vigencia con rechazo-si-vencido) que no aplican al
+    CSD."""
+    try:
+        priv = load_der_private_key(key_bytes, password=password.encode())
+    except TypeError:
+        raise HTTPException(status_code=422, detail="La llave privada esta cifrada y requiere contrasena.")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Contrasena incorrecta o llave privada invalida.")
+    if cert.public_key().public_numbers() != priv.public_key().public_numbers():
+        raise HTTPException(
+            status_code=422,
+            detail="La llave privada no corresponde al certificado (par cert/key distinto).",
+        )
+
+
 @app.post(
     "/admin/emisores",
     response_model=EmisorResponse,
@@ -607,6 +696,19 @@ async def crear_emisor(
                 f"del certificado CSD cargado ({rfc_del_certificado})"
             ),
         )
+
+    # Tipo de certificado (CSD, no e.firma) + par cert<->key (zg7DuHM, 21
+    # sep 2026) - ninguno de los 2 se validaba antes de este cambio, ver
+    # investigacion 155_investigacion_zg7DuHM_csd_vs_efirma.txt. Reusa
+    # cert_bytes ya decodificado arriba (mismo objeto que
+    # extraer_rfc_de_certificado ya probo que parsea).
+    cert_parseado = load_der_x509_certificate(cert_bytes)
+    _validar_certificado_es_csd(cert_parseado)
+    try:
+        key_bytes = base64.b64decode(emisor.csd_key_base64)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"csd_key_base64 invalido: {e}")
+    _validar_cert_key_pairing(cert_parseado, key_bytes, emisor.csd_password)
 
     # Vigencia del CSD (dashboard multi-emisor) - se puebla al vuelo, mismo
     # cert_bytes ya decodificado arriba. No bloquea el alta si falla: el
@@ -1249,6 +1351,19 @@ async def actualizar_emisor(
                 f"del certificado CSD cargado ({rfc_del_certificado})"
             ),
         )
+
+    # Tipo de certificado (CSD, no e.firma) + par cert<->key (zg7DuHM, 21
+    # sep 2026) - mismo gap que crear_emisor, ver comentario ahi y la
+    # investigacion 155_investigacion_zg7DuHM_csd_vs_efirma.txt. Este es
+    # justo el endpoint donde ocurrio el caso real que origino la tarjeta
+    # (RAHP7112093H0/Pedro, e.firma aceptada por error como CSD).
+    cert_parseado = load_der_x509_certificate(cert_bytes)
+    _validar_certificado_es_csd(cert_parseado)
+    try:
+        key_bytes = base64.b64decode(emisor.csd_key_base64)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"csd_key_base64 invalido: {e}")
+    _validar_cert_key_pairing(cert_parseado, key_bytes, emisor.csd_password)
 
     # Vigencia del CSD nuevo (dashboard multi-emisor) - mismo criterio de
     # degradacion a NULL que crear_emisor, ver comentario ahi.

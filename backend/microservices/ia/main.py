@@ -831,8 +831,32 @@ async def generar_resumen(req: SummaryRequest, _: str = Depends(require_internal
         {"role": "user", "content": f"Genera el resumen ejecutivo para estos datos:\n\n{data_str}"}
     ]
     try:
+        # thinking_disabled=True + max_tokens 1500->4096 (investigacion del
+        # 21 sep 2026 tras g7ilnY/g4pAxA): mismo bug reproducido aqui, tanto
+        # a nivel de llamada directa a la API como - confirmado despues,
+        # antes de aplicar este fix - a nivel del endpoint real
+        # /ia/resumen-ejecutivo: con el payload real de negocio_id=1 (3
+        # meses), el endpoint devolvia HTTP 200 con {"texto_raw": "..."}
+        # (el fallback de la linea de abajo) conteniendo el JSON truncado a
+        # medio texto_ejecutivo - NO un error visible, a diferencia de
+        # detectar_anomalias/conciliar_banco (502/422 francos). Con
+        # max_tokens=1500 original, thinking_tokens=352 de 1500 (23% del
+        # presupuesto) ya bastaba para cortar el texto real a mitad de
+        # frase.
+        # Calculo de 4096 (no arbitrario, mismo criterio que 4096 en
+        # detectar_anomalias y 6144 en conciliar_banco): con
+        # thinking_disabled=True medido en dos casos reales -
+        #   - Caso simple (3 meses reales de negocio_id=1, el mismo que
+        #     reprodujo el bug): 1348 tokens de salida real (4
+        #     kpis_principales, 4 hallazgos, 4 riesgos, 4 recomendaciones).
+        #   - Caso mas cargado (12 meses - 9 sinteticos + 3 reales,
+        #     variedad de subidas/bajadas y cancelaciones no-cero, para no
+        #     subestimar el peor caso igual que conciliar_banco escalo de 3
+        #     a 16 depositos): 1632 tokens de salida real (4/4/4/5
+        #     items) - el peor caso medido.
+        # 4096 deja ~2.5x de margen sobre el peor caso observado (1632).
         raw = await call_claude(
-            messages, SUMMARY_SYSTEM, max_tokens=1500, call_site="generar_resumen"
+            messages, SUMMARY_SYSTEM, max_tokens=4096, call_site="generar_resumen", thinking_disabled=True
         )
     except ClaudeRespuestaVaciaError as e:
         raise HTTPException(

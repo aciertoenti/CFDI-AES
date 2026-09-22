@@ -867,8 +867,24 @@ async def generar_resumen(req: SummaryRequest, _: str = Depends(require_internal
     try:
         clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         return json.loads(clean)
-    except json.JSONDecodeError:
-        return {"texto_raw": raw}
+    except json.JSONDecodeError as e:
+        # Fallback explicito (zg8CkcU, 22 sep 2026): antes de este cambio
+        # este caso degradaba a 200 con {"texto_raw": raw} en silencio -
+        # sin logging (ninguna de las 6 ramas "except json.JSONDecodeError"
+        # de este archivo lo tenia, confirmado en la investigacion) y sin
+        # forma de que un caller lo detectara programaticamente sin
+        # inferirlo por la ausencia de los campos esperados. "degradado":
+        # true hace el estado explicito para cualquier caller (ver
+        # ReporteMensual.jsx, unico consumidor real hoy). Status code se
+        # mantiene 200 a proposito (decision explicita, documentada en
+        # 168_investigacion_zg8CkcU_texto_raw.txt) - SI se entrego algo
+        # (el texto crudo generado), aunque no en el formato estructurado
+        # esperado.
+        logger.warning(
+            "generar_resumen.fallback_texto_raw call_site=generar_resumen motivo=%s raw_len=%d",
+            str(e), len(raw),
+        )
+        return {"texto_raw": raw, "degradado": True}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

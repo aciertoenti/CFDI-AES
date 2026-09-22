@@ -97,7 +97,23 @@ export default function ReporteMensual(){
           </div>
         )}
 
-        {resumen.resultado && !resumen.resultado.texto_raw && (
+        {/* Fallback explicito (zg8CkcU, 22 sep 2026): antes de este cambio,
+            este caso (JSON de la IA no parseable - fragilidad probabilistica
+            del LLM, independiente del bug de thinking ya corregido en
+            zg4pAxA) devolvia HTTP 200 y el chequeo silencioso
+            "!resumen.resultado.texto_raw" simplemente NO renderizaba nada -
+            sin error, sin resumen, sin ningun aviso (confirmado en
+            168_investigacion_zg8CkcU_texto_raw.txt). El backend ahora marca
+            "degradado":true de forma explicita (ver ia/main.py) en vez de
+            que el frontend tenga que inferirlo por la presencia de
+            texto_raw. */}
+        {resumen.resultado?.degradado && (
+          <div style={{marginTop:12,padding:"10px 12px",borderRadius:8,background:C.warnSoft,color:C.warn,fontSize:12}}>
+            ⚠ No se pudo generar el resumen estructurado - intenta de nuevo.
+          </div>
+        )}
+
+        {resumen.resultado && !resumen.resultado.degradado && (
           <div style={{marginTop:16,borderTop:`1px solid ${C.border}`,paddingTop:16}}>
             <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:12}}>{resumen.resultado.titulo}</div>
 

@@ -23,7 +23,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_der_private_key
 from cryptography.x509 import load_der_x509_certificate
 from cryptography.x509.oid import ExtensionOID
-from fastapi import FastAPI, File, Header, HTTPException, Query, Depends, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Depends, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import desc, func, select
@@ -31,9 +31,17 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Efirma, Emisor, Cliente, Negocio, Notificacion, SerieFolio, SolicitudDescarga, PaqueteDescarga, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import Efirma, Emisor, Cliente, Negocio, Notificacion, SerieFolio, SolicitudDescarga, PaqueteDescarga, DeclaracionAnualDocumento, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from database import _fernet_efirma  # cifrado explicito de la e.firma (ver database.py)
 from csd_rfc import extraer_rfc_de_certificado, extraer_vigencia_hasta_de_certificado
+from declaraciones_storage import (
+    calcular_sha256,
+    sanitizar_nombre_archivo,
+    validar_ejercicio,
+    validar_pdf,
+    validar_tipo_declaracion,
+    validar_tipo_documento,
+)
 from logo_storage import subir_logo, validar_logo
 from sat_descarga_client import (
     BloqueoPrevioError,
@@ -237,6 +245,15 @@ class EmisorUpdateParcial(BaseModel):
     hora_cierre_automatico: Optional[str] = None
 
 class EmisorResponse(BaseModel):
+    # Agregado (declaraciones anuales, Parte B, 22 sep 2026): antes NUNCA
+    # se exponia el id entero (solo el RFC identificaba al emisor en toda
+    # la API) - los endpoints nuevos de declaraciones-anuales/documentos
+    # necesitan emisor_id (FK real dentro de la misma BD, no el RFC) para
+    # que el frontend pueda construir la URL. No es un dato sensible (a
+    # diferencia del CSD), agregarlo aqui es aditivo y no rompe ningun
+    # consumidor existente (todos leen por nombre de campo, no por
+    # posicion).
+    id: int
     rfc: str
     razon_social: str
     regimen_fiscal: str
@@ -500,6 +517,7 @@ class ConfiguracionResponse(BaseModel):
 
 def _emisor_to_response(e: Emisor, cache_invalidado: Optional[bool] = None) -> EmisorResponse:
     return EmisorResponse(
+        id=e.id,
         rfc=e.rfc,
         razon_social=e.razon_social,
         regimen_fiscal=e.regimen_fiscal,
@@ -2392,6 +2410,228 @@ async def subir_logo_negocio(
         raise HTTPException(status_code=422, detail=str(e))
     url = subir_logo(negocio_id, contenido, content_type)
     return {"logo_url": url}
+
+# ─── Declaraciones anuales - documentos (PDF) ──────────────────────────────────
+# Parte B (22 sep 2026): SOLO subir/listar/descargar/borrar PDFs por emisor y
+# ejercicio - NO captura montos, NO parsea el PDF, NO se conecta con los
+# motores de calculo 612/625 (ver reporte 182, Parte A, diseño de la captura
+# estructurada, sin implementar todavia).
+
+class DeclaracionDocumentoResponse(BaseModel):
+    id: int
+    emisor_id: int
+    ejercicio: int
+    tipo_declaracion: str
+    numero_complementaria: Optional[int] = None
+    tipo_documento: str
+    nombre_archivo_original: str
+    tamano_bytes: int
+    sha256: str
+    creado_por: Optional[str] = None
+    creado_en: datetime
+
+
+def _declaracion_doc_to_response(d: DeclaracionAnualDocumento) -> DeclaracionDocumentoResponse:
+    return DeclaracionDocumentoResponse(
+        id=d.id, emisor_id=d.emisor_id, ejercicio=d.ejercicio,
+        tipo_declaracion=d.tipo_declaracion, numero_complementaria=d.numero_complementaria,
+        tipo_documento=d.tipo_documento, nombre_archivo_original=d.nombre_archivo_original,
+        tamano_bytes=d.tamano_bytes, sha256=d.sha256,
+        creado_por=d.creado_por, creado_en=d.creado_en,
+    )
+
+
+async def _emisor_del_negocio_o_404(emisor_id: int, negocio_id: int, db: AsyncSession) -> Emisor:
+    """Mismo criterio IDOR ya establecido en actualizar_emisor: 404 (no
+    403) si el emisor no pertenece al negocio del caller - nunca revela
+    que un emisor_id ajeno existe."""
+    emisor = await db.get(Emisor, emisor_id)
+    if emisor is None or emisor.negocio_id != negocio_id:
+        raise HTTPException(status_code=404, detail=f"Emisor {emisor_id} no encontrado")
+    return emisor
+
+
+@app.post(
+    "/admin/emisores/{emisor_id}/declaraciones-anuales/documentos",
+    response_model=DeclaracionDocumentoResponse,
+    status_code=201,
+    dependencies=[Depends(require_internal_key)],
+)
+async def subir_documento_declaracion_anual(
+    emisor_id: int,
+    ejercicio: int = Form(...),
+    tipo_declaracion: str = Form(...),
+    numero_complementaria: Optional[int] = Form(None),
+    tipo_documento: str = Form(...),
+    archivo: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+    x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
+):
+    """1 archivo por request (pedido explicito) - PDF de declaracion,
+    acuse o comprobante de pago. Nunca confia en el cliente: valida
+    magic bytes reales (validar_pdf), tamano, ejercicio y la
+    correlacion tipo_declaracion/numero_complementaria en el servidor,
+    sin importar lo que ya haya validado el frontend."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
+
+    try:
+        validar_ejercicio(ejercicio)
+        validar_tipo_declaracion(tipo_declaracion, numero_complementaria)
+        validar_tipo_documento(tipo_documento)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    contenido = await archivo.read()
+    try:
+        validar_pdf(contenido)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    sha256 = calcular_sha256(contenido)
+
+    # Chequeo explicito ANTES del insert (mensaje claro) - el UNIQUE de BD
+    # (ver database.py) es la red de seguridad real ante una carrera
+    # concurrente, no el camino principal.
+    existente = await db.scalar(
+        select(DeclaracionAnualDocumento).where(
+            DeclaracionAnualDocumento.negocio_id == negocio_id,
+            DeclaracionAnualDocumento.sha256 == sha256,
+        )
+    )
+    if existente is not None:
+        raise HTTPException(status_code=409, detail="Este archivo ya estaba guardado")
+
+    nuevo = DeclaracionAnualDocumento(
+        negocio_id=negocio_id,
+        emisor_id=emisor_id,
+        ejercicio=ejercicio,
+        tipo_declaracion=tipo_declaracion,
+        numero_complementaria=numero_complementaria,
+        tipo_documento=tipo_documento,
+        nombre_archivo_original=sanitizar_nombre_archivo(archivo.filename or "documento.pdf"),
+        tamano_bytes=len(contenido),
+        sha256=sha256,
+        contenido_cifrado=contenido,
+        creado_por=x_usuario_rfc,
+    )
+    db.add(nuevo)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Este archivo ya estaba guardado")
+    await db.refresh(nuevo)
+
+    # INFO sin montos/contenido/nombre completo (pedido explicito) - solo
+    # metadata no sensible + prefijo corto del hash (suficiente para
+    # correlacionar en logs sin exponer el archivo completo).
+    logger.info(
+        "declaracion_doc.subido emisor_id=%s ejercicio=%s tipo_documento=%s sha256_prefix=%s tamano_bytes=%s",
+        emisor_id, ejercicio, tipo_documento, sha256[:12], len(contenido),
+    )
+    return _declaracion_doc_to_response(nuevo)
+
+
+@app.get(
+    "/admin/emisores/{emisor_id}/declaraciones-anuales/documentos",
+    response_model=List[DeclaracionDocumentoResponse],
+    dependencies=[Depends(require_internal_key)],
+)
+async def listar_documentos_declaracion_anual(
+    emisor_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Lista SIN contenido (nunca se selecciona contenido_cifrado aqui) -
+    ordenada por ejercicio desc, creado_en desc, para que agrupar por
+    ejercicio en el frontend sea trivial (mas reciente primero dentro de
+    cada grupo tambien)."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
+
+    stmt = (
+        select(DeclaracionAnualDocumento)
+        .where(
+            DeclaracionAnualDocumento.negocio_id == negocio_id,
+            DeclaracionAnualDocumento.emisor_id == emisor_id,
+        )
+        .order_by(desc(DeclaracionAnualDocumento.ejercicio), desc(DeclaracionAnualDocumento.creado_en))
+    )
+    docs = (await db.execute(stmt)).scalars().all()
+    return [_declaracion_doc_to_response(d) for d in docs]
+
+
+@app.get(
+    "/admin/emisores/{emisor_id}/declaraciones-anuales/documentos/{documento_id}/descarga",
+    dependencies=[Depends(require_internal_key)],
+)
+async def descargar_documento_declaracion_anual(
+    emisor_id: int,
+    documento_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Descifra y devuelve los bytes originales del PDF. nosniff +
+    Content-Disposition attachment (pedido explicito) - el navegador
+    nunca debe intentar renderizar esto inline ni adivinar el tipo."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
+
+    doc = await db.scalar(
+        select(DeclaracionAnualDocumento).where(
+            DeclaracionAnualDocumento.id == documento_id,
+            DeclaracionAnualDocumento.negocio_id == negocio_id,
+            DeclaracionAnualDocumento.emisor_id == emisor_id,
+        )
+    )
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Documento {documento_id} no encontrado")
+
+    nombre = sanitizar_nombre_archivo(doc.nombre_archivo_original)
+    return Response(
+        content=doc.contenido_cifrado,  # ya descifrado por CifradoFernetBinario al leer
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{nombre}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.delete(
+    "/admin/emisores/{emisor_id}/declaraciones-anuales/documentos/{documento_id}",
+    status_code=204,
+    dependencies=[Depends(require_internal_key)],
+)
+async def borrar_documento_declaracion_anual(
+    emisor_id: int,
+    documento_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
+
+    doc = await db.scalar(
+        select(DeclaracionAnualDocumento).where(
+            DeclaracionAnualDocumento.id == documento_id,
+            DeclaracionAnualDocumento.negocio_id == negocio_id,
+            DeclaracionAnualDocumento.emisor_id == emisor_id,
+        )
+    )
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Documento {documento_id} no encontrado")
+
+    await db.delete(doc)
+    await db.commit()
+    logger.info(
+        "declaracion_doc.borrado emisor_id=%s documento_id=%s ejercicio=%s",
+        emisor_id, documento_id, doc.ejercicio,
+    )
+    return Response(status_code=204)
+
 
 # ─── Health check ──────────────────────────────────────────────────────────────
 

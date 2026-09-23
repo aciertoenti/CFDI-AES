@@ -24,7 +24,7 @@ from alembic import command
 from alembic.config import Config
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, SmallInteger, String, Text, Time, TypeDecorator, UniqueConstraint, func, inspect, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, Numeric, SmallInteger, String, Text, Time, TypeDecorator, UniqueConstraint, func, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -52,6 +52,21 @@ _fernet = Fernet(CSD_MASTER_KEY.encode())
 EFIRMA_MASTER_KEY = os.environ["EFIRMA_MASTER_KEY"]
 _fernet_efirma = Fernet(EFIRMA_MASTER_KEY.encode())
 
+# Cifrado de documentos de declaraciones anuales (PDFs) en reposo (Parte B,
+# corregido 22 sep 2026 - ver reporte 185/C1). LLAVE SEPARADA de
+# CSD_MASTER_KEY y de EFIRMA_MASTER_KEY, mismo motivo que la separacion ya
+# documentada arriba para la e.firma: un documento de declaracion anual no
+# tiene relacion de sensibilidad con el CSD (llave de timbrado) ni con la
+# e.firma (identidad legal plena) - una fuga de esta llave no debe exponer
+# ninguna de las otras dos, y viceversa. Version anterior de este modulo
+# reutilizaba CSD_MASTER_KEY para esto (decision explicita de la tarea
+# original que lo creo, documentada como no ideal en su momento - ver el
+# docstring de CifradoFernetBinario abajo) - corregido aqui a llave propia,
+# siguiendo el mismo patron ya establecido de fail-fast por os.environ[...]
+# (KeyError al importar si falta, nunca un default debil).
+DECLARACIONES_MASTER_KEY = os.environ["DECLARACIONES_MASTER_KEY"]
+_fernet_declaraciones = Fernet(DECLARACIONES_MASTER_KEY.encode())
+
 
 class CifradoFernet(TypeDecorator):
     """Cifra/descifra de forma transparente al escribir/leer de Postgres.
@@ -70,6 +85,38 @@ class CifradoFernet(TypeDecorator):
         if value is None:
             return None
         return _fernet.decrypt(value.encode()).decode()
+
+
+class CifradoFernetBinario(TypeDecorator):
+    """Variante de CifradoFernet para contenido BINARIO (declaraciones
+    anuales - PDFs). CifradoFernet (arriba) asume valores str
+    (.encode()/.decode() UTF-8) - eso rompe con bytes arbitrarios como
+    un PDF, que no son texto valido - de ahi la variante, con
+    impl=LargeBinary/bytea en vez de Text.
+
+    CORREGIDO 22 sep 2026 (reporte 185/C1): usa `_fernet_declaraciones`
+    (DECLARACIONES_MASTER_KEY), llave PROPIA - la version original de
+    este modulo reutilizaba `_fernet` (CSD_MASTER_KEY) por instruccion
+    explicita de la tarea que lo creo, documentando ahi mismo que esto
+    se apartaba del patron de separacion de llaves por sensibilidad que
+    el resto del proyecto SI sigue (ver EFIRMA_MASTER_KEY arriba). Esa
+    nota quedo resuelta con este cambio: ya no hay reutilizacion, cada
+    tipo de dato sensible (CSD, e.firma, documentos de declaraciones)
+    tiene su propia llave, mismo criterio en los 3 casos."""
+
+    impl = LargeBinary
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return _fernet_declaraciones.encrypt(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return _fernet_declaraciones.decrypt(bytes(value))
+
 
 engine = create_async_engine(DATABASE_URL, echo=False, pool_size=10, max_overflow=20)
 
@@ -427,6 +474,85 @@ class Notificacion(Base):
 
     __table_args__ = (
         UniqueConstraint("negocio_id", "tipo", "periodo", name="uq_notificacion_negocio_tipo_periodo"),
+    )
+
+
+class DeclaracionAnualDocumento(Base):
+    """
+    Documento (PDF) de una declaracion anual de persona fisica, subido y
+    resguardado por el propio usuario - Parte B de la investigacion de
+    declaraciones anuales (22 sep 2026). Alcance DELIBERADAMENTE
+    limitado: solo sube/lista/descarga/borra el PDF - NO captura montos,
+    NO parsea el contenido, NO se conecta con los motores de calculo
+    612/625 (eso es una Parte A de diseño aparte, sin implementar
+    todavia). declaracion_id (cabecera estructurada) NO existe en este
+    esquema a proposito - esta tabla es independiente, ver reporte 182.
+
+    negocio_id + emisor_id (en vez de solo emisor_id): mismo patron
+    fail-closed que el resto de administracion (Efirma,
+    SolicitudDescarga) - negocio_id SIEMPRE viene de X-Negocio-Id
+    (Gateway), nunca del cliente, y se valida en el endpoint que
+    emisor_id pertenece a ESE negocio (404 si no, no 403 - mismo
+    criterio que actualizar_emisor).
+
+    UNIQUE(negocio_id, sha256): mismo archivo (byte a byte) no se puede
+    subir 2 veces en el mismo negocio - el endpoint lo traduce a 409,
+    nunca 500 (constraint real de BD como ultima linea de defensa,
+    ademas del SELECT previo en el propio endpoint).
+
+    contenido_cifrado: CifradoFernetBinario (ver arriba) - cifrado
+    transparente con DECLARACIONES_MASTER_KEY, llave PROPIA (corregido
+    22 sep 2026, reporte 185/C1 - version anterior reutilizaba
+    CSD_MASTER_KEY). Se guarda en Postgres (bytea), NO en MinIO -
+    decision explicita de la tarea (el dominio de MinIO en produccion
+    sigue pendiente); sat_descarga_client.py (subir_zip a MinIO) fue
+    investigado como patron alternativo pero descartado a proposito
+    para esta funcionalidad especifica.
+    """
+    __tablename__ = "declaraciones_anuales_documentos"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    negocio_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    emisor_id: Mapped[int] = mapped_column(ForeignKey("emisores.id"), nullable=False, index=True)
+    ejercicio: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    tipo_declaracion: Mapped[str] = mapped_column(String(20), nullable=False)  # 'normal'|'complementaria'
+    # NULL si tipo_declaracion='normal'. >= 1 si 'complementaria' - SIN
+    # TOPE (corregido 22 sep 2026, reporte 185/C3): el limite original de
+    # 1-3 (Art. 32 CFF, regla general) no contemplaba que ese mismo
+    # articulo tiene EXCEPCIONES al limite de 3 modificaciones (ver
+    # reporte 185 para el detalle) - un numero_complementaria=4+ es un
+    # caso real valido, no un error de captura. CHECK abajo obliga la
+    # correlacion en BD, no solo en el endpoint - la validacion
+    # server-side puede fallar (bug, bypass directo a la BD), el CHECK es
+    # la ultima linea de defensa real.
+    numero_complementaria: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tipo_documento: Mapped[str] = mapped_column(String(30), nullable=False)  # 'declaracion'|'acuse'|'comprobante_pago'
+    # Nombre ORIGINAL tal cual lo mando el cliente - se sanitiza SOLO al
+    # mostrarlo/usarlo en un header (Content-Disposition), nunca se
+    # reescribe al guardar (perderia informacion util para el usuario,
+    # ej. "Declaracion 2024 Pedro.pdf").
+    nombre_archivo_original: Mapped[str] = mapped_column(String(255), nullable=False)
+    tamano_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    contenido_cifrado: Mapped[bytes] = mapped_column(CifradoFernetBinario, nullable=False)
+    creado_por: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("negocio_id", "sha256", name="uq_declaracion_doc_negocio_sha256"),
+        CheckConstraint(
+            "(tipo_declaracion = 'normal' AND numero_complementaria IS NULL) OR "
+            "(tipo_declaracion = 'complementaria' AND numero_complementaria >= 1)",
+            name="ck_declaracion_doc_numero_complementaria",
+        ),
+        CheckConstraint(
+            "tipo_declaracion IN ('normal', 'complementaria')",
+            name="ck_declaracion_doc_tipo_declaracion",
+        ),
+        CheckConstraint(
+            "tipo_documento IN ('declaracion', 'acuse', 'comprobante_pago')",
+            name="ck_declaracion_doc_tipo_documento",
+        ),
     )
 
 

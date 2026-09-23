@@ -17,6 +17,7 @@ de "Series" en la UI (todavia mock, tarea aparte).
 import asyncio
 import os
 from datetime import date, datetime, time
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -539,6 +540,19 @@ class DeclaracionAnualDocumento(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     negocio_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     emisor_id: Mapped[int] = mapped_column(ForeignKey("emisores.id"), nullable=False, index=True)
+    # Liga este documento (el PDF en si) con la cabecera estructurada
+    # extraida de su contenido (reporte 189) - NULLABLE a proposito:
+    # documentos de tipo_documento != 'declaracion' (acuse/comprobante_pago
+    # sueltos, subidos antes de esta tarea) o cualquier fila futura que no
+    # se pudo clasificar como ACUSE_ANUAL no tienen una DeclaracionAnual
+    # que ligar. ON DELETE no definido explicito (default RESTRICT de
+    # Postgres): borrar una DeclaracionAnual con documentos ligados debe
+    # fallar fuerte, no dejar huerfanos silenciosos - si algun dia se
+    # necesita borrar una declaracion, el endpoint debe desligar/borrar
+    # sus documentos primero, explicito.
+    declaracion_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("declaraciones_anuales.id"), nullable=True, index=True
+    )
     ejercicio: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     tipo_declaracion: Mapped[str] = mapped_column(String(20), nullable=False)  # 'normal'|'complementaria'
     # NULL si tipo_declaracion='normal'. >= 1 si 'complementaria' - SIN
@@ -579,6 +593,103 @@ class DeclaracionAnualDocumento(Base):
             name="ck_declaracion_doc_tipo_documento",
         ),
     )
+
+
+class DeclaracionAnual(Base):
+    """
+    Cabecera ESTRUCTURADA de una declaracion anual, extraida del PDF del
+    acuse (o capturada a mano si el PDF no se pudo leer/reconocer) -
+    reporte 189, resuelve el gap de la Parte B (DeclaracionAnualDocumento
+    arriba): antes solo se guardaba el archivo, sin verificar que el
+    ejercicio/tipo que eligio el usuario coincidiera con el contenido
+    real (una prueba real guardo un acuse de 2013 como si fuera 2025 y
+    una opinion de cumplimiento como si fuera una declaracion).
+
+    negocio_id + emisor_id: mismo patron fail-closed que
+    DeclaracionAnualDocumento (negocio_id SIEMPRE de X-Negocio-Id, nunca
+    del cliente).
+
+    numero_operacion es NULLABLE porque una declaracion con origen=
+    'manual' (el PDF no se pudo leer/reconocer, tipo NO_RECONOCIDO) no
+    tiene forma de saberlo sin leer el documento. La UniqueConstraint de
+    abajo (negocio_id, emisor_id, numero_operacion) usa la semantica
+    NATIVA de Postgres para UNIQUE con NULL (varias filas con
+    numero_operacion=NULL nunca chocan entre si - NULL nunca es igual a
+    NULL en una constraint UNIQUE) - por eso NO hace falta un indice
+    parcial con WHERE como el de Efirma (ese caso SI necesitaba WHERE
+    porque la unicidad debia aplicar solo al subconjunto estado='Activo',
+    un filtro de VALOR, no de NULL).
+
+    ejercicio y tipo_declaracion son NOT NULL siempre (incluso en
+    origen='manual' el usuario los elige a mano en el formulario, ver
+    D2/D4) - son el minimo indispensable para que la fila tenga sentido.
+    numero_operacion/fecha_presentacion/los 3 montos son nullable: no
+    siempre se pueden extraer (PDF ilegible, formato no reconocido,
+    origen='manual') y NUNCA se inventan si faltan.
+    """
+    __tablename__ = "declaraciones_anuales"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    negocio_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    emisor_id: Mapped[int] = mapped_column(ForeignKey("emisores.id"), nullable=False, index=True)
+    ejercicio: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    tipo_declaracion: Mapped[str] = mapped_column(String(20), nullable=False)  # 'normal'|'complementaria'
+    # Mismo criterio ya establecido para DeclaracionAnualDocumento
+    # (reporte 185/C3): SIN TOPE superior - Art. 32 CFF tiene excepciones
+    # reales al limite general de 3 modificaciones.
+    numero_complementaria: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    numero_operacion: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    fecha_presentacion: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    saldo_a_favor: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+    cantidad_a_cargo: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+    cantidad_a_pagar: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+    # 'extraido' (el analizador de PDF logro leer y clasificar el
+    # documento como ACUSE_ANUAL) | 'manual' (NO_RECONOCIDO - el usuario
+    # capturo ejercicio/tipo a mano, sin verificacion de contenido).
+    origen: Mapped[str] = mapped_column(String(20), nullable=False)
+    creado_por: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "negocio_id", "emisor_id", "numero_operacion",
+            name="uq_declaracion_anual_negocio_emisor_num_operacion",
+        ),
+        CheckConstraint(
+            "(tipo_declaracion = 'normal' AND numero_complementaria IS NULL) OR "
+            "(tipo_declaracion = 'complementaria' AND numero_complementaria >= 1)",
+            name="ck_declaracion_anual_numero_complementaria",
+        ),
+        CheckConstraint(
+            "tipo_declaracion IN ('normal', 'complementaria')",
+            name="ck_declaracion_anual_tipo_declaracion",
+        ),
+        CheckConstraint(
+            "origen IN ('extraido', 'manual')",
+            name="ck_declaracion_anual_origen",
+        ),
+    )
+
+
+class DeclaracionAnualTipoIngreso(Base):
+    """
+    Un renglon de la lista "INGRESOS QUE DECLARA" del acuse (reporte
+    189) - tabla hija de DeclaracionAnual, UNA fila por tipo de ingreso
+    declarado (ej. "Sueldos, salarios y asimilados", "Intereses").
+    Deliberadamente SIN montos por ahora (alcance de esta tarea): solo
+    el texto tal como aparece en el acuse, para que la lista sea
+    visible/verificable por el usuario - capturar el monto de cada
+    renglon queda para una tarea aparte si se decide que aporta valor
+    real sobre lo que ya dan saldo_a_favor/cantidad_a_cargo/
+    cantidad_a_pagar en la cabecera.
+    """
+    __tablename__ = "declaracion_anual_tipos_ingreso"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    declaracion_id: Mapped[int] = mapped_column(
+        ForeignKey("declaraciones_anuales.id"), nullable=False, index=True
+    )
+    tipo: Mapped[str] = mapped_column(String(200), nullable=False)
 
 
 async def get_db() -> AsyncSession:  # type: ignore[misc]

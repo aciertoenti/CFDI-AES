@@ -7,6 +7,7 @@
 # Series/folios consecutivos y Configuración: siguen mock, fuera de alcance
 # de esta tarea (folios consecutivos es #12, tarea aparte).
 # ──────────────────────────────────────────────────────────────────────────────
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -26,14 +27,15 @@ from cryptography.x509.oid import ExtensionOID
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Depends, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import desc, func, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Efirma, Emisor, Cliente, Negocio, Notificacion, SerieFolio, SolicitudDescarga, PaqueteDescarga, DeclaracionAnualDocumento, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
+from database import Efirma, Emisor, Cliente, Negocio, Notificacion, SerieFolio, SolicitudDescarga, PaqueteDescarga, DeclaracionAnualDocumento, DeclaracionAnual, DeclaracionAnualTipoIngreso, get_db, create_tables, stamp_head_si_es_ambiente_nuevo
 from database import _fernet_efirma  # cifrado explicito de la e.firma (ver database.py)
 from csd_rfc import extraer_rfc_de_certificado, extraer_vigencia_hasta_de_certificado
+from declaraciones_pdf import analizar_pdf, TipoDocumentoDetectado
 from declaraciones_storage import (
     calcular_sha256,
     sanitizar_nombre_archivo,
@@ -2420,6 +2422,7 @@ async def subir_logo_negocio(
 class DeclaracionDocumentoResponse(BaseModel):
     id: int
     emisor_id: int
+    declaracion_id: Optional[int] = None
     ejercicio: int
     tipo_declaracion: str
     numero_complementaria: Optional[int] = None
@@ -2433,11 +2436,116 @@ class DeclaracionDocumentoResponse(BaseModel):
 
 def _declaracion_doc_to_response(d: DeclaracionAnualDocumento) -> DeclaracionDocumentoResponse:
     return DeclaracionDocumentoResponse(
-        id=d.id, emisor_id=d.emisor_id, ejercicio=d.ejercicio,
+        id=d.id, emisor_id=d.emisor_id, declaracion_id=d.declaracion_id, ejercicio=d.ejercicio,
         tipo_declaracion=d.tipo_declaracion, numero_complementaria=d.numero_complementaria,
         tipo_documento=d.tipo_documento, nombre_archivo_original=d.nombre_archivo_original,
         tamano_bytes=d.tamano_bytes, sha256=d.sha256,
         creado_por=d.creado_por, creado_en=d.creado_en,
+    )
+
+
+# ─── Validacion por CONTENIDO del PDF (reporte 189) ────────────────────────
+# Resuelve el gap real: antes se confiaba en el ejercicio/tipo que el
+# usuario elegia a mano, sin leer el documento (una prueba real guardo
+# un acuse de 2013 como si fuera 2025, y una opinion de cumplimiento
+# como si fuera una declaracion).
+MENSAJE_OPINION_CUMPLIMIENTO = (
+    "Esto es una opinión de cumplimiento. Se guardará en Cumplimiento SAT "
+    "(próximamente), no en declaraciones."
+)
+MENSAJE_RFC_AJENO = "Este documento pertenece a otro RFC"
+MENSAJE_NUMERO_OPERACION_DUPLICADO = "Ya existe una declaración registrada con este número de operación"
+
+
+class DeclaracionExtraidaResponse(BaseModel):
+    """Lo que se logro leer del PDF - todos opcionales a proposito (un
+    campo que no se pudo extraer se deja en None, nunca se inventa)."""
+    ejercicio: Optional[int] = None
+    tipo_declaracion: Optional[str] = None
+    numero_complementaria: Optional[int] = None
+    numero_operacion: Optional[str] = None
+    fecha_presentacion: Optional[datetime] = None
+    saldo_a_favor: Optional[float] = None
+    cantidad_a_cargo: Optional[float] = None
+    cantidad_a_pagar: Optional[float] = None
+    ingresos_que_declara: List[str] = []
+
+
+class AnalisisPDFResponse(BaseModel):
+    tipo_detectado: str  # 'ACUSE_ANUAL' | 'OPINION_CUMPLIMIENTO' | 'NO_RECONOCIDO'
+    puede_guardar: bool
+    mensaje: Optional[str] = None
+    rfc_detectado: Optional[str] = None
+    rfc_coincide: Optional[bool] = None
+    extraido: Optional[DeclaracionExtraidaResponse] = None
+
+
+def _datos_a_extraido_response(datos) -> DeclaracionExtraidaResponse:
+    return DeclaracionExtraidaResponse(
+        ejercicio=datos.ejercicio, tipo_declaracion=datos.tipo_declaracion,
+        numero_complementaria=datos.numero_complementaria, numero_operacion=datos.numero_operacion,
+        fecha_presentacion=datos.fecha_presentacion,
+        saldo_a_favor=float(datos.saldo_a_favor) if datos.saldo_a_favor is not None else None,
+        cantidad_a_cargo=float(datos.cantidad_a_cargo) if datos.cantidad_a_cargo is not None else None,
+        cantidad_a_pagar=float(datos.cantidad_a_pagar) if datos.cantidad_a_pagar is not None else None,
+        ingresos_que_declara=datos.ingresos_que_declara,
+    )
+
+
+async def _declaracion_por_numero_operacion(
+    negocio_id: int, emisor_id: int, numero_operacion: str, db: AsyncSession
+) -> Optional[DeclaracionAnual]:
+    return await db.scalar(
+        select(DeclaracionAnual).where(
+            DeclaracionAnual.negocio_id == negocio_id,
+            DeclaracionAnual.emisor_id == emisor_id,
+            DeclaracionAnual.numero_operacion == numero_operacion,
+        )
+    )
+
+
+async def _evaluar_analisis(resultado, emisor: Emisor, negocio_id: int, db: AsyncSession) -> AnalisisPDFResponse:
+    """Traduce un ResultadoAnalisis (declaraciones_pdf.py) a la respuesta
+    HTTP, aplicando las validaciones duras (RFC ajeno, numero de
+    operacion duplicado) - compartido entre /analizar (solo lectura) y
+    el guardado real, para que ambos apliquen EXACTAMENTE el mismo
+    criterio."""
+    if resultado.tipo_detectado == TipoDocumentoDetectado.OPINION_CUMPLIMIENTO:
+        return AnalisisPDFResponse(tipo_detectado="OPINION_CUMPLIMIENTO", puede_guardar=False, mensaje=MENSAJE_OPINION_CUMPLIMIENTO)
+
+    if resultado.tipo_detectado == TipoDocumentoDetectado.NO_RECONOCIDO:
+        return AnalisisPDFResponse(tipo_detectado="NO_RECONOCIDO", puede_guardar=True, mensaje=resultado.error_lectura)
+
+    datos = resultado.datos
+    rfc_coincide = (datos.rfc == emisor.rfc) if datos.rfc else None
+    if rfc_coincide is False:
+        return AnalisisPDFResponse(
+            tipo_detectado="ACUSE_ANUAL", puede_guardar=False, mensaje=MENSAJE_RFC_AJENO,
+            rfc_detectado=datos.rfc, rfc_coincide=False,
+        )
+
+    if datos.numero_operacion:
+        existente = await _declaracion_por_numero_operacion(negocio_id, emisor.id, datos.numero_operacion, db)
+        if existente is not None:
+            return AnalisisPDFResponse(
+                tipo_detectado="ACUSE_ANUAL", puede_guardar=False, mensaje=MENSAJE_NUMERO_OPERACION_DUPLICADO,
+                rfc_detectado=datos.rfc, rfc_coincide=rfc_coincide,
+            )
+
+    if datos.ejercicio is None:
+        # Marcadores de clasificacion presentes pero no se pudo leer el
+        # ejercicio (formato inesperado dentro de un acuse real) - no se
+        # inventa ni se cae al valor del cliente, se rechaza limpio.
+        return AnalisisPDFResponse(
+            tipo_detectado="ACUSE_ANUAL", puede_guardar=False,
+            mensaje="No se pudo determinar el ejercicio del documento",
+            rfc_detectado=datos.rfc, rfc_coincide=rfc_coincide,
+        )
+
+    return AnalisisPDFResponse(
+        tipo_detectado="ACUSE_ANUAL", puede_guardar=True,
+        rfc_detectado=datos.rfc, rfc_coincide=rfc_coincide,
+        extraido=_datos_a_extraido_response(datos),
     )
 
 
@@ -2449,6 +2557,38 @@ async def _emisor_del_negocio_o_404(emisor_id: int, negocio_id: int, db: AsyncSe
     if emisor is None or emisor.negocio_id != negocio_id:
         raise HTTPException(status_code=404, detail=f"Emisor {emisor_id} no encontrado")
     return emisor
+
+
+@app.post(
+    "/admin/emisores/{emisor_id}/declaraciones-anuales/analizar",
+    response_model=AnalisisPDFResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def analizar_documento_declaracion_anual(
+    emisor_id: int,
+    archivo: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Lee y clasifica el PDF SIN GUARDAR NADA (pedido explicito) - usado
+    por el frontend para mostrar la tarjeta de confirmacion antes de que
+    el usuario decida guardar. El guardado real (POST .../documentos)
+    vuelve a leer el PDF por su cuenta - este endpoint es solo una
+    previsualizacion, nunca la fuente de verdad."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    emisor = await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
+
+    contenido = await archivo.read()
+    try:
+        validar_pdf(contenido)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # analizar_pdf es SINCRONO y puede tardar hasta
+    # TIEMPO_MAX_LECTURA_SEGUNDOS (declaraciones_pdf.py) - to_thread evita
+    # bloquear el event loop de FastAPI mientras tanto.
+    resultado = await asyncio.to_thread(analizar_pdf, contenido)
+    return await _evaluar_analisis(resultado, emisor, negocio_id, db)
 
 
 @app.post(
@@ -2468,17 +2608,22 @@ async def subir_documento_declaracion_anual(
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
     x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
 ):
-    """1 archivo por request (pedido explicito) - PDF de declaracion,
-    acuse o comprobante de pago. Nunca confia en el cliente: valida
-    magic bytes reales (validar_pdf), tamano, ejercicio y la
-    correlacion tipo_declaracion/numero_complementaria en el servidor,
-    sin importar lo que ya haya validado el frontend."""
+    """1 archivo por request (pedido explicito). El SERVIDOR VUELVE A LEER
+    el PDF aqui (reporte 189) - nunca confia en ejercicio/tipo_declaracion/
+    numero_complementaria que mande el cliente cuando el contenido SI se
+    pudo clasificar como ACUSE_ANUAL: esos 3 campos del formulario se
+    IGNORAN y se reemplazan por lo extraido del documento. Solo se usan
+    los del formulario cuando el documento no se pudo clasificar
+    (NO_RECONOCIDO, origen='manual') o es una opinion de cumplimiento
+    (rechazada, nunca se guarda). Todo en UNA transaccion (la
+    DeclaracionAnual + sus DeclaracionAnualTipoIngreso + el
+    DeclaracionAnualDocumento se agregan a la misma sesion, un solo
+    commit al final - si algo falla antes de ese commit, nada se
+    persiste)."""
     negocio_id = requerir_negocio_id(x_negocio_id)
-    await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
+    emisor = await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
 
     try:
-        validar_ejercicio(ejercicio)
-        validar_tipo_declaracion(tipo_declaracion, numero_complementaria)
         validar_tipo_documento(tipo_documento)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -2490,22 +2635,88 @@ async def subir_documento_declaracion_anual(
         raise HTTPException(status_code=422, detail=str(e))
 
     sha256 = calcular_sha256(contenido)
-
     # Chequeo explicito ANTES del insert (mensaje claro) - el UNIQUE de BD
     # (ver database.py) es la red de seguridad real ante una carrera
     # concurrente, no el camino principal.
-    existente = await db.scalar(
+    existente_sha = await db.scalar(
         select(DeclaracionAnualDocumento).where(
             DeclaracionAnualDocumento.negocio_id == negocio_id,
             DeclaracionAnualDocumento.sha256 == sha256,
         )
     )
-    if existente is not None:
+    if existente_sha is not None:
         raise HTTPException(status_code=409, detail="Este archivo ya estaba guardado")
+
+    resultado = await asyncio.to_thread(analizar_pdf, contenido)
+
+    if resultado.tipo_detectado == TipoDocumentoDetectado.OPINION_CUMPLIMIENTO:
+        raise HTTPException(status_code=422, detail=MENSAJE_OPINION_CUMPLIMIENTO)
+
+    if resultado.tipo_detectado == TipoDocumentoDetectado.ACUSE_ANUAL:
+        datos = resultado.datos
+        if datos.rfc and datos.rfc != emisor.rfc:
+            raise HTTPException(status_code=422, detail=MENSAJE_RFC_AJENO)
+        if datos.ejercicio is None:
+            raise HTTPException(status_code=422, detail="No se pudo determinar el ejercicio del documento")
+        if datos.numero_operacion:
+            existente_decl = await _declaracion_por_numero_operacion(negocio_id, emisor_id, datos.numero_operacion, db)
+            if existente_decl is not None:
+                raise HTTPException(status_code=409, detail=MENSAJE_NUMERO_OPERACION_DUPLICADO)
+
+        # El documento (contenido) PREVALECE sobre el formulario - se
+        # sobreescriben las 3 variables locales para que el
+        # DeclaracionAnualDocumento de abajo quede consistente con la
+        # DeclaracionAnual que se crea aqui mismo.
+        ejercicio = datos.ejercicio
+        tipo_declaracion = datos.tipo_declaracion or "normal"
+        numero_complementaria = datos.numero_complementaria if tipo_declaracion == "complementaria" else None
+
+        try:
+            validar_ejercicio(ejercicio)
+            validar_tipo_declaracion(tipo_declaracion, numero_complementaria)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        nueva_declaracion = DeclaracionAnual(
+            negocio_id=negocio_id, emisor_id=emisor_id,
+            ejercicio=ejercicio, tipo_declaracion=tipo_declaracion,
+            numero_complementaria=numero_complementaria,
+            numero_operacion=datos.numero_operacion,
+            fecha_presentacion=datos.fecha_presentacion,
+            saldo_a_favor=datos.saldo_a_favor,
+            cantidad_a_cargo=datos.cantidad_a_cargo,
+            cantidad_a_pagar=datos.cantidad_a_pagar,
+            origen="extraido", creado_por=x_usuario_rfc,
+        )
+        db.add(nueva_declaracion)
+        await db.flush()  # necesitamos nueva_declaracion.id para los hijos, antes del commit
+        for tipo_ingreso in datos.ingresos_que_declara:
+            db.add(DeclaracionAnualTipoIngreso(declaracion_id=nueva_declaracion.id, tipo=tipo_ingreso))
+        declaracion_id = nueva_declaracion.id
+    else:
+        # NO_RECONOCIDO: origen='manual' - se confia en lo que el usuario
+        # capturo a mano en el formulario (mismas validaciones que ya
+        # existian antes de esta tarea).
+        try:
+            validar_ejercicio(ejercicio)
+            validar_tipo_declaracion(tipo_declaracion, numero_complementaria)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        nueva_declaracion = DeclaracionAnual(
+            negocio_id=negocio_id, emisor_id=emisor_id,
+            ejercicio=ejercicio, tipo_declaracion=tipo_declaracion,
+            numero_complementaria=numero_complementaria,
+            numero_operacion=None, origen="manual", creado_por=x_usuario_rfc,
+        )
+        db.add(nueva_declaracion)
+        await db.flush()
+        declaracion_id = nueva_declaracion.id
 
     nuevo = DeclaracionAnualDocumento(
         negocio_id=negocio_id,
         emisor_id=emisor_id,
+        declaracion_id=declaracion_id,
         ejercicio=ejercicio,
         tipo_declaracion=tipo_declaracion,
         numero_complementaria=numero_complementaria,
@@ -2528,15 +2739,29 @@ async def subir_documento_declaracion_anual(
     # metadata no sensible + prefijo corto del hash (suficiente para
     # correlacionar en logs sin exponer el archivo completo).
     logger.info(
-        "declaracion_doc.subido emisor_id=%s ejercicio=%s tipo_documento=%s sha256_prefix=%s tamano_bytes=%s",
-        emisor_id, ejercicio, tipo_documento, sha256[:12], len(contenido),
+        "declaracion_doc.subido emisor_id=%s ejercicio=%s tipo_documento=%s tipo_detectado=%s sha256_prefix=%s tamano_bytes=%s",
+        emisor_id, ejercicio, tipo_documento, resultado.tipo_detectado.value, sha256[:12], len(contenido),
     )
     return _declaracion_doc_to_response(nuevo)
 
 
+class DeclaracionAnualResponse(BaseModel):
+    id: int
+    ejercicio: int
+    tipo_declaracion: str
+    numero_complementaria: Optional[int] = None
+    numero_operacion: Optional[str] = None
+    fecha_presentacion: Optional[datetime] = None
+    saldo_a_favor: Optional[float] = None
+    cantidad_a_cargo: Optional[float] = None
+    cantidad_a_pagar: Optional[float] = None
+    origen: str
+    documentos: List[DeclaracionDocumentoResponse] = []
+
+
 @app.get(
     "/admin/emisores/{emisor_id}/declaraciones-anuales/documentos",
-    response_model=List[DeclaracionDocumentoResponse],
+    response_model=List[DeclaracionAnualResponse],
     dependencies=[Depends(require_internal_key)],
 )
 async def listar_documentos_declaracion_anual(
@@ -2544,23 +2769,44 @@ async def listar_documentos_declaracion_anual(
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
 ):
-    """Lista SIN contenido (nunca se selecciona contenido_cifrado aqui) -
-    ordenada por ejercicio desc, creado_en desc, para que agrupar por
-    ejercicio en el frontend sea trivial (mas reciente primero dentro de
-    cada grupo tambien)."""
+    """Lista por DECLARACION (reporte 189 - antes era una lista plana de
+    documentos), cada una con sus documentos ligados anidados. SIN
+    contenido (nunca se selecciona contenido_cifrado aqui) - ordenada por
+    ejercicio desc, creado_en desc, mismo criterio de siempre (mas
+    reciente primero)."""
     negocio_id = requerir_negocio_id(x_negocio_id)
     await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
 
-    stmt = (
-        select(DeclaracionAnualDocumento)
-        .where(
-            DeclaracionAnualDocumento.negocio_id == negocio_id,
-            DeclaracionAnualDocumento.emisor_id == emisor_id,
-        )
-        .order_by(desc(DeclaracionAnualDocumento.ejercicio), desc(DeclaracionAnualDocumento.creado_en))
+    stmt_decl = (
+        select(DeclaracionAnual)
+        .where(DeclaracionAnual.negocio_id == negocio_id, DeclaracionAnual.emisor_id == emisor_id)
+        .order_by(desc(DeclaracionAnual.ejercicio), desc(DeclaracionAnual.creado_en))
     )
-    docs = (await db.execute(stmt)).scalars().all()
-    return [_declaracion_doc_to_response(d) for d in docs]
+    declaraciones = (await db.execute(stmt_decl)).scalars().all()
+
+    stmt_docs = (
+        select(DeclaracionAnualDocumento)
+        .where(DeclaracionAnualDocumento.negocio_id == negocio_id, DeclaracionAnualDocumento.emisor_id == emisor_id)
+        .order_by(desc(DeclaracionAnualDocumento.creado_en))
+    )
+    documentos = (await db.execute(stmt_docs)).scalars().all()
+    docs_por_declaracion: dict = {}
+    for d in documentos:
+        docs_por_declaracion.setdefault(d.declaracion_id, []).append(_declaracion_doc_to_response(d))
+
+    return [
+        DeclaracionAnualResponse(
+            id=decl.id, ejercicio=decl.ejercicio, tipo_declaracion=decl.tipo_declaracion,
+            numero_complementaria=decl.numero_complementaria, numero_operacion=decl.numero_operacion,
+            fecha_presentacion=decl.fecha_presentacion,
+            saldo_a_favor=float(decl.saldo_a_favor) if decl.saldo_a_favor is not None else None,
+            cantidad_a_cargo=float(decl.cantidad_a_cargo) if decl.cantidad_a_cargo is not None else None,
+            cantidad_a_pagar=float(decl.cantidad_a_pagar) if decl.cantidad_a_pagar is not None else None,
+            origen=decl.origen,
+            documentos=docs_por_declaracion.get(decl.id, []),
+        )
+        for decl in declaraciones
+    ]
 
 
 @app.get(
@@ -2624,11 +2870,91 @@ async def borrar_documento_declaracion_anual(
     if doc is None:
         raise HTTPException(status_code=404, detail=f"Documento {documento_id} no encontrado")
 
+    declaracion_id = doc.declaracion_id
     await db.delete(doc)
+
+    # Reporte 189b (F3): si este era el ÚLTIMO documento ligado a su
+    # declaración, la declaración (y sus tipos de ingreso) tambien se
+    # borran, en la MISMA transacción - una declaración sin ningún
+    # documento queda huérfana en la UI (sin forma de limpiarla salvo
+    # acceso directo a la BD, hallazgo real del reporte 189). flush()
+    # antes de contar para que el DELETE del documento ya se refleje en
+    # la cuenta (asyncpg no re-consulta su propia sesión sin flush).
+    if declaracion_id is not None:
+        await db.flush()
+        quedan = await db.scalar(
+            select(func.count()).select_from(DeclaracionAnualDocumento).where(
+                DeclaracionAnualDocumento.declaracion_id == declaracion_id,
+            )
+        )
+        if quedan == 0:
+            await db.execute(
+                delete(DeclaracionAnualTipoIngreso).where(
+                    DeclaracionAnualTipoIngreso.declaracion_id == declaracion_id,
+                )
+            )
+            await db.execute(
+                delete(DeclaracionAnual).where(DeclaracionAnual.id == declaracion_id)
+            )
+
     await db.commit()
     logger.info(
-        "declaracion_doc.borrado emisor_id=%s documento_id=%s ejercicio=%s",
-        emisor_id, documento_id, doc.ejercicio,
+        "declaracion_doc.borrado emisor_id=%s documento_id=%s ejercicio=%s declaracion_id=%s",
+        emisor_id, documento_id, doc.ejercicio, declaracion_id,
+    )
+    return Response(status_code=204)
+
+
+@app.delete(
+    "/admin/emisores/{emisor_id}/declaraciones-anuales/{declaracion_id}",
+    status_code=204,
+    dependencies=[Depends(require_internal_key)],
+)
+async def borrar_declaracion_anual(
+    emisor_id: int,
+    declaracion_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
+):
+    """Borra una declaración COMPLETA (reporte 189b, F3): sus documentos y
+    sus tipos de ingreso, en UNA sola transacción. Aislado por negocio_id
+    igual que el resto de este módulo - un declaracion_id de otro negocio
+    da 404, nunca revela que existe."""
+    negocio_id = requerir_negocio_id(x_negocio_id)
+    await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
+
+    declaracion = await db.scalar(
+        select(DeclaracionAnual).where(
+            DeclaracionAnual.id == declaracion_id,
+            DeclaracionAnual.negocio_id == negocio_id,
+            DeclaracionAnual.emisor_id == emisor_id,
+        )
+    )
+    if declaracion is None:
+        raise HTTPException(status_code=404, detail=f"Declaración {declaracion_id} no encontrada")
+
+    num_documentos = await db.scalar(
+        select(func.count()).select_from(DeclaracionAnualDocumento).where(
+            DeclaracionAnualDocumento.declaracion_id == declaracion_id,
+        )
+    )
+
+    await db.execute(
+        delete(DeclaracionAnualDocumento).where(
+            DeclaracionAnualDocumento.declaracion_id == declaracion_id,
+        )
+    )
+    await db.execute(
+        delete(DeclaracionAnualTipoIngreso).where(
+            DeclaracionAnualTipoIngreso.declaracion_id == declaracion_id,
+        )
+    )
+    await db.execute(delete(DeclaracionAnual).where(DeclaracionAnual.id == declaracion_id))
+    await db.commit()
+
+    logger.info(
+        "declaracion.borrada emisor_id=%s declaracion_id=%s ejercicio=%s num_documentos=%s",
+        emisor_id, declaracion_id, declaracion.ejercicio, num_documentos,
     )
     return Response(status_code=204)
 

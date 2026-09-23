@@ -19,3 +19,10 @@ minio
 # necesita esto para parsear multipart/form-data (UploadFile). Mismo pin que
 # whatsapp_bot/requirements.txt.
 python-multipart==0.0.12
+# Lectura de la CAPA DE TEXTO de PDFs de declaraciones anuales (reporte
+# 189) - solo texto, nunca OCR/imagenes. Elegido sobre PyPDF2 (que
+# whatsapp_bot ya usa, pero esta EN DESUSO - el propio proyecto redirige
+# a pypdf, su sucesor mantenido) y sobre pdfplumber/PyMuPDF (dependencias
+# de sistema mas pesadas, no necesarias solo para extraer texto). Pura
+# Python, sin dependencias de sistema (poppler/mupdf).
+pypdf==6.19.0

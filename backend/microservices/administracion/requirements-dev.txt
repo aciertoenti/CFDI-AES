@@ -1,0 +1,32 @@
+# Dependencias SOLO de pruebas (reporte 189b, F4) - NUNCA se instalan en
+# la imagen de producción (el Dockerfile de este servicio no las incluye,
+# a propósito: solo instala requirements.txt). Hasta este reporte se
+# instalaban a mano en el contenedor en cada sesión de trabajo
+# (`pip install -q pytest pytest-asyncio reportlab`, sin versión fija),
+# lo que hacía que la suite corriera contra una versión distinta cada vez
+# que se reconstruía el contenedor - sin garantía de reproducibilidad.
+#
+# Cómo se instala hoy (documentado, sin cambiar el Dockerfile de
+# producción): DESPUÉS de levantar el contenedor con la imagen normal
+# (`docker compose up -d --build administracion`), instalar esto encima,
+# dentro del contenedor:
+#
+#     docker compose exec administracion pip install -r requirements-dev.txt
+#
+# (el archivo vive en /app/requirements-dev.txt porque el Dockerfile hace
+# `COPY microservices/administracion /app`, que ya lo incluye - no hace
+# falta copiarlo aparte). Verificado en F4 en un contenedor reconstruido
+# DESDE CERO: la suite completa corre instalando solo requirements.txt +
+# requirements-dev.txt, sin ningún otro paquete de por medio.
+#
+# Versiones fijadas a las que ya estaban en uso en este reporte (189/189b)
+# al momento de escribir este archivo - confirmadas con
+# `pip show <paquete>` dentro del contenedor antes de fijarlas aquí.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+
+# Genera los PDFs SINTÉTICOS con capa de texto real que usan las pruebas
+# de declaraciones_pdf.py (reporte 189) - nunca se usa fuera de pruebas,
+# nunca en producción (el análisis real de PDFs usa pypdf, ya en
+# requirements.txt).
+reportlab==5.0.1

@@ -22,7 +22,7 @@ from typing import Optional
 
 from alembic import command
 from alembic.config import Config
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 from dotenv import load_dotenv
 from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, Numeric, SmallInteger, String, Text, Time, TypeDecorator, UniqueConstraint, func, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -35,9 +35,34 @@ DATABASE_URL = os.environ.get(
     "postgresql+asyncpg://cfdi:secret_admin@postgres_admin/cfdi_admin",
 )
 
+# Soporte de rotacion sin perdida de datos para las 3 llaves maestras de
+# este modulo (reporte 186 - EFIRMA_MASTER_KEY se expuso en una salida de
+# herramienta durante el reporte 185, motivo real de este cambio).
+#
+# Patron: <NOMBRE>_MASTER_KEY_ANTERIOR es OPCIONAL. Si existe, se usa
+# MultiFernet([actual, anterior]) - Fernet.encrypt() SIEMPRE usa la
+# PRIMERA llave de la lista (la actual, nunca la anterior: cifrar con la
+# llave vieja derrotaria el proposito de la rotacion), y
+# MultiFernet.decrypt() prueba cada llave en orden hasta que una
+# funcione, asi que sigue pudiendo leer filas cifradas con la llave
+# anterior mientras se re-cifran. Si <NOMBRE>_MASTER_KEY_ANTERIOR NO
+# existe, se construye un Fernet simple - comportamiento IDENTICO al
+# que ya existia antes de este cambio (ninguna diferencia quando no hay
+# rotacion en curso). La llave ACTUAL sigue siendo estrictamente
+# obligatoria (os.environ[...], no .get()) - fail-closed identico al
+# comportamiento previo: KeyError al importar el modulo si falta,
+# nunca un default debil ni una llave vacia.
+def _construir_fernet(nombre_var: str) -> "Fernet | MultiFernet":
+    llave_actual = os.environ[nombre_var]
+    llave_anterior = os.environ.get(f"{nombre_var}_ANTERIOR")
+    if llave_anterior:
+        return MultiFernet([Fernet(llave_actual.encode()), Fernet(llave_anterior.encode())])
+    return Fernet(llave_actual.encode())
+
+
 # Cifrado del CSD en reposo (#34) - ver docs/cifrado-csd.md.
 CSD_MASTER_KEY = os.environ["CSD_MASTER_KEY"]
-_fernet = Fernet(CSD_MASTER_KEY.encode())
+_fernet = _construir_fernet("CSD_MASTER_KEY")
 
 # Cifrado de la e.firma en reposo (zg55DWY). LLAVE SEPARADA de CSD_MASTER_KEY
 # a proposito: la e.firma tiene validez legal equivalente a firma autografa
@@ -50,7 +75,7 @@ _fernet = Fernet(CSD_MASTER_KEY.encode())
 # EXPLICITAMENTE en los endpoints con _fernet_efirma. cert_base64 es el
 # certificado publico, no se cifra.
 EFIRMA_MASTER_KEY = os.environ["EFIRMA_MASTER_KEY"]
-_fernet_efirma = Fernet(EFIRMA_MASTER_KEY.encode())
+_fernet_efirma = _construir_fernet("EFIRMA_MASTER_KEY")
 
 # Cifrado de documentos de declaraciones anuales (PDFs) en reposo (Parte B,
 # corregido 22 sep 2026 - ver reporte 185/C1). LLAVE SEPARADA de
@@ -65,7 +90,7 @@ _fernet_efirma = Fernet(EFIRMA_MASTER_KEY.encode())
 # siguiendo el mismo patron ya establecido de fail-fast por os.environ[...]
 # (KeyError al importar si falta, nunca un default debil).
 DECLARACIONES_MASTER_KEY = os.environ["DECLARACIONES_MASTER_KEY"]
-_fernet_declaraciones = Fernet(DECLARACIONES_MASTER_KEY.encode())
+_fernet_declaraciones = _construir_fernet("DECLARACIONES_MASTER_KEY")
 
 
 class CifradoFernet(TypeDecorator):

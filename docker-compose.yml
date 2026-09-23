@@ -183,6 +183,15 @@ services:
       # antes reutilizaba CSD_MASTER_KEY. Mismo patron/generacion que las
       # otras 2 llaves de arriba.
       DECLARACIONES_MASTER_KEY: "${DECLARACIONES_MASTER_KEY}"
+      # _ANTERIOR de cada llave de arriba (reporte 186) - OPCIONAL, vacio
+      # por defecto (":-" sin valor tras el ":-" -> string vacio si no
+      # esta en .env, nunca falla el `docker compose up`). database.py
+      # trata un valor vacio igual que "no configurada" (MultiFernet solo
+      # se activa si la variable tiene contenido real). Se define
+      # temporalmente solo mientras se rota una llave.
+      CSD_MASTER_KEY_ANTERIOR: "${CSD_MASTER_KEY_ANTERIOR:-}"
+      EFIRMA_MASTER_KEY_ANTERIOR: "${EFIRMA_MASTER_KEY_ANTERIOR:-}"
+      DECLARACIONES_MASTER_KEY_ANTERIOR: "${DECLARACIONES_MASTER_KEY_ANTERIOR:-}"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?INTERNAL_API_KEY no configurada}"
       # Invalidar el cache de CSD en facturacion al rotar un CSD (PUT
       # /admin/emisores/{rfc}) - sin depends_on a proposito: la llamada se

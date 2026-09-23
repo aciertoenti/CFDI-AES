@@ -41,6 +41,108 @@ export function bufferPdfSintetico(etiqueta = "") {
   return Buffer.from(`%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj<</Type/Catalog>>endobj\n${texto}\n%%EOF`, "binary");
 }
 
+// ─── PDFs sinteticos con CAPA DE TEXTO REAL (reporte 189) ──────────────────
+//
+// bufferPdfSintetico() de arriba (sin xref valido) es SUFICIENTE para los
+// casos 1-16 (190/188): solo prueban la guardia de cambios/foco/a11y, nunca
+// dependen de que el backend clasifique el contenido - de hecho el nuevo
+// backend (189) lo clasifica NO_RECONOCIDO, que es justo el estado que esos
+// casos necesitan (formulario manual, puede_guardar=true).
+//
+// Los 3 casos NUEVOS de 189 (acuse -> tarjeta de confirmacion, opinion ->
+// rechazo, RFC ajeno -> rechazo) si necesitan que pypdf pueda abrir el
+// archivo y extraer texto real - construirPdfConTexto() arma un PDF minimo
+// pero VALIDO a mano (Catalog/Pages/Page/Font/Contents + tabla xref con
+// offsets de bytes calculados en el momento) en vez de agregar una
+// dependencia nueva (pdf-lib/pdfkit) solo para esto - mismo criterio de "sin
+// dependencias innecesarias" ya aplicado en el backend (pypdf sobre
+// PyMuPDF/pdfplumber, reportlab solo en tests de backend, nunca en la
+// imagen de produccion).
+//
+// Los renglones se escriben SIN acentos a proposito - el backend normaliza
+// (NFKD + upper) antes de comparar contra los marcadores, que ya estan
+// escritos sin acento en declaraciones_pdf.py, asi que el acento es
+// irrelevante para la clasificacion/extraccion; omitirlo aqui evita
+// cualquier ambigüedad de conteo de bytes en la tabla xref (contenido
+// puramente ASCII, 1 caracter = 1 byte, sin tener que decidir entre
+// latin1/utf-8 al calcular offsets).
+function _escaparCadenaPdf(texto) {
+  return String(texto).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function construirPdfConTexto(lineas) {
+  let y = 750;
+  const cuerpo = ["BT", "/F1 10 Tf"];
+  for (const linea of lineas) {
+    cuerpo.push(`1 0 0 1 50 ${y} Tm`);
+    cuerpo.push(`(${_escaparCadenaPdf(linea)}) Tj`);
+    y -= 16;
+  }
+  cuerpo.push("ET");
+  const streamContenido = cuerpo.join("\n");
+
+  // 5 objetos indirectos: 1 Catalog, 2 Pages, 3 Page, 4 Contents (stream),
+  // 5 Font. Orden y numeros fijos a proposito (mas simple que resolverlos
+  // dinamicamente) - suficiente para un documento de 1 pagina.
+  const objetos = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Length ${streamContenido.length} >>\nstream\n${streamContenido}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0]; // offsets[0] = objeto libre 0, no se usa
+  for (let i = 0; i < objetos.length; i++) {
+    offsets.push(pdf.length); // ASCII puro en todo el documento: 1 char = 1 byte, .length es el offset real
+    pdf += `${i + 1} 0 obj\n${objetos[i]}\nendobj\n`;
+  }
+  const offsetXref = pdf.length;
+  let xref = `xref\n0 ${objetos.length + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i <= objetos.length; i++) {
+    xref += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += xref;
+  pdf += `trailer\n<< /Size ${objetos.length + 1} /Root 1 0 R >>\nstartxref\n${offsetXref}\n%%EOF`;
+
+  return Buffer.from(pdf, "binary");
+}
+
+// Formato RECIENTE (el que usa /analizar y /documentos hoy para persona
+// fisica, ver declaraciones_pdf.py): "RFC:", "Numero de operacion:".
+export function bufferAcuseSintetico({
+  rfc = RFC_EMISOR_PRUEBA,
+  ejercicio = new Date().getFullYear() - 1,
+  numeroOperacion = `OP${Date.now()}`,
+  fecha = "15/03/2026",
+  hora = "10:30:00",
+} = {}) {
+  return construirPdfConTexto([
+    "SERVICIO DE ADMINISTRACION TRIBUTARIA",
+    "ACUSE DE RECIBO",
+    `DECLARACION DEL EJERCICIO ${ejercicio}`,
+    `RFC: ${rfc}`,
+    `Numero de operacion: ${numeroOperacion}`,
+    `Fecha y hora de presentacion: ${fecha} ${hora}`,
+    "SALDO A FAVOR: $0.00",
+    "CANTIDAD A CARGO: $0.00",
+    "CANTIDAD A PAGAR: $0.00",
+    "INGRESOS QUE DECLARA",
+    "Sueldos, salarios y asimilados",
+    "ANEXOS QUE PRESENTA",
+  ]);
+}
+
+export function bufferOpinionCumplimientoSintetica({ rfc = RFC_EMISOR_PRUEBA } = {}) {
+  return construirPdfConTexto([
+    "SERVICIO DE ADMINISTRACION TRIBUTARIA",
+    "Opinion del cumplimiento de obligaciones fiscales",
+    `RFC: ${rfc}`,
+    "Sentido: Positivo",
+  ]);
+}
+
 export async function login(page) {
   if (!credencialesConfiguradas()) {
     throw new Error(
@@ -157,6 +259,17 @@ export function alertDialogConfirmacion(page) {
 export async function abrirFormulario(page) {
   await dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" }).click();
   await expect(page.locator("#da-ejercicio")).toBeVisible();
+}
+
+// Tras elegir un archivo (reporte 189), el modal dispara automaticamente
+// POST .../analizar y muestra "Analizando documento…" (aria-live="polite")
+// mientras espera la respuesta - Guardar queda deshabilitado durante ese
+// instante (puedeGuardar = !analizando && ...). Los casos que suben un
+// archivo y luego hacen clic en Guardar deben esperar a que esa ronda
+// async termine antes de intentar el clic (Playwright no lo espera solo
+// porque el input ya tiene el archivo).
+export async function esperarAnalisisCompleto(page) {
+  await expect(dialogPrincipal(page).getByText("Analizando documento…")).not.toBeVisible({ timeout: 15000 });
 }
 
 // "Ensucia" el formulario completo (los 4 campos + archivo) - usado por

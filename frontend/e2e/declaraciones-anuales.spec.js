@@ -20,6 +20,10 @@ import {
   alertDialogConfirmacion,
   nombreArchivoE2E,
   bufferPdfSintetico,
+  bufferAcuseSintetico,
+  bufferOpinionCumplimientoSintetica,
+  esperarAnalisisCompleto,
+  RFC_EMISOR_PRUEBA,
 } from "./helpers.js";
 
 test.beforeEach(async ({ page }) => {
@@ -183,6 +187,11 @@ test("Caso 13 - tras subir con éxito, cerrar ya no pide confirmación", async (
   const maximo = await page.locator("#da-ejercicio option").first().textContent();
   await page.locator("#da-ejercicio").selectOption({ label: maximo });
   await page.locator("#da-archivo").setInputFiles({ name: nombreArchivo, mimeType: "application/pdf", buffer: bufferPdfSintetico("13") });
+  // bufferPdfSintetico() no tiene capa de texto real - el backend (189) lo
+  // clasifica NO_RECONOCIDO (puede_guardar=true, formulario manual), pero
+  // Guardar queda deshabilitado mientras la ronda POST .../analizar esta en
+  // vuelo (puedeGuardar = !analizando && ...) - hay que esperarla.
+  await esperarAnalisisCompleto(page);
 
   await dialogPrincipal(page).getByRole("button", { name: "Guardar" }).click();
   await expect(dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" })).toBeVisible({ timeout: 15000 });
@@ -214,6 +223,7 @@ test("Caso 14 - durante la subida ninguna de las 4 vías cierra el modal", async
   });
 
   await page.locator("#da-archivo").setInputFiles({ name: nombreArchivo, mimeType: "application/pdf", buffer: bufferPdfSintetico("14") });
+  await esperarAnalisisCompleto(page); // ver comentario equivalente en el Caso 13
   await dialogPrincipal(page).getByRole("button", { name: "Guardar" }).click();
   await expect(dialogPrincipal(page).getByRole("button", { name: "Subiendo…" })).toBeVisible();
 
@@ -308,6 +318,169 @@ test("Caso 16 - escaneo de accesibilidad (axe) de la confirmación", async ({ pa
   for (const v of resultados.violations) {
     console.log(`  - [${v.impact}] ${v.id}: ${v.description} (${v.nodes.length} nodo(s))`);
   }
+});
+
+// ─── Casos nuevos del reporte 189: validación por CONTENIDO del PDF ───
+//
+// A diferencia de los casos 1-16 (que usan bufferPdfSintetico(), sin capa
+// de texto real, y por lo tanto siempre caen en NO_RECONOCIDO bajo el
+// nuevo backend), estos 3 casos usan PDFs con texto real
+// (bufferAcuseSintetico/bufferOpinionCumplimientoSintetica, ver
+// helpers.js) para ejercitar la clasificación de verdad.
+
+test("Caso 189-1 - acuse sintético: tarjeta de confirmación con ejercicio correcto, guardar, aparece en la lista por ejercicio", async ({ page }) => {
+  const nombreArchivo = nombreArchivoE2E("189-1");
+  const ejercicio = 2019; // fijo y distinto de "hoy" para no depender de la fecha de la corrida
+  const numeroOperacion = `OP189A${Date.now()}`;
+
+  await page.locator("#da-archivo").setInputFiles({
+    name: nombreArchivo,
+    mimeType: "application/pdf",
+    buffer: bufferAcuseSintetico({ ejercicio, numeroOperacion }),
+  });
+  await esperarAnalisisCompleto(page);
+
+  // Tarjeta de confirmación: tipo detectado, ejercicio, RFC con indicador
+  // de coincidencia, fecha de presentación y número de operación.
+  await expect(page.getByText("Acuse de declaración anual detectado")).toBeVisible();
+  // MISMO patron ya establecido (y ya documentado como necesario) en
+  // tarjetaEmisorPrueba/borrarDocumentoPorNombre (helpers.js): un
+  // `.filter({hasText}).last()` sin mas criterio se queda con el div MAS
+  // INTERNO que contiene el texto (aqui, el <div> del título "Acuse de
+  // declaración anual detectado" en solitario, sin el grid de campos) -
+  // exigir un segundo texto que solo vive en el contenedor real ("RFC:",
+  // parte del grid) selecciona la tarjeta completa.
+  const tarjeta = dialogPrincipal(page)
+    .locator("div")
+    .filter({ hasText: "Acuse de declaración anual detectado" })
+    .filter({ hasText: "RFC:" })
+    .last();
+  await expect(tarjeta.getByText(String(ejercicio))).toBeVisible();
+  await expect(tarjeta.getByText("✓ coincide")).toBeVisible();
+  await expect(tarjeta.getByText(RFC_EMISOR_PRUEBA)).toBeVisible();
+
+  // Ejercicio y tipo NO editables cuando vienen extraídos del documento
+  // (camposExtraidos=true) - D4, pedido explícito.
+  await expect(page.locator("#da-ejercicio")).toBeDisabled();
+  await expect(page.locator("#da-tipo-decl")).toBeDisabled();
+
+  await dialogPrincipal(page).getByRole("button", { name: "Guardar" }).click();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" })).toBeVisible({ timeout: 15000 });
+
+  // La lista agrupa por declaración (ejercicio/tipo/fecha/saldo), no por
+  // archivo - D3/D4: "Ejercicio {n}" debe aparecer, y el archivo subido
+  // debe estar anidado dentro de esa tarjeta.
+  //
+  // HALLAZGO REAL (no es un bug de la app, es una limitación conocida a
+  // documentar en Pendientes): el modal solo permite borrar DOCUMENTOS,
+  // no la declaración completa - por eso cada corrida de este caso deja
+  // una fila `declaraciones_anuales` huérfana con ejercicio=2019 (nunca
+  // colisiona por numero_operacion, que sí es único por corrida). En
+  // corridas repetidas puede haber MÁS DE UNA tarjeta "Ejercicio 2019" -
+  // se exige que el mismo contenedor tenga AMBOS textos (el ejercicio Y
+  // el nombre de archivo de ESTA corrida) para desambiguar cuál es la
+  // tarjeta nueva, en vez de asumir que es la única.
+  const tarjetaEnLista = dialogPrincipal(page)
+    .locator("div")
+    .filter({ hasText: `Ejercicio ${ejercicio}` })
+    .filter({ hasText: nombreArchivo })
+    .last();
+  await expect(tarjetaEnLista).toBeVisible();
+
+  // Limpieza.
+  await borrarDocumentoPorNombre(page, nombreArchivo);
+  await expect(page.getByText(nombreArchivo)).not.toBeVisible();
+});
+
+test("Caso 189-2 - opinión de cumplimiento sintética: se rechaza, sin botón de guardar habilitado", async ({ page }) => {
+  const nombreArchivo = nombreArchivoE2E("189-2");
+  await page.locator("#da-archivo").setInputFiles({
+    name: nombreArchivo,
+    mimeType: "application/pdf",
+    buffer: bufferOpinionCumplimientoSintetica(),
+  });
+  await esperarAnalisisCompleto(page);
+
+  await expect(
+    dialogPrincipal(page).getByText("Esto es una opinión de cumplimiento. Se guardará en Cumplimiento SAT"),
+  ).toBeVisible();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Guardar" })).toBeDisabled();
+
+  // No debe haber tarjeta de confirmación ni aviso de "no reconocido".
+  await expect(page.getByText("Acuse de declaración anual detectado")).not.toBeVisible();
+});
+
+test("Caso 189-3 - acuse sintético con RFC ajeno: se rechaza, sin botón de guardar habilitado", async ({ page }) => {
+  const nombreArchivo = nombreArchivoE2E("189-3");
+  const rfcAjeno = "XAXX010101000"; // RFC genérico, distinto de RFC_EMISOR_PRUEBA a propósito
+  await page.locator("#da-archivo").setInputFiles({
+    name: nombreArchivo,
+    mimeType: "application/pdf",
+    buffer: bufferAcuseSintetico({ rfc: rfcAjeno, ejercicio: 2020, numeroOperacion: `OP189C${Date.now()}` }),
+  });
+  await esperarAnalisisCompleto(page);
+
+  await expect(dialogPrincipal(page).getByText("Este documento pertenece a otro RFC")).toBeVisible();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Guardar" })).toBeDisabled();
+  await expect(page.getByText("Acuse de declaración anual detectado")).not.toBeVisible();
+});
+
+test("Caso 189-4 - Borrar declaración completa (F3): confirmación dentro del modal, cancelar conserva, confirmar borra declaración y documento", async ({ page }) => {
+  const nombreArchivo = nombreArchivoE2E("189-4");
+  const ejercicio = 2018; // fijo, distinto de los otros casos de este archivo
+  const numeroOperacion = `OP189D${Date.now()}`;
+
+  await page.locator("#da-archivo").setInputFiles({
+    name: nombreArchivo,
+    mimeType: "application/pdf",
+    buffer: bufferAcuseSintetico({ ejercicio, numeroOperacion }),
+  });
+  await esperarAnalisisCompleto(page);
+  await dialogPrincipal(page).getByRole("button", { name: "Guardar" }).click();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" })).toBeVisible({ timeout: 15000 });
+
+  // Mismo patrón de desambiguación que el Caso 189-1 (helpers.js): exigir
+  // el nombre de archivo de ESTA corrida como descendiente de la tarjeta.
+  const tarjeta = dialogPrincipal(page)
+    .locator("div")
+    .filter({ hasText: `Ejercicio ${ejercicio}` })
+    .filter({ hasText: nombreArchivo })
+    .last();
+  const botonBorrarDecl = tarjeta.getByRole("button", { name: "Borrar declaración" });
+  await expect(botonBorrarDecl).toBeVisible();
+
+  // Confirmación DENTRO del modal (nunca window.confirm), foco por
+  // defecto en la opción SEGURA (Cancelar) - mismo patrón que la guardia
+  // de cambios sin guardar.
+  await botonBorrarDecl.click();
+  const confirmacion = page.getByRole("alertdialog", { name: "Borrar declaración" });
+  await expect(confirmacion).toBeVisible();
+  await expect(confirmacion.getByText(`Se borrarán la declaración de ejercicio ${ejercicio} y sus 1 documento`)).toBeVisible();
+  await expect(page.locator("#da-confirmar-borrar-decl-cancelar")).toBeFocused();
+
+  // Cancelar: la tarjeta sigue ahí, el foco vuelve al botón que abrió esto.
+  await confirmacion.getByRole("button", { name: "Cancelar" }).click();
+  await expect(confirmacion).not.toBeVisible();
+  await expect(botonBorrarDecl).toBeFocused();
+  await expect(page.getByText(nombreArchivo)).toBeVisible();
+
+  // Esc dentro de la confirmación equivale a Cancelar (mismo criterio que
+  // la guardia de cambios sin guardar - Esc nunca ejecuta lo destructivo).
+  await botonBorrarDecl.click();
+  await expect(confirmacion).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirmacion).not.toBeVisible();
+  await expect(page.getByText(nombreArchivo)).toBeVisible();
+
+  // Confirmar de verdad: borra la declaración Y su documento en un solo
+  // paso (antes de F3/reporte 189b, borrar solo el documento dejaba la
+  // declaración huérfana en la BD - ver reporte 189, Pendientes). No hace
+  // falta borrar el documento por separado para dejar la BD limpia.
+  await botonBorrarDecl.click();
+  await expect(confirmacion).toBeVisible();
+  await confirmacion.getByRole("button", { name: "Borrar declaración" }).click();
+  await expect(confirmacion).not.toBeVisible({ timeout: 15000 });
+  await expect(page.getByText(nombreArchivo)).not.toBeVisible();
 });
 
 // ─── Solo en el proyecto "movil": sin scroll horizontal ───────────────

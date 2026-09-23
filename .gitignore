@@ -25,9 +25,17 @@ htmlcov/
 *.db
 test_output.txt
  
-# Build frontend 
-frontend/dist/ 
-frontend/build/ 
+# Build frontend
+frontend/dist/
+frontend/build/
+
+# Playwright E2E (reporte 190) - resultados/reportes/trazas locales,
+# nunca versionados (las trazas pueden contener capturas de pantalla de
+# datos reales de la corrida).
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/playwright/.cache/
  
 # Docker
 *.log

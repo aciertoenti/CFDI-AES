@@ -3,7 +3,7 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -91,6 +91,15 @@ SERVICES = {
     "bot": "http://whatsapp_bot:8006",   # WhatsApp bot (webhook público + API interna)
     "ia": "http://ia:8007",  # agregado (#48) - faltaba por completo; rewiring del frontend queda en tarjeta aparte
 }
+
+# Content-Types binarios que el proxy generico reenvia tal cual (reporte
+# 185/C4) - lista CERRADA a proposito, no "cualquier cosa que no sea
+# JSON". Hoy solo el PDF de declaraciones-anuales/documentos/{id}/descarga
+# la necesita. Agregar aqui explicitamente antes de que un endpoint nuevo
+# dependa de devolver otro tipo binario a traves de este proxy - un
+# Content-Type fuera de esta lista (y distinto de application/json) sigue
+# cayendo en el 502 generico, nunca se pasa "por si acaso".
+CONTENT_TYPES_BINARIOS_PERMITIDOS = {"application/pdf"}
 
 
 # ─── Revocacion de JWT por "revocado desde" (zg3ehbA) ───────────────────────
@@ -465,7 +474,55 @@ async def proxy(service: str, request: Request, path: str = "", token=Depends(ve
     # siempre serializa con 200 - un 401/404/500 real del downstream le
     # llegaba al frontend disfrazado de 200. JSONResponse preserva el status
     # code real.
-    try:
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
-    except ValueError:
-        raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
+    #
+    # Reescrito 22 sep 2026 (reporte 185/C4): la version anterior decidia
+    # JSON-vs-binario por EXCEPCION (intentar resp.json(), y si fallaba
+    # asumir binario) - eso significaba que CUALQUIER respuesta no-JSON,
+    # incluido un error real del downstream (ej. un 500 con cuerpo
+    # text/html/plano de otra causa) se devolvia como si fuera un archivo
+    # binario legitimo, sin verificar que realmente lo fuera. Ahora la
+    # decision es EXPLICITA por Content-Type real del downstream, en 3
+    # ramas: JSON (sin cambios), binario de la lista blanca (passthrough
+    # con headers acotados), o cualquier otro Content-Type -> 502 sin
+    # exponer el cuerpo (mismo resultado que antes para el caso de error
+    # real, pero ahora por decision explicita, no por"si fallo el parseo
+    # JSON, sera binario").
+    # 204 No Content (DELETE .../documentos/{id}) - CORREGIDO 22 sep 2026,
+    # encontrado en la verificacion E2E real de este mismo cambio (reporte
+    # 185/C6): un 204 real NUNCA trae header Content-Type (confirmado
+    # llamando administracion directo, sin el proxy: solo "date"/"server",
+    # ninguno de los dos JSON ni en la lista blanca de binarios) - sin este
+    # caso aparte, caia en la rama final y devolvia 502 para un borrado que
+    # SI habia tenido exito en el downstream. No es un "Content-Type
+    # ausente = sospechoso" generico: 204 es semanticamente "exitoso, sin
+    # cuerpo" por definicion HTTP, se verifica el status code exacto, no
+    # la ausencia de header por si sola.
+    if resp.status_code == 204:
+        return Response(status_code=204)
+
+    content_type_completo = resp.headers.get("content-type", "")
+    content_type = content_type_completo.split(";")[0].strip().lower()
+
+    if content_type == "application/json":
+        try:
+            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        except ValueError:
+            raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")
+
+    if content_type in CONTENT_TYPES_BINARIOS_PERMITIDOS:
+        # Passthrough binario real (declaraciones-anuales/documentos/{id}/
+        # descarga) - preserva el status code del downstream (incluido un
+        # error real, ej. 404 de "documento no encontrado" con cuerpo
+        # vacio) y SOLO los 4 headers pedidos explicitamente, nunca todos
+        # los headers crudos del downstream sin filtrar.
+        headers_passthrough = {
+            k: v for k, v in resp.headers.items()
+            if k.lower() in ("content-type", "content-disposition", "x-content-type-options", "content-length")
+        }
+        return Response(content=resp.content, status_code=resp.status_code, headers=headers_passthrough)
+
+    # Cualquier otro Content-Type (ej. text/html de un error no manejado,
+    # o un downstream caido devolviendo la pagina de error de otro
+    # servicio intermedio) - 502 sin exponer el cuerpo, mismo criterio que
+    # ya existia antes de este cambio para el caso de JSON invalido.
+    raise HTTPException(status_code=502, detail="Respuesta inválida del servicio downstream")

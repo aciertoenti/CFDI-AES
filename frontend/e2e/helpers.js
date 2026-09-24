@@ -257,65 +257,97 @@ export function alertDialogConfirmacion(page) {
 }
 
 export async function abrirFormulario(page) {
-  await dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" }).click();
-  await expect(page.locator("#da-ejercicio")).toBeVisible();
+  await dialogPrincipal(page).getByRole("button", { name: "Subir acuses" }).click();
+  await expect(page.locator("#da-archivos")).toBeAttached();
 }
 
-// Tras elegir un archivo (reporte 189), el modal dispara automaticamente
-// POST .../analizar y muestra "Analizando documento…" (aria-live="polite")
-// mientras espera la respuesta - Guardar queda deshabilitado durante ese
-// instante (puedeGuardar = !analizando && ...). Los casos que suben un
-// archivo y luego hacen clic en Guardar deben esperar a que esa ronda
-// async termine antes de intentar el clic (Playwright no lo espera solo
-// porque el input ya tiene el archivo).
-export async function esperarAnalisisCompleto(page) {
-  await expect(dialogPrincipal(page).getByText("Analizando documento…")).not.toBeVisible({ timeout: 15000 });
+// BUG REAL encontrado en la corrida E2E del usuario (reporte 189d3, ver
+// entregable): esta funcion esperaba la AUSENCIA de "Analizando…"
+// (`toHaveCount(0)`) - una carrera clasica de "espera hasta que termine"
+// cuando lo que se espera podria no haber EMPEZADO todavia. Justo
+// despues de `setInputFiles`, React necesita un tick para pintar el
+// texto "Analizando…" del archivo recien agregado; si esta funcion
+// evaluaba el conteo ANTES de ese tick, `toHaveCount(0)` pasaba de
+// inmediato (0 coincidencias, porque el texto simplemente no habia
+// aparecido aun) - el test seguia adelante creyendo que el analisis ya
+// habia terminado, cuando en realidad la peticion real a /analizar
+// (con el proceso aparte del backend, hasta 5s) seguia en vuelo. Eso
+// dejaba una ventana real donde un clic en el fondo (Caso 5) ocurria
+// con el archivo todavia en estado 'analizando' - antes de 189d3 eso
+// cerraba el modal sin avisar (el bug de producto que corrigio B2);
+// ahora que 'analizando' SI ensucia, ya no se pierde nada, pero la
+// prueba seguia siendo fragil (dependia de que timing real).
+//
+// Corregido esperando una señal POSITIVA por archivo (que aparezca
+// "Ejercicio"/"Válido" o "⚠", los 3 marcadores de estado FINAL en la
+// fila de resultados - ver DeclaracionesAnualesModal.jsx) en vez de la
+// ausencia de "Analizando…" - una espera positiva de Playwright reintenta
+// hasta que el texto REALMENTE aparece, sin importar cuanto tarde el
+// round-trip real al servidor, y no puede "pasar de pura suerte" antes
+// de que el analisis siquiera arranque.
+export async function esperarEstadoFinal(page, nombreArchivo) {
+  const fila = dialogPrincipal(page).locator("li").filter({ hasText: nombreArchivo });
+  await expect(fila.getByText(/Ejercicio|Válido|⚠/)).toBeVisible({ timeout: 20000 });
 }
 
-// "Ensucia" el formulario completo (los 4 campos + archivo) - usado por
-// los casos que necesitan confirmar que TODOS los campos se conservan
-// (caso 9), y por los casos 5-8/10-12/14 que solo necesitan CUALQUIER
-// campo distinto del inicial para activar la guardia.
-export async function llenarFormularioCompleto(page, { caso = "sucio" } = {}) {
-  const ejercicioSelect = page.locator("#da-ejercicio");
-  const opciones = await ejercicioSelect.locator("option").allTextContents();
-  // El default ya es el ejercicio MAS RECIENTE (primera opcion) - se
-  // elige la ULTIMA opcion (la mas vieja) para garantizar un valor
-  // distinto del inicial sin asumir cuantos años hay en la lista.
-  await ejercicioSelect.selectOption({ label: opciones[opciones.length - 1] });
-  await page.locator("#da-tipo-decl").selectOption("complementaria");
-  await page.locator("#da-numero-comp").fill("2");
-  await page.locator("#da-tipo-doc").selectOption("acuse");
-  await page.locator("#da-archivo").setInputFiles({
-    name: nombreArchivoE2E(caso),
+// Agrega uno o varios archivos al input multi-archivo y espera el estado
+// FINAL de cada uno (nunca solo "ya no dice Analizando", ver
+// esperarEstadoFinal arriba). `archivos` es un array de {name, mimeType,
+// buffer} (mismo shape que espera Playwright's setInputFiles) - permite
+// probar subida MULTIPLE de verdad (pedido explicito R3: "2 acuses
+// validos + 1 opinion + 1 PDF no reconocido" en una sola seleccion).
+export async function agregarArchivos(page, archivos) {
+  await page.locator("#da-archivos").setInputFiles(archivos);
+  for (const a of archivos) {
+    await esperarEstadoFinal(page, a.name);
+  }
+}
+
+// Contador para que numeroOperacion sea SIEMPRE distinto entre llamadas
+// seguidas dentro del mismo milisegundo (Date.now() solo no basta si el
+// test agrega varios acuses muy rapido) - evita colisiones falsas con
+// la deteccion real de duplicados del backend.
+let _contadorNumOperacion = 0;
+
+// "Ensucia" el formulario con UN acuse VÁLIDO (reporte 189d: desde este
+// reporte, sucio = "al menos un acuse válido sin guardar" - un archivo
+// rechazado o duplicado YA NO cuenta, a diferencia del comportamiento
+// anterior a 189d donde CUALQUIER archivo elegido ensuciaba el
+// formulario, aunque fuera rechazado - bug real encontrado en la prueba
+// de usuario, corregido). numeroOperacion siempre generado aqui (nunca
+// derivado de `caso`, que puede traer guiones u otros caracteres fuera
+// del charset que el backend acepta para ese campo).
+export async function agregarAcuseValido(page, { caso = "sucio", ejercicio } = {}) {
+  const nombreArchivo = nombreArchivoE2E(caso);
+  _contadorNumOperacion += 1;
+  const numeroOperacion = `OP${Date.now()}${_contadorNumOperacion}`;
+  await agregarArchivos(page, [{
+    name: nombreArchivo,
     mimeType: "application/pdf",
-    buffer: bufferPdfSintetico(caso),
-  });
+    buffer: bufferAcuseSintetico({ ejercicio, numeroOperacion }),
+  }]);
+  return nombreArchivo;
 }
 
-// Borra (via UI, con el mismo window.confirm real que usa la app) un
-// documento por nombre visible en la lista - usado por la limpieza de
-// cada prueba que sube algo de verdad. Registra el handler de dialogo
-// ANTES del clic (Playwright autodescarta los dialogos nativos por
-// default si no hay un handler registrado a tiempo).
-export async function borrarDocumentoPorNombre(page, nombreArchivo) {
-  page.once("dialog", (dialog) => dialog.accept());
-  // BUG REAL EN ESTE HELPER (encontrado al re-correr la suite, no es un
-  // bug de la app): `.locator("div", {hasText})` sin mas filtro hace
-  // match de CUALQUIER div ancestro que contenga el texto, incluido el
-  // <div> mas interno que solo envuelve el nombre del archivo (JSX del
-  // modal: el nombre y el boton "Borrar" viven en divs HERMANOS, no uno
-  // dentro del otro) - `.last()` terminaba quedandose con ese div mas
-  // interno, que nunca contiene el boton "Borrar" como descendiente, y
-  // el `getByRole` subsiguiente colgaba hasta el timeout. Mismo patron
-  // de composicion ya usado (y verificado) en tarjetaEmisorPrueba: exigir
-  // AMBOS (el texto Y el boton "Borrar" como descendiente) antes de
-  // tomar `.last()` - asi se selecciona el <div key={doc.id}> real (la
-  // fila completa), no un div interno sin el boton.
-  const fila = dialogPrincipal(page)
+// Borra una declaración COMPLETA localizándola por el nombre de archivo
+// que aparece dentro de su tarjeta - reporte 189d (R2) quitó el botón
+// "Borrar" POR DOCUMENTO del todo (una sola acción de borrado por
+// tarjeta, a nivel declaración); ya no hay window.confirm en este flujo
+// (la confirmación vive DENTRO del modal desde el reporte 189b/F3), así
+// que este helper ya no necesita registrar un handler de diálogo nativo.
+// Mismo patrón de composición ya usado en tarjetaEmisorPrueba: exigir
+// AMBOS (el texto del archivo Y el botón "Borrar" como descendiente)
+// antes de tomar `.last()`, para no quedarse con un <div> interno que no
+// contenga el botón.
+export async function borrarDeclaracionPorArchivo(page, nombreArchivo) {
+  const tarjeta = dialogPrincipal(page)
     .locator("div")
     .filter({ hasText: nombreArchivo })
     .filter({ has: page.getByRole("button", { name: "Borrar" }) })
     .last();
-  await fila.getByRole("button", { name: "Borrar" }).click();
+  await tarjeta.getByRole("button", { name: "Borrar" }).click();
+  const confirmacion = page.getByRole("alertdialog", { name: "Borrar declaración" });
+  await expect(confirmacion).toBeVisible();
+  await confirmacion.getByRole("button", { name: "Borrar declaración" }).click();
+  await expect(confirmacion).not.toBeVisible({ timeout: 15000 });
 }

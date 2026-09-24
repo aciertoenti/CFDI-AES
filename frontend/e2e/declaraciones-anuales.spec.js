@@ -1,9 +1,13 @@
-// Automatización de las pruebas manuales del reporte 188
-// (DeclaracionesAnualesModal.jsx) - reporte 190, 23 sep 2026.
+// Automatización de las pruebas manuales del reporte 188/189 -
+// reporte 190 (automatización), 189/189b (validación de contenido y
+// borrado de declaraciones), 189d (REDISEÑO del flujo de subida:
+// multi-archivo, sin campos editables, solo acuses reconocidos).
 //
-// Los 16 casos usan los MISMOS números que el reporte 188 (comentarios
-// "// Caso N" en cada test) para que el reporte de evidencia (190) se
-// pueda leer lado a lado con 188 sin reinterpretar nada.
+// Los casos 1-16 usan los MISMOS números que el reporte 188 (comentarios
+// "// Caso N" en cada test) para que el reporte de evidencia se pueda
+// leer lado a lado sin reinterpretar nada - la MECÁNICA de cada caso se
+// adaptó al nuevo flujo multi-archivo (189d), pero el ESCENARIO que
+// prueba cada uno es el mismo.
 //
 // Corre contra los CONTENEDORES YA LEVANTADOS (frontend:3000, vía nginx
 // -> gateway:8000) - no se levanta ningún servidor nuevo (ver
@@ -14,17 +18,27 @@ import {
   login,
   abrirModalDeclaraciones,
   abrirFormulario,
-  llenarFormularioCompleto,
-  borrarDocumentoPorNombre,
+  agregarArchivos,
+  agregarAcuseValido,
+  borrarDeclaracionPorArchivo,
   dialogPrincipal,
   alertDialogConfirmacion,
   nombreArchivoE2E,
   bufferPdfSintetico,
   bufferAcuseSintetico,
   bufferOpinionCumplimientoSintetica,
-  esperarAnalisisCompleto,
-  RFC_EMISOR_PRUEBA,
 } from "./helpers.js";
+
+// Reporte 189d2 - los escaneos de axe (Caso 16) antes SOLO reportaban,
+// nunca fallaban - así fue como la violación real "nested-interactive"
+// introducida por 189d pasó desapercibida (la corrida E2E completa
+// pasaba igual, axe solo la imprimía en consola). Ahora la prueba FALLA
+// ante cualquier violación cuyo id no esté en esta lista explícita -
+// "color-contrast" es la ÚNICA conocida hoy (tarjeta J,
+// PVTI_lAHOBYC0Os4BfCxZzg8U3wI, sin corregir - fuera de alcance de este
+// reporte). Vaciar esta lista en cuanto esa tarjeta se resuelva - dejarla
+// con entradas ya corregidas sería tan malo como no tener la lista.
+const VIOLACIONES_CONOCIDAS = ["color-contrast"];
 
 test.beforeEach(async ({ page }) => {
   await login(page);
@@ -52,8 +66,8 @@ test("Caso 3 - cierre sin cambios por el botón X", async ({ page }) => {
 test("Caso 4 - cierre sin cambios por Cancelar (vuelve a la lista, no cierra el modal)", async ({ page }) => {
   await dialogPrincipal(page).getByRole("button", { name: "Cancelar" }).click();
   await expect(dialogPrincipal(page)).toBeVisible();
-  await expect(page.locator("#da-ejercicio")).not.toBeVisible();
-  await expect(dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" })).toBeVisible();
+  await expect(page.locator("#da-archivos")).not.toBeVisible();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Subir acuses" })).toBeVisible();
 });
 
 // ─── Casos 5-8: cierre CON cambios (aparece el alertdialog) ────────────
@@ -64,43 +78,77 @@ async function esperarConfirmacionConFocoEnSeguirEditando(page) {
 }
 
 test("Caso 5 - cierre con cambios por el fondo muestra confirmación", async ({ page }) => {
-  await llenarFormularioCompleto(page, { caso: "05" });
+  await agregarAcuseValido(page, { caso: "05" });
   await page.mouse.click(5, 5);
   await esperarConfirmacionConFocoEnSeguirEditando(page);
 });
 
 test("Caso 6 - cierre con cambios por Esc muestra confirmación", async ({ page }) => {
-  await llenarFormularioCompleto(page, { caso: "06" });
+  await agregarAcuseValido(page, { caso: "06" });
   await page.keyboard.press("Escape");
   await esperarConfirmacionConFocoEnSeguirEditando(page);
 });
 
 test("Caso 7 - cierre con cambios por el botón X muestra confirmación", async ({ page }) => {
-  await llenarFormularioCompleto(page, { caso: "07" });
+  await agregarAcuseValido(page, { caso: "07" });
   await dialogPrincipal(page).getByRole("button", { name: "Cerrar" }).click();
   await esperarConfirmacionConFocoEnSeguirEditando(page);
 });
 
 test("Caso 8 - cierre con cambios por Cancelar muestra confirmación", async ({ page }) => {
-  await llenarFormularioCompleto(page, { caso: "08" });
+  await agregarAcuseValido(page, { caso: "08" });
   await dialogPrincipal(page).getByRole("button", { name: "Cancelar" }).click();
   await esperarConfirmacionConFocoEnSeguirEditando(page);
 });
 
-// ─── Caso 9: "Seguir editando" conserva TODOS los campos + foco previo ─
+// Reporte 189d3 - hallazgo real de la corrida E2E del usuario: el Caso 5
+// falló porque el clic en el fondo ocurrió mientras el PDF SEGUÍA en
+// análisis - "sucio" solo contaba acuses válidos, así que el modal se
+// cerró sin preguntar y perdió el archivo. Corregido: 'analizando'
+// ahora también ensucia (B2). Esta prueba fuerza ese estado de forma
+// DETERMINISTA (retiene /analizar con page.route, nunca depende del
+// tiempo real del servidor) en vez de asumir que el análisis real vaya
+// a seguir en vuelo cuando el test intenta cerrar.
+test("Caso 189d3 - cierre con cambios MIENTRAS el análisis está en curso muestra confirmación", async ({ page }) => {
+  let liberar;
+  const analisisLiberado = new Promise((resolve) => { liberar = resolve; });
+  await page.route("**/declaraciones-anuales/analizar", async (route) => {
+    await analisisLiberado; // retraso DETERMINISTA - el test controla exactamente cuando continua
+    await route.continue();
+  });
 
-test("Caso 9 - Seguir editando conserva los datos y devuelve el foco", async ({ page }) => {
-  const nombreArchivo = nombreArchivoE2E("09");
-  await page.locator("#da-ejercicio").selectOption({ index: 1 }); // distinto del default (index 0)
-  const ejercicioElegido = await page.locator("#da-ejercicio").inputValue();
-  await page.locator("#da-tipo-decl").selectOption("complementaria");
-  await page.locator("#da-numero-comp").fill("3");
-  await page.locator("#da-tipo-doc").selectOption("acuse");
-  await page.locator("#da-archivo").setInputFiles({ name: nombreArchivo, mimeType: "application/pdf", buffer: bufferPdfSintetico("09") });
+  const nombreArchivo = nombreArchivoE2E("189d3");
+  await page.locator("#da-archivos").setInputFiles({
+    name: nombreArchivo,
+    mimeType: "application/pdf",
+    buffer: bufferAcuseSintetico({ numeroOperacion: `OP189D3${Date.now()}` }),
+  });
 
-  // Foco explícito en un campo especifico ANTES de intentar cerrar -
-  // este es el campo que debe recuperar el foco despues de "Seguir editando".
-  await page.locator("#da-numero-comp").focus();
+  // El archivo sigue "Analizando…" a propósito (la ruta está retenida) -
+  // el clic en el fondo debe mostrar la confirmación de todas formas.
+  await expect(dialogPrincipal(page).getByText("Analizando…")).toBeVisible();
+  await page.mouse.click(5, 5);
+  await esperarConfirmacionConFocoEnSeguirEditando(page);
+
+  // Limpieza: liberar la petición retenida (para no dejar el route
+  // handler colgado) y descartar, para no ensuciar la prueba siguiente.
+  liberar();
+  await alertDialogConfirmacion(page).getByRole("button", { name: "Descartar" }).click();
+  await expect(dialogPrincipal(page)).not.toBeVisible();
+});
+
+// ─── Caso 9: "Seguir editando" conserva la cola de archivos + foco previo ─
+
+test("Caso 9 - Seguir editando conserva la cola de archivos y devuelve el foco", async ({ page }) => {
+  // Un archivo VÁLIDO (ensucia) + uno RECHAZADO (opinión) - confirma que
+  // AMBOS sobreviven el viaje de ida y vuelta por la confirmación, no
+  // solo el que activó la guardia.
+  const nombreValido = await agregarAcuseValido(page, { caso: "09" });
+  const nombreOpinion = nombreArchivoE2E("09-opinion");
+  await agregarArchivos(page, [{ name: nombreOpinion, mimeType: "application/pdf", buffer: bufferOpinionCumplimientoSintetica() }]);
+
+  const botonQuitar = dialogPrincipal(page).locator("li").filter({ hasText: nombreValido }).getByRole("button", { name: /Quitar/ });
+  await botonQuitar.focus();
   await page.keyboard.press("Escape");
   await esperarConfirmacionConFocoEnSeguirEditando(page);
 
@@ -108,32 +156,29 @@ test("Caso 9 - Seguir editando conserva los datos y devuelve el foco", async ({ 
 
   await expect(dialogPrincipal(page)).toBeVisible();
   await expect(alertDialogConfirmacion(page)).not.toBeVisible();
-  await expect(page.locator("#da-ejercicio")).toHaveValue(ejercicioElegido);
-  await expect(page.locator("#da-tipo-decl")).toHaveValue("complementaria");
-  await expect(page.locator("#da-numero-comp")).toHaveValue("3");
-  await expect(page.locator("#da-tipo-doc")).toHaveValue("acuse");
-  await expect(page.locator("text=" + nombreArchivo)).toBeVisible();
-  await expect(page.locator("#da-numero-comp")).toBeFocused();
+  await expect(page.getByText(nombreValido)).toBeVisible();
+  await expect(page.getByText(nombreOpinion)).toBeVisible();
+  await expect(botonQuitar).toBeFocused();
 });
 
 // ─── Caso 10: Esc dentro de la confirmación = Seguir editando ─────────
 
 test("Caso 10 - Esc dentro de la confirmación equivale a Seguir editando", async ({ page }) => {
-  await llenarFormularioCompleto(page, { caso: "10" });
+  await agregarAcuseValido(page, { caso: "10" });
   await page.keyboard.press("Escape"); // dispara la confirmacion
   await esperarConfirmacionConFocoEnSeguirEditando(page);
 
   await page.keyboard.press("Escape"); // Esc DENTRO de la confirmacion
   await expect(alertDialogConfirmacion(page)).not.toBeVisible();
   await expect(dialogPrincipal(page)).toBeVisible();
-  await expect(page.locator("#da-ejercicio")).toBeVisible(); // sigue en el formulario, no cerro nada
+  await expect(page.locator("#da-archivos")).toBeAttached(); // sigue en la vista de subida, no cerro nada
 });
 
 // ─── Caso 11: Descartar desde fondo/Esc/X cierra el modal completo ────
 
 test("Caso 11 - Descartar desde fondo, Esc y X cierra el modal completo", async ({ page }) => {
   await test.step("via el fondo", async () => {
-    await llenarFormularioCompleto(page, { caso: "11a" });
+    await agregarAcuseValido(page, { caso: "11a" });
     await page.mouse.click(5, 5);
     await expect(alertDialogConfirmacion(page)).toBeVisible();
     await alertDialogConfirmacion(page).getByRole("button", { name: "Descartar" }).click();
@@ -143,7 +188,7 @@ test("Caso 11 - Descartar desde fondo, Esc y X cierra el modal completo", async 
   await test.step("via Esc", async () => {
     await abrirModalDeclaraciones(page);
     await abrirFormulario(page);
-    await llenarFormularioCompleto(page, { caso: "11b" });
+    await agregarAcuseValido(page, { caso: "11b" });
     await page.keyboard.press("Escape");
     await expect(alertDialogConfirmacion(page)).toBeVisible();
     await alertDialogConfirmacion(page).getByRole("button", { name: "Descartar" }).click();
@@ -153,7 +198,7 @@ test("Caso 11 - Descartar desde fondo, Esc y X cierra el modal completo", async 
   await test.step("via el botón X", async () => {
     await abrirModalDeclaraciones(page);
     await abrirFormulario(page);
-    await llenarFormularioCompleto(page, { caso: "11c" });
+    await agregarAcuseValido(page, { caso: "11c" });
     await dialogPrincipal(page).getByRole("button", { name: "Cerrar" }).click();
     await expect(alertDialogConfirmacion(page)).toBeVisible();
     await alertDialogConfirmacion(page).getByRole("button", { name: "Descartar" }).click();
@@ -161,57 +206,48 @@ test("Caso 11 - Descartar desde fondo, Esc y X cierra el modal completo", async 
   });
 });
 
-// ─── Caso 12: Descartar desde Cancelar vuelve a la lista, form limpio ──
+// ─── Caso 12: Descartar desde Cancelar vuelve a la lista, cola vacía ──
 
-test("Caso 12 - Descartar desde Cancelar vuelve a la lista y el formulario queda limpio al reabrir", async ({ page }) => {
-  await llenarFormularioCompleto(page, { caso: "12" });
+test("Caso 12 - Descartar desde Cancelar vuelve a la lista y la cola queda vacía al reabrir", async ({ page }) => {
+  await agregarAcuseValido(page, { caso: "12" });
   await dialogPrincipal(page).getByRole("button", { name: "Cancelar" }).click();
   await expect(alertDialogConfirmacion(page)).toBeVisible();
   await alertDialogConfirmacion(page).getByRole("button", { name: "Descartar" }).click();
 
   await expect(dialogPrincipal(page)).toBeVisible();
-  await expect(dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" })).toBeVisible();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Subir acuses" })).toBeVisible();
 
   await abrirFormulario(page);
-  const ejercicioLimpio = await page.locator("#da-ejercicio").inputValue();
-  const primeraOpcion = await page.locator("#da-ejercicio option").first().getAttribute("value");
-  expect(ejercicioLimpio).toBe(primeraOpcion); // vuelve al default (el mas reciente), no lo que se habia descartado
-  await expect(page.locator("#da-tipo-decl")).toHaveValue("normal");
-  await expect(page.getByText("Ningún archivo seleccionado")).toBeVisible();
+  // Cola vacia al reabrir - sin resultados de la corrida anterior, y el
+  // boton de guardar en su estado inicial (0 acuses).
+  await expect(dialogPrincipal(page).locator("li")).toHaveCount(0);
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Guardar 0 acuses" })).toBeVisible();
 });
 
 // ─── Caso 13: tras guardar con éxito, cerrar ya no pide confirmación ───
 
 test("Caso 13 - tras subir con éxito, cerrar ya no pide confirmación", async ({ page }) => {
-  const nombreArchivo = nombreArchivoE2E("13");
-  const maximo = await page.locator("#da-ejercicio option").first().textContent();
-  await page.locator("#da-ejercicio").selectOption({ label: maximo });
-  await page.locator("#da-archivo").setInputFiles({ name: nombreArchivo, mimeType: "application/pdf", buffer: bufferPdfSintetico("13") });
-  // bufferPdfSintetico() no tiene capa de texto real - el backend (189) lo
-  // clasifica NO_RECONOCIDO (puede_guardar=true, formulario manual), pero
-  // Guardar queda deshabilitado mientras la ronda POST .../analizar esta en
-  // vuelo (puedeGuardar = !analizando && ...) - hay que esperarla.
-  await esperarAnalisisCompleto(page);
+  const nombreArchivo = await agregarAcuseValido(page, { caso: "13" });
 
-  await dialogPrincipal(page).getByRole("button", { name: "Guardar" }).click();
-  await expect(dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" })).toBeVisible({ timeout: 15000 });
+  await dialogPrincipal(page).getByRole("button", { name: "Guardar 1 acuse" }).click();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Subir acuses" })).toBeVisible({ timeout: 15000 });
   await expect(page.getByText(nombreArchivo)).toBeVisible();
 
-  // Ahora cerrar (fondo) - ya NO debe pedir confirmacion, el formulario
-  // volvio a FORM_INICIAL tras el 201.
+  // Ahora cerrar (fondo) - ya NO debe pedir confirmacion, la cola volvio
+  // a estar vacia tras el 201.
   await page.mouse.click(5, 5);
   await expect(dialogPrincipal(page)).not.toBeVisible();
 
   // Limpieza: reabrir, borrar lo subido.
   await abrirModalDeclaraciones(page);
-  await borrarDocumentoPorNombre(page, nombreArchivo);
+  await borrarDeclaracionPorArchivo(page, nombreArchivo);
   await expect(page.getByText(nombreArchivo)).not.toBeVisible();
 });
 
 // ─── Caso 14: durante la subida, ninguna de las 4 vías cierra ─────────
 
 test("Caso 14 - durante la subida ninguna de las 4 vías cierra el modal", async ({ page }) => {
-  const nombreArchivo = nombreArchivoE2E("14");
+  const nombreArchivo = await agregarAcuseValido(page, { caso: "14" });
   let liberar;
   const peticionLiberada = new Promise((resolve) => { liberar = resolve; });
 
@@ -222,12 +258,10 @@ test("Caso 14 - durante la subida ninguna de las 4 vías cierra el modal", async
     await route.continue();
   });
 
-  await page.locator("#da-archivo").setInputFiles({ name: nombreArchivo, mimeType: "application/pdf", buffer: bufferPdfSintetico("14") });
-  await esperarAnalisisCompleto(page); // ver comentario equivalente en el Caso 13
-  await dialogPrincipal(page).getByRole("button", { name: "Guardar" }).click();
-  await expect(dialogPrincipal(page).getByRole("button", { name: "Subiendo…" })).toBeVisible();
+  await dialogPrincipal(page).getByRole("button", { name: "Guardar 1 acuse" }).click();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Guardando…" })).toBeVisible();
 
-  // Las 4 vias, todas deben ser no-op mientras subiendo=true.
+  // Las 4 vias, todas deben ser no-op mientras guardando=true.
   await page.mouse.click(5, 5);
   await expect(dialogPrincipal(page)).toBeVisible();
 
@@ -242,35 +276,44 @@ test("Caso 14 - durante la subida ninguna de las 4 vías cierra el modal", async
   await expect(dialogPrincipal(page).getByRole("button", { name: "Cancelar" })).toBeDisabled();
 
   liberar();
-  await expect(dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" })).toBeVisible({ timeout: 15000 });
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Subir acuses" })).toBeVisible({ timeout: 15000 });
 
   // Limpieza.
   await expect(page.getByText(nombreArchivo)).toBeVisible();
-  await borrarDocumentoPorNombre(page, nombreArchivo);
+  await borrarDeclaracionPorArchivo(page, nombreArchivo);
   await expect(page.getByText(nombreArchivo)).not.toBeVisible();
 });
 
-// ─── Caso 15: "Seleccionar PDF" con teclado (Tab/Enter/Espacio) ───────
+// ─── Caso 15: "Seleccionar PDF" alcanzable con Tab y operable con Enter/Espacio ─
+// Actualizado en 189d2: el control ya no es el DIV dropzone (role="button",
+// manejo manual de teclado) - ver A1 del reporte 189d2, corrigió una
+// violación real de axe (nested-interactive: un <input> anidado dentro
+// de un control con role="button"). Ahora es un <button> NATIVO
+// "Seleccionar PDF" - Enter/Espacio los maneja el navegador solo, sin
+// código propio que probar aquí (si el <button> real los activa, ya se
+// sabe que funcionan; lo que sí hay que confirmar es que dispara el
+// selector de archivos correcto).
 
-test("Caso 15 - Seleccionar PDF alcanzable con Tab y operable con Enter y Espacio", async ({ page }) => {
-  const boton = page.getByRole("button", { name: "Seleccionar PDF" });
+test('Caso 15 - "Seleccionar PDF" alcanzable con Tab y operable con Enter y Espacio', async ({ page }) => {
+  const boton = dialogPrincipal(page).getByRole("button", { name: "Seleccionar PDF" });
   await expect(boton).toBeVisible();
 
-  // Alcanzable con Tab desde un punto conocido del formulario (no se
-  // asume la posicion exacta - se tabula desde ejercicio hasta llegar).
-  await page.locator("#da-ejercicio").focus();
+  // Alcanzable con Tab desde un punto conocido (el boton Cerrar, siempre
+  // presente) - no se asume la posicion exacta.
+  await dialogPrincipal(page).getByRole("button", { name: "Cerrar" }).focus();
   let alcanzado = false;
-  for (let i = 0; i < 6 && !alcanzado; i++) {
+  for (let i = 0; i < 4 && !alcanzado; i++) {
     await page.keyboard.press("Tab");
     alcanzado = await boton.evaluate((el) => el === document.activeElement);
   }
   expect(alcanzado).toBe(true);
 
-  // Enter abre el selector nativo.
+  // Enter abre el selector nativo (comportamiento nativo del <button>,
+  // sin manejo manual de teclas).
   const chooserEnter = page.waitForEvent("filechooser");
   await page.keyboard.press("Enter");
   const fc1 = await chooserEnter;
-  expect(fc1.isMultiple()).toBe(false);
+  expect(fc1.isMultiple()).toBe(true); // el input acepta varios (189d)
   await fc1.setFiles({ name: nombreArchivoE2E("15-enter"), mimeType: "application/pdf", buffer: bufferPdfSintetico("15-enter") });
   await expect(page.getByText(/e2e-declaraciones-15-enter/)).toBeVisible();
 
@@ -282,11 +325,12 @@ test("Caso 15 - Seleccionar PDF alcanzable con Tab y operable con Enter y Espaci
   await fc2.setFiles({ name: nombreArchivoE2E("15-espacio"), mimeType: "application/pdf", buffer: bufferPdfSintetico("15-espacio") });
   await expect(page.getByText(/e2e-declaraciones-15-espacio/)).toBeVisible();
 
-  // Nombre accesible correcto - la etiqueta real del campo, no un texto generico.
-  await expect(page.locator("#da-archivo")).toHaveAccessibleName("Archivo PDF (máx. 5MB)");
+  // Nombre accesible correcto - la etiqueta real del boton (el <input>
+  // nativo queda aria-hidden a propósito, ver el componente).
+  await expect(boton).toHaveAccessibleName("Seleccionar PDF");
 });
 
-// ─── Caso 16: escaneo axe (formulario y confirmación) ─────────────────
+// ─── Caso 16: escaneo IA de accesibilidad (axe) ────────────────────────
 
 test("Caso 16 - escaneo de accesibilidad (axe) del formulario", async ({ page }, testInfo) => {
   const resultados = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
@@ -294,18 +338,19 @@ test("Caso 16 - escaneo de accesibilidad (axe) del formulario", async ({ page },
     body: JSON.stringify(resultados.violations, null, 2),
     contentType: "application/json",
   });
-  // Reporta TODAS las violaciones encontradas (pedido explicito) - el
-  // test en si NO falla por violaciones (eso las ocultaria del reporte
-  // si alguien luego decide ajustar el umbral); se adjuntan como
-  // evidencia y se listan en el reporte 190 sin excepcion.
+  // Reporta TODAS las violaciones encontradas, conocidas o no (pedido
+  // explicito) - la lista de abajo decide si la prueba FALLA, nunca si
+  // se imprime.
   console.log(`[axe-formulario] violaciones encontradas: ${resultados.violations.length}`);
   for (const v of resultados.violations) {
     console.log(`  - [${v.impact}] ${v.id}: ${v.description} (${v.nodes.length} nodo(s))`);
   }
+  const inesperadas = resultados.violations.filter(v => !VIOLACIONES_CONOCIDAS.includes(v.id));
+  expect(inesperadas.map(v => v.id), `Violaciones de axe NO listadas en VIOLACIONES_CONOCIDAS: ${inesperadas.map(v => v.id).join(", ")}`).toEqual([]);
 });
 
 test("Caso 16 - escaneo de accesibilidad (axe) de la confirmación", async ({ page }, testInfo) => {
-  await llenarFormularioCompleto(page, { caso: "16" });
+  await agregarAcuseValido(page, { caso: "16" });
   await page.keyboard.press("Escape");
   await expect(alertDialogConfirmacion(page)).toBeVisible();
 
@@ -318,169 +363,156 @@ test("Caso 16 - escaneo de accesibilidad (axe) de la confirmación", async ({ pa
   for (const v of resultados.violations) {
     console.log(`  - [${v.impact}] ${v.id}: ${v.description} (${v.nodes.length} nodo(s))`);
   }
+  const inesperadas = resultados.violations.filter(v => !VIOLACIONES_CONOCIDAS.includes(v.id));
+  expect(inesperadas.map(v => v.id), `Violaciones de axe NO listadas en VIOLACIONES_CONOCIDAS: ${inesperadas.map(v => v.id).join(", ")}`).toEqual([]);
 });
 
-// ─── Casos nuevos del reporte 189: validación por CONTENIDO del PDF ───
-//
-// A diferencia de los casos 1-16 (que usan bufferPdfSintetico(), sin capa
-// de texto real, y por lo tanto siempre caen en NO_RECONOCIDO bajo el
-// nuevo backend), estos 3 casos usan PDFs con texto real
-// (bufferAcuseSintetico/bufferOpinionCumplimientoSintetica, ver
-// helpers.js) para ejercitar la clasificación de verdad.
+// ─── Casos del reporte 189/189b/189d: validación de contenido, borrado
+// completo de declaraciones, y el rediseño del flujo de subida ────────
 
-test("Caso 189-1 - acuse sintético: tarjeta de confirmación con ejercicio correcto, guardar, aparece en la lista por ejercicio", async ({ page }) => {
-  const nombreArchivo = nombreArchivoE2E("189-1");
+test("Caso 189-1 - acuse válido: resultado correcto en la cola, guardar, aparece en la lista sin NaN/Invalid Date", async ({ page }) => {
   const ejercicio = 2019; // fijo y distinto de "hoy" para no depender de la fecha de la corrida
-  const numeroOperacion = `OP189A${Date.now()}`;
+  const nombreArchivo = await agregarAcuseValido(page, { caso: "189-1", ejercicio });
 
-  await page.locator("#da-archivo").setInputFiles({
-    name: nombreArchivo,
-    mimeType: "application/pdf",
-    buffer: bufferAcuseSintetico({ ejercicio, numeroOperacion }),
-  });
-  await esperarAnalisisCompleto(page);
+  const fila = dialogPrincipal(page).locator("li").filter({ hasText: nombreArchivo });
+  await expect(fila.getByText(`Ejercicio ${ejercicio}`)).toBeVisible();
+  await expect(fila.getByText("Normal", { exact: false })).toBeVisible();
 
-  // Tarjeta de confirmación: tipo detectado, ejercicio, RFC con indicador
-  // de coincidencia, fecha de presentación y número de operación.
-  await expect(page.getByText("Acuse de declaración anual detectado")).toBeVisible();
-  // MISMO patron ya establecido (y ya documentado como necesario) en
-  // tarjetaEmisorPrueba/borrarDocumentoPorNombre (helpers.js): un
-  // `.filter({hasText}).last()` sin mas criterio se queda con el div MAS
-  // INTERNO que contiene el texto (aqui, el <div> del título "Acuse de
-  // declaración anual detectado" en solitario, sin el grid de campos) -
-  // exigir un segundo texto que solo vive en el contenedor real ("RFC:",
-  // parte del grid) selecciona la tarjeta completa.
+  await dialogPrincipal(page).getByRole("button", { name: "Guardar 1 acuse" }).click();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Subir acuses" })).toBeVisible({ timeout: 15000 });
+
   const tarjeta = dialogPrincipal(page)
-    .locator("div")
-    .filter({ hasText: "Acuse de declaración anual detectado" })
-    .filter({ hasText: "RFC:" })
-    .last();
-  await expect(tarjeta.getByText(String(ejercicio))).toBeVisible();
-  await expect(tarjeta.getByText("✓ coincide")).toBeVisible();
-  await expect(tarjeta.getByText(RFC_EMISOR_PRUEBA)).toBeVisible();
-
-  // Ejercicio y tipo NO editables cuando vienen extraídos del documento
-  // (camposExtraidos=true) - D4, pedido explícito.
-  await expect(page.locator("#da-ejercicio")).toBeDisabled();
-  await expect(page.locator("#da-tipo-decl")).toBeDisabled();
-
-  await dialogPrincipal(page).getByRole("button", { name: "Guardar" }).click();
-  await expect(dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" })).toBeVisible({ timeout: 15000 });
-
-  // La lista agrupa por declaración (ejercicio/tipo/fecha/saldo), no por
-  // archivo - D3/D4: "Ejercicio {n}" debe aparecer, y el archivo subido
-  // debe estar anidado dentro de esa tarjeta.
-  //
-  // HALLAZGO REAL (no es un bug de la app, es una limitación conocida a
-  // documentar en Pendientes): el modal solo permite borrar DOCUMENTOS,
-  // no la declaración completa - por eso cada corrida de este caso deja
-  // una fila `declaraciones_anuales` huérfana con ejercicio=2019 (nunca
-  // colisiona por numero_operacion, que sí es único por corrida). En
-  // corridas repetidas puede haber MÁS DE UNA tarjeta "Ejercicio 2019" -
-  // se exige que el mismo contenedor tenga AMBOS textos (el ejercicio Y
-  // el nombre de archivo de ESTA corrida) para desambiguar cuál es la
-  // tarjeta nueva, en vez de asumir que es la única.
-  const tarjetaEnLista = dialogPrincipal(page)
     .locator("div")
     .filter({ hasText: `Ejercicio ${ejercicio}` })
     .filter({ hasText: nombreArchivo })
     .last();
-  await expect(tarjetaEnLista).toBeVisible();
+  await expect(tarjeta).toBeVisible();
+  await expect(tarjeta.getByText("Presentada el", { exact: false })).toBeVisible();
+
+  // Formato defensivo (189d, bug real de la prueba de usuario): nunca
+  // "NaN" ni "Invalid Date" en ningun lado del dialogo.
+  const texto = await dialogPrincipal(page).innerText();
+  expect(texto).not.toContain("NaN");
+  expect(texto).not.toContain("Invalid Date");
 
   // Limpieza.
-  await borrarDocumentoPorNombre(page, nombreArchivo);
+  await borrarDeclaracionPorArchivo(page, nombreArchivo);
   await expect(page.getByText(nombreArchivo)).not.toBeVisible();
 });
 
-test("Caso 189-2 - opinión de cumplimiento sintética: se rechaza, sin botón de guardar habilitado", async ({ page }) => {
+test("Caso 189-2 - opinión de cumplimiento: rechazada en la cola, Guardar queda en 0", async ({ page }) => {
   const nombreArchivo = nombreArchivoE2E("189-2");
-  await page.locator("#da-archivo").setInputFiles({
-    name: nombreArchivo,
-    mimeType: "application/pdf",
-    buffer: bufferOpinionCumplimientoSintetica(),
-  });
-  await esperarAnalisisCompleto(page);
+  await agregarArchivos(page, [{ name: nombreArchivo, mimeType: "application/pdf", buffer: bufferOpinionCumplimientoSintetica() }]);
 
-  await expect(
-    dialogPrincipal(page).getByText("Esto es una opinión de cumplimiento. Se guardará en Cumplimiento SAT"),
-  ).toBeVisible();
-  await expect(dialogPrincipal(page).getByRole("button", { name: "Guardar" })).toBeDisabled();
-
-  // No debe haber tarjeta de confirmación ni aviso de "no reconocido".
-  await expect(page.getByText("Acuse de declaración anual detectado")).not.toBeVisible();
+  const fila = dialogPrincipal(page).locator("li").filter({ hasText: nombreArchivo });
+  await expect(fila.getByText("Esto es una opinión de cumplimiento", { exact: false })).toBeVisible();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Guardar 0 acuses" })).toBeDisabled();
 });
 
-test("Caso 189-3 - acuse sintético con RFC ajeno: se rechaza, sin botón de guardar habilitado", async ({ page }) => {
+test("Caso 189-3 - acuse con RFC ajeno: rechazado en la cola, Guardar queda en 0", async ({ page }) => {
   const nombreArchivo = nombreArchivoE2E("189-3");
-  const rfcAjeno = "XAXX010101000"; // RFC genérico, distinto de RFC_EMISOR_PRUEBA a propósito
-  await page.locator("#da-archivo").setInputFiles({
-    name: nombreArchivo,
-    mimeType: "application/pdf",
+  const rfcAjeno = "XAXX010101000"; // RFC generico, distinto de RFC_EMISOR_PRUEBA a proposito
+  await agregarArchivos(page, [{
+    name: nombreArchivo, mimeType: "application/pdf",
     buffer: bufferAcuseSintetico({ rfc: rfcAjeno, ejercicio: 2020, numeroOperacion: `OP189C${Date.now()}` }),
-  });
-  await esperarAnalisisCompleto(page);
+  }]);
 
-  await expect(dialogPrincipal(page).getByText("Este documento pertenece a otro RFC")).toBeVisible();
-  await expect(dialogPrincipal(page).getByRole("button", { name: "Guardar" })).toBeDisabled();
-  await expect(page.getByText("Acuse de declaración anual detectado")).not.toBeVisible();
+  const fila = dialogPrincipal(page).locator("li").filter({ hasText: nombreArchivo });
+  await expect(fila.getByText("Este documento pertenece a otro RFC")).toBeVisible();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Guardar 0 acuses" })).toBeDisabled();
 });
 
-test("Caso 189-4 - Borrar declaración completa (F3): confirmación dentro del modal, cancelar conserva, confirmar borra declaración y documento", async ({ page }) => {
-  const nombreArchivo = nombreArchivoE2E("189-4");
-  const ejercicio = 2018; // fijo, distinto de los otros casos de este archivo
-  const numeroOperacion = `OP189D${Date.now()}`;
+test("Caso 189-4 - Borrar declaración: única acción de borrado por tarjeta, confirmación dentro del modal", async ({ page }) => {
+  const ejercicio = 2018;
+  const nombreArchivo = await agregarAcuseValido(page, { caso: "189-4", ejercicio });
+  await dialogPrincipal(page).getByRole("button", { name: "Guardar 1 acuse" }).click();
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Subir acuses" })).toBeVisible({ timeout: 15000 });
 
-  await page.locator("#da-archivo").setInputFiles({
-    name: nombreArchivo,
-    mimeType: "application/pdf",
-    buffer: bufferAcuseSintetico({ ejercicio, numeroOperacion }),
-  });
-  await esperarAnalisisCompleto(page);
-  await dialogPrincipal(page).getByRole("button", { name: "Guardar" }).click();
-  await expect(dialogPrincipal(page).getByRole("button", { name: "+ Subir declaración" })).toBeVisible({ timeout: 15000 });
-
-  // Mismo patrón de desambiguación que el Caso 189-1 (helpers.js): exigir
-  // el nombre de archivo de ESTA corrida como descendiente de la tarjeta.
   const tarjeta = dialogPrincipal(page)
     .locator("div")
     .filter({ hasText: `Ejercicio ${ejercicio}` })
     .filter({ hasText: nombreArchivo })
     .last();
-  const botonBorrarDecl = tarjeta.getByRole("button", { name: "Borrar declaración" });
-  await expect(botonBorrarDecl).toBeVisible();
 
-  // Confirmación DENTRO del modal (nunca window.confirm), foco por
-  // defecto en la opción SEGURA (Cancelar) - mismo patrón que la guardia
-  // de cambios sin guardar.
+  // Única acción de borrado por tarjeta (pedido explícito R2) - ya no
+  // existe un "Borrar" por documento, solo el de la declaración.
+  await expect(tarjeta.getByRole("button", { name: "Borrar" })).toHaveCount(1);
+  // Tampoco debe quedar un botón "Borrar" por-documento con otro nombre.
+  await expect(tarjeta.getByRole("button", { name: "Descargar acuse" })).toHaveCount(1);
+
+  const botonBorrarDecl = tarjeta.getByRole("button", { name: "Borrar" });
   await botonBorrarDecl.click();
   const confirmacion = page.getByRole("alertdialog", { name: "Borrar declaración" });
   await expect(confirmacion).toBeVisible();
   await expect(confirmacion.getByText(`Se borrarán la declaración de ejercicio ${ejercicio} y sus 1 documento`)).toBeVisible();
   await expect(page.locator("#da-confirmar-borrar-decl-cancelar")).toBeFocused();
 
-  // Cancelar: la tarjeta sigue ahí, el foco vuelve al botón que abrió esto.
+  // Cancelar: la tarjeta sigue ahí, foco vuelve al botón que abrió esto.
   await confirmacion.getByRole("button", { name: "Cancelar" }).click();
   await expect(confirmacion).not.toBeVisible();
   await expect(botonBorrarDecl).toBeFocused();
   await expect(page.getByText(nombreArchivo)).toBeVisible();
 
-  // Esc dentro de la confirmación equivale a Cancelar (mismo criterio que
-  // la guardia de cambios sin guardar - Esc nunca ejecuta lo destructivo).
+  // Esc dentro de la confirmación equivale a Cancelar.
   await botonBorrarDecl.click();
   await expect(confirmacion).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(confirmacion).not.toBeVisible();
   await expect(page.getByText(nombreArchivo)).toBeVisible();
 
-  // Confirmar de verdad: borra la declaración Y su documento en un solo
-  // paso (antes de F3/reporte 189b, borrar solo el documento dejaba la
-  // declaración huérfana en la BD - ver reporte 189, Pendientes). No hace
-  // falta borrar el documento por separado para dejar la BD limpia.
+  // Confirmar de verdad: borra la declaración Y su documento en un solo paso.
   await botonBorrarDecl.click();
   await expect(confirmacion).toBeVisible();
   await confirmacion.getByRole("button", { name: "Borrar declaración" }).click();
   await expect(confirmacion).not.toBeVisible({ timeout: 15000 });
   await expect(page.getByText(nombreArchivo)).not.toBeVisible();
+});
+
+test("Caso 189-5 - un archivo rechazado NO ensucia el formulario (189d)", async ({ page }) => {
+  const nombreArchivo = nombreArchivoE2E("189-5");
+  await agregarArchivos(page, [{ name: nombreArchivo, mimeType: "application/pdf", buffer: bufferPdfSintetico("189-5") }]);
+
+  const fila = dialogPrincipal(page).locator("li").filter({ hasText: nombreArchivo });
+  await expect(fila.getByText("No reconocimos este archivo", { exact: false })).toBeVisible();
+
+  // Cerrar (cualquiera de las 4 vías) NO debe pedir confirmación - no hay
+  // ningún acuse VÁLIDO en la cola, solo uno rechazado.
+  await page.mouse.click(5, 5);
+  await expect(dialogPrincipal(page)).not.toBeVisible();
+});
+
+test("Caso 189-6 - subida múltiple: se guardan los válidos, se rechazan los demás con su motivo", async ({ page }) => {
+  const v1 = nombreArchivoE2E("189-6-v1");
+  const v2 = nombreArchivoE2E("189-6-v2");
+  const op = nombreArchivoE2E("189-6-opinion");
+  const nr = nombreArchivoE2E("189-6-noreconocido");
+
+  await agregarArchivos(page, [
+    { name: v1, mimeType: "application/pdf", buffer: bufferAcuseSintetico({ ejercicio: 2016, numeroOperacion: `OP6A${Date.now()}` }) },
+    { name: v2, mimeType: "application/pdf", buffer: bufferAcuseSintetico({ ejercicio: 2017, numeroOperacion: `OP6B${Date.now()}` }) },
+    { name: op, mimeType: "application/pdf", buffer: bufferOpinionCumplimientoSintetica() },
+    { name: nr, mimeType: "application/pdf", buffer: bufferPdfSintetico("189-6-nr") },
+  ]);
+
+  await expect(dialogPrincipal(page).locator("li")).toHaveCount(4);
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Guardar 2 acuses" })).toBeVisible();
+  await expect(dialogPrincipal(page).locator("li").filter({ hasText: op }).getByText("Esto es una opinión de cumplimiento", { exact: false })).toBeVisible();
+  await expect(dialogPrincipal(page).locator("li").filter({ hasText: nr }).getByText("No reconocimos este archivo", { exact: false })).toBeVisible();
+
+  await dialogPrincipal(page).getByRole("button", { name: "Guardar 2 acuses" }).click();
+  // Los 2 validos se guardaron - vuelve automaticamente a la lista.
+  await expect(dialogPrincipal(page).getByRole("button", { name: "Subir acuses" })).toBeVisible({ timeout: 20000 });
+
+  await expect(page.getByText(v1)).toBeVisible();
+  await expect(page.getByText(v2)).toBeVisible();
+  await expect(page.getByText(op)).not.toBeVisible();
+  await expect(page.getByText(nr)).not.toBeVisible();
+
+  // Limpieza.
+  await borrarDeclaracionPorArchivo(page, v1);
+  await borrarDeclaracionPorArchivo(page, v2);
+  await expect(page.getByText(v1)).not.toBeVisible();
+  await expect(page.getByText(v2)).not.toBeVisible();
 });
 
 // ─── Solo en el proyecto "movil": sin scroll horizontal ───────────────
@@ -493,7 +525,7 @@ test("Móvil - el modal no genera scroll horizontal (formulario)", async ({ page
 
 test("Móvil - el modal no genera scroll horizontal (confirmación)", async ({ page }) => {
   test.skip(test.info().project.name !== "movil", "Solo aplica al proyecto móvil");
-  await llenarFormularioCompleto(page, { caso: "movil-scroll" });
+  await agregarAcuseValido(page, { caso: "movil-scroll" });
   await page.keyboard.press("Escape");
   await expect(alertDialogConfirmacion(page)).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);

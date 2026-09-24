@@ -644,8 +644,26 @@ class DeclaracionAnual(Base):
     cantidad_a_cargo: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
     cantidad_a_pagar: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
     # 'extraido' (el analizador de PDF logro leer y clasificar el
-    # documento como ACUSE_ANUAL) | 'manual' (NO_RECONOCIDO - el usuario
-    # capturo ejercicio/tipo a mano, sin verificacion de contenido).
+    # documento como ACUSE_ANUAL) | 'manual' (legacy - ver abajo).
+    #
+    # 'manual' YA NO SE CREA (reporte 189d, R1): originalmente existia
+    # para NO_RECONOCIDO, donde el usuario capturaba ejercicio/tipo a
+    # mano sin que el sistema verificara el contenido - una prueba real
+    # mostro que eso permitia guardar CUALQUIER PDF (no solo un acuse
+    # mal formateado) como si fuera una declaracion valida. Desde 189d,
+    # main.py RECHAZA (422) cualquier documento NO_RECONOCIDO en vez de
+    # ofrecer ese flujo manual - ver MENSAJE_NO_RECONOCIDO.
+    #
+    # La columna y el valor 'manual' se CONSERVAN (no se quita del CHECK
+    # de abajo) por 2 motivos: (1) las filas 'manual' que ya existian
+    # antes de este cambio siguen siendo datos validos, no se tocan
+    # retroactivamente; (2) es una via de escape razonable a futuro si
+    # se decide reintroducir una captura manual explicita y claramente
+    # marcada como "sin verificar" (a diferencia del NO_RECONOCIDO
+    # silencioso de antes) - por ejemplo para declaraciones muy viejas
+    # cuyo formato el analizador nunca soportara. Si ese dia llega,
+    # revisar tambien el frontend (DeclaracionesAnualesModal.jsx ya no
+    # tiene ningun formulario manual desde 189d).
     origen: Mapped[str] = mapped_column(String(20), nullable=False)
     creado_por: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

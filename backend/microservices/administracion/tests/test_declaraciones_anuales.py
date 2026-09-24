@@ -40,7 +40,7 @@ from database import _fernet_declaraciones
 from fastapi import HTTPException, UploadFile
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -399,20 +399,20 @@ def _primer_documento(lista):
 
 
 async def test_happy_path_sube_y_aparece_en_la_lista(negocio_temporal, emisor_temporal):
-    """PDF sin texto reconocible (_pdf_minimo) -> NO_RECONOCIDO ->
-    origen='manual' -> se usan ejercicio/tipo del FORMULARIO tal cual
-    (comportamiento sin cambios para este caso, ya cubierto por
-    test_ejercicio_del_documento_prevalece_sobre_el_cliente para el caso
-    ACUSE_ANUAL)."""
-    contenido = _pdf_minimo(b"contenido real de prueba")
+    """Reporte 189d (R1): ya no existe el camino NO_RECONOCIDO ->
+    origen='manual' que este test usaba antes (_pdf_minimo) - un PDF sin
+    texto reconocible ahora se RECHAZA (ver test_no_reconocido_...
+    abajo). El happy path real hoy es un acuse SINTETICO valido, con
+    tipo_documento='acuse' SIEMPRE (ya no lo manda el cliente)."""
+    contenido = _acuse_reciente(rfc="TEST850101AB1", ejercicio=2024, numero_operacion="10101010101010")
     async with AsyncSessionLocal() as db:
         out = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="declaracion",
-            archivo=_upload_file(contenido, "Declaracion 2024.pdf"),
+            archivo=_upload_file(contenido, "cualquier_nombre.pdf"),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     assert out.ejercicio == 2024
+    assert out.tipo_documento == "acuse"
     assert out.tamano_bytes == len(contenido)
     assert out.sha256 == hashlib.sha256(contenido).hexdigest()
     assert out.declaracion_id is not None
@@ -423,7 +423,7 @@ async def test_happy_path_sube_y_aparece_en_la_lista(negocio_temporal, emisor_te
         )
     doc = _primer_documento(lista)
     assert doc.id == out.id
-    assert lista[0].origen == "manual"
+    assert lista[0].origen == "extraido"
     # La lista NUNCA debe traer el contenido - DeclaracionDocumentoResponse
     # no tiene ese campo, confirmar que no existe en absoluto.
     assert not hasattr(doc, "contenido_cifrado")
@@ -435,9 +435,8 @@ async def test_archivo_no_pdf_con_extension_pdf_se_rechaza(negocio_temporal, emi
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="declaracion",
                 archivo=_upload_file(b"esto no es un PDF real", "declaracion.pdf"),
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
             )
     assert exc.value.status_code == 422
@@ -448,25 +447,22 @@ async def test_archivo_sobre_el_limite_se_rechaza(negocio_temporal, emisor_tempo
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="declaracion",
                 archivo=_upload_file(contenido),
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
             )
     assert exc.value.status_code == 422
 
 
 async def test_ejercicio_fuera_de_rango_se_rechaza(negocio_temporal, emisor_temporal):
-    # 1999, no 2013 (CORREGIDO 22 sep 2026, reporte 185/C2): EJERCICIO_MINIMO
-    # bajo a 2000 - 2013 ya es un ejercicio valido, ya no sirve para este caso.
-    # PDF sin texto (NO_RECONOCIDO/manual) para que el ejercicio del
-    # FORMULARIO sea el que se valide (1999).
+    """Reporte 189d (R1): el ejercicio ya NO lo manda el cliente - para
+    probar el rechazo por rango hay que ponerlo DENTRO del documento
+    (acuse sintetico con ejercicio=1999, fuera de EJERCICIO_MINIMO=2000)."""
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=1999, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="declaracion",
-                archivo=_upload_file(_pdf_minimo()),
+                archivo=_upload_file(_acuse_reciente(rfc="TEST850101AB1", ejercicio=1999, numero_operacion="19191919191919")),
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
             )
     assert exc.value.status_code == 422
@@ -475,34 +471,32 @@ async def test_ejercicio_fuera_de_rango_se_rechaza(negocio_temporal, emisor_temp
 async def test_ejercicio_2013_es_aceptado_end_to_end(negocio_temporal, emisor_temporal):
     """Caso real pedido explicitamente (reporte 185/C2, C0): documentos
     reales del titular confirman acuses desde 2013 - debe subir sin
-    problema a traves del endpoint completo. Ahora usa un acuse SINTETICO
-    real de formato 2013 (reporte 189) en vez de un PDF sin texto, para
-    probar el camino ACUSE_ANUAL con ejercicio extraido."""
+    problema a traves del endpoint completo."""
     async with AsyncSessionLocal() as db:
         out = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2020, tipo_declaracion="normal",  # el cliente manda OTRO ejercicio a proposito
-            numero_complementaria=None, tipo_documento="acuse",
             archivo=_upload_file(_acuse_2013(rfc="TEST850101AB1")),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
-    assert out.ejercicio == 2013  # el del DOCUMENTO, no el 2020 que mando el cliente
+    assert out.ejercicio == 2013
 
 
-async def test_ejercicio_del_documento_prevalece_sobre_el_cliente(negocio_temporal, emisor_temporal):
-    """Pedido explicito del reporte 189: si el PDF se reconoce como
-    ACUSE_ANUAL, el ejercicio/tipo_declaracion EXTRAIDOS reemplazan lo
-    que mande el formulario, sin importar que el cliente mande otra
-    cosa."""
+async def test_ejercicio_y_tipo_se_extraen_siempre_del_documento(negocio_temporal, emisor_temporal):
+    """Reporte 189 (extraccion) + 189d (R1: ya no hay forma de que el
+    cliente los mande en absoluto - la funcion ni siquiera acepta esos
+    parametros, ver test_guardado_no_acepta_ejercicio_ni_tipo_del_cliente
+    abajo). Este test solo confirma que lo extraido del documento es lo
+    que efectivamente se persiste."""
     async with AsyncSessionLocal() as db:
         out = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=1900, tipo_declaracion="complementaria", numero_complementaria=9,
-            tipo_documento="acuse",
             archivo=_upload_file(_acuse_reciente(rfc="TEST850101AB1", ejercicio=2022, numero_operacion="11111111111111")),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     assert out.ejercicio == 2022
     assert out.tipo_declaracion == "normal"
     assert out.numero_complementaria is None
+    assert out.tipo_documento == "acuse"
 
     async with AsyncSessionLocal() as db:
         decl = await db.get(DeclaracionAnual, out.declaracion_id)
@@ -511,33 +505,43 @@ async def test_ejercicio_del_documento_prevalece_sobre_el_cliente(negocio_tempor
     assert decl.numero_operacion == "11111111111111"
 
 
-async def test_complementaria_sin_numero_se_rechaza(negocio_temporal, emisor_temporal):
+async def test_complementaria_sin_numero_extraido_se_rechaza(negocio_temporal, emisor_temporal):
+    """Reporte 189d: ya no hay forma de que el CLIENTE mande
+    tipo_declaracion="complementaria" sin numero - para probar el rechazo
+    hay que construir un acuse que el analizador clasifique como
+    complementaria (contiene la palabra "COMPLEMENTARIA") pero SIN un
+    "numero de complementaria" reconocible en el texto (declaraciones_pdf.py
+    deja numero_complementaria=None en ese caso) - validar_tipo_declaracion
+    debe rechazarlo igual que antes, solo que ahora con datos EXTRAIDOS,
+    no tecleados."""
+    contenido = _pdf_con_texto([
+        "ACUSE DE RECIBO", "DECLARACION DEL EJERCICIO 2024",
+        "RFC: TEST850101AB1", "Numero de operacion: 66677788899900",
+        "Tipo de declaracion: COMPLEMENTARIA",  # sin "numero de complementaria" en ningun lado
+    ])
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="complementaria",
-                numero_complementaria=None, tipo_documento="declaracion",
-                archivo=_upload_file(_pdf_minimo()),
+                archivo=_upload_file(contenido),
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
             )
     assert exc.value.status_code == 422
 
 
 async def test_duplicado_mismo_sha256_da_409(negocio_temporal, emisor_temporal):
-    contenido = _pdf_minimo(b"contenido identico")
+    contenido = _acuse_reciente(rfc="TEST850101AB1", numero_operacion="40404040404040")
     async with AsyncSessionLocal() as db:
         await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="declaracion",
             archivo=_upload_file(contenido, "primera.pdf"),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="declaracion",
                 archivo=_upload_file(contenido, "copia_con_otro_nombre.pdf"),  # mismo contenido, distinto nombre
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
             )
     assert exc.value.status_code == 409
@@ -549,9 +553,8 @@ async def test_rfc_ajeno_se_rechaza_al_guardar(negocio_temporal, emisor_temporal
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="acuse",
                 archivo=_upload_file(_acuse_reciente(rfc="OTRO900101XY2")),
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
             )
     assert exc.value.status_code == 422
@@ -601,9 +604,8 @@ async def test_numero_operacion_duplicado_se_rechaza(negocio_temporal, emisor_te
     rechazarse por duplicado (reporte 189, D2)."""
     async with AsyncSessionLocal() as db:
         await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="acuse",
             archivo=_upload_file(_acuse_reciente(numero_operacion="22222222222222")),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     otro_acuse = _pdf_con_texto([
@@ -614,9 +616,8 @@ async def test_numero_operacion_duplicado_se_rechaza(negocio_temporal, emisor_te
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="acuse",
                 archivo=_upload_file(otro_acuse),
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
             )
     assert exc.value.status_code == 409
@@ -626,13 +627,64 @@ async def test_opinion_cumplimiento_se_rechaza_al_guardar(negocio_temporal, emis
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="declaracion",
                 archivo=_upload_file(_opinion_cumplimiento(rfc="TEST850101AB1")),
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
             )
     assert exc.value.status_code == 422
     assert "opinión de cumplimiento" in exc.value.detail.lower()
+
+
+async def test_no_reconocido_se_rechaza_al_guardar(negocio_temporal, emisor_temporal):
+    """Reporte 189d (R1) - hallazgo real de la prueba de usuario: un PDF
+    cualquiera (no un acuse) se guardaba como declaracion "manual". Ya no
+    se ofrece ese camino - se rechaza (422) con el mensaje explicito."""
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(HTTPException) as exc:
+            await main.subir_documento_declaracion_anual(
+                archivo=_upload_file(_pdf_minimo(b"un PDF cualquiera, no un acuse")),
+                emisor_id=emisor_temporal,
+                db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
+            )
+    assert exc.value.status_code == 422
+    assert exc.value.detail == main.MENSAJE_NO_RECONOCIDO
+
+    async with AsyncSessionLocal() as db:
+        n_declaraciones = await db.scalar(select(func.count()).select_from(DeclaracionAnual).where(DeclaracionAnual.emisor_id == emisor_temporal))
+    assert n_declaraciones == 0  # nada se creo, ni siquiera con origen='manual'
+
+
+async def test_no_reconocido_se_rechaza_al_analizar(negocio_temporal, emisor_temporal):
+    """Mismo rechazo en /analizar (solo lectura) - el usuario ve el
+    mensaje ANTES de intentar guardar, igual que RFC ajeno/opinion."""
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(HTTPException) as exc:
+            await main.analizar_documento_declaracion_anual(
+                emisor_id=emisor_temporal,
+                archivo=_upload_file(_pdf_minimo(b"un PDF cualquiera, no un acuse")),
+                db=db, x_negocio_id=str(negocio_temporal),
+            )
+    assert exc.value.status_code == 422
+    assert exc.value.detail == main.MENSAJE_NO_RECONOCIDO
+
+
+def test_guardado_no_acepta_ejercicio_ni_tipo_del_cliente():
+    """Reporte 189d (R1) - pedido explicito: 'el cliente no puede forzar
+    ejercicio ni tipo'. Se verifica a nivel de FIRMA de la funcion (no
+    solo de comportamiento): ejercicio/tipo_declaracion/
+    numero_complementaria/tipo_documento ya NO son parametros que la
+    funcion siquiera acepte - un caller que intente pasarlos obtiene un
+    TypeError de Python antes de llegar a ejecutar una sola linea del
+    endpoint, la forma mas fuerte de garantizar esto (no depende de que
+    el codigo interno "decida ignorarlos")."""
+    import inspect
+    parametros = set(inspect.signature(main.subir_documento_declaracion_anual).parameters)
+    for campo_prohibido in ("ejercicio", "tipo_declaracion", "numero_complementaria", "tipo_documento"):
+        assert campo_prohibido not in parametros, (
+            f"subir_documento_declaracion_anual NO debe aceptar '{campo_prohibido}' del cliente (reporte 189d, R1)"
+        )
+    # Los unicos parametros que SI debe aceptar (archivo + lo de sesion/auth).
+    assert parametros == {"emisor_id", "archivo", "db", "x_negocio_id", "x_usuario_rfc"}
 
 
 async def test_emisor_de_otro_negocio_se_rechaza_sin_revelar_existencia(
@@ -640,25 +692,25 @@ async def test_emisor_de_otro_negocio_se_rechaza_sin_revelar_existencia(
 ):
     """emisor_temporal pertenece a negocio_temporal - llamar con
     otro_negocio_temporal en el header debe dar 404 (nunca 403, mismo
-    criterio IDOR que actualizar_emisor)."""
+    criterio IDOR que actualizar_emisor). El chequeo de negocio ocurre
+    ANTES de leer/clasificar el PDF, asi que un PDF sin texto (_pdf_minimo)
+    sigue sirviendo aqui - nunca llega a clasificarse."""
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as exc:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="declaracion",
                 archivo=_upload_file(_pdf_minimo()),
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(otro_negocio_temporal), x_usuario_rfc="TESTER",
             )
     assert exc.value.status_code == 404
 
 
 async def test_descarga_devuelve_bytes_identicos_con_headers_correctos(negocio_temporal, emisor_temporal):
-    contenido = _pdf_minimo(b"contenido para descarga")
+    contenido = _acuse_reciente(rfc="TEST850101AB1", numero_operacion="50505050505050")
     async with AsyncSessionLocal() as db:
         subido = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="declaracion",
             archivo=_upload_file(contenido, "Declaración 2024 (final).pdf"),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     async with AsyncSessionLocal() as db:
@@ -676,16 +728,14 @@ async def test_descarga_devuelve_bytes_identicos_con_headers_correctos(negocio_t
 async def test_contenido_en_bd_esta_cifrado(negocio_temporal, emisor_temporal):
     """Confirma que lo que vive en la columna NO es el PDF en claro -
     lee la fila via SQL crudo (no el ORM, que descifraria transparente)."""
-    contenido = _pdf_minimo(b"para verificar cifrado")
+    contenido = _acuse_reciente(rfc="TEST850101AB1", numero_operacion="60606060606060")
     async with AsyncSessionLocal() as db:
         subido = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="declaracion",
             archivo=_upload_file(contenido),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     async with engine.connect() as conn:
-        from sqlalchemy import text
         crudo = (await conn.execute(
             text("SELECT contenido_cifrado FROM declaraciones_anuales_documentos WHERE id = :id"),
             {"id": subido.id},
@@ -697,9 +747,8 @@ async def test_contenido_en_bd_esta_cifrado(negocio_temporal, emisor_temporal):
 async def test_delete_aislado_por_negocio(negocio_temporal, emisor_temporal, otro_negocio_temporal):
     async with AsyncSessionLocal() as db:
         subido = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="declaracion",
-            archivo=_upload_file(_pdf_minimo()),
+            archivo=_upload_file(_acuse_reciente(rfc="TEST850101AB1", numero_operacion="70707070707070")),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     # Intento desde OTRO negocio - 404, nada se borra.
@@ -737,17 +786,15 @@ async def test_aislamiento_por_negocio_id_en_numero_operacion(negocio_temporal, 
     try:
         async with AsyncSessionLocal() as db:
             await main.subir_documento_declaracion_anual(
-                emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="acuse",
                 archivo=_upload_file(_acuse_reciente(rfc="TEST850101AB1", numero_operacion="33333333333333")),
+                emisor_id=emisor_temporal,
                 db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
             )
         # Mismo numero_operacion, OTRO negocio/emisor - no debe chocar.
         async with AsyncSessionLocal() as db:
             out2 = await main.subir_documento_declaracion_anual(
-                emisor_id=otro_emisor_id, ejercicio=2024, tipo_declaracion="normal",
-                numero_complementaria=None, tipo_documento="acuse",
                 archivo=_upload_file(_acuse_reciente(rfc="OTRO900101XY2", numero_operacion="33333333333333")),
+                emisor_id=otro_emisor_id,
                 db=db, x_negocio_id=str(otro_negocio_temporal), x_usuario_rfc="TESTER",
             )
         assert out2.ejercicio == 2024
@@ -769,9 +816,8 @@ async def test_borrar_ultimo_documento_borra_tambien_la_declaracion(negocio_temp
     debe quedar huérfana (hallazgo real del reporte 189, corregido aquí)."""
     async with AsyncSessionLocal() as db:
         subido = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="acuse",
             archivo=_upload_file(_acuse_reciente(rfc="TEST850101AB1", numero_operacion="44455566677788")),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     declaracion_id = subido.declaracion_id
@@ -802,9 +848,8 @@ async def test_borrar_un_documento_no_borra_la_declaracion_si_quedan_otros(negoc
     el flujo de subida actual no lo produzca todavia)."""
     async with AsyncSessionLocal() as db:
         subido = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="acuse",
             archivo=_upload_file(_acuse_reciente(rfc="TEST850101AB1", numero_operacion="99988877766655")),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     declaracion_id = subido.declaracion_id
@@ -838,9 +883,8 @@ async def test_borrar_un_documento_no_borra_la_declaracion_si_quedan_otros(negoc
 async def test_borrar_declaracion_completa_borra_documentos_y_tipos_ingreso(negocio_temporal, emisor_temporal):
     async with AsyncSessionLocal() as db:
         subido = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2023, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="acuse",
             archivo=_upload_file(_acuse_reciente(rfc="TEST850101AB1", ejercicio=2023, numero_operacion="12312312312399")),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     declaracion_id = subido.declaracion_id
@@ -870,9 +914,8 @@ async def test_borrar_declaracion_completa_borra_documentos_y_tipos_ingreso(nego
 async def test_borrar_declaracion_aislada_por_negocio_id(negocio_temporal, emisor_temporal, otro_negocio_temporal):
     async with AsyncSessionLocal() as db:
         subido = await main.subir_documento_declaracion_anual(
-            emisor_id=emisor_temporal, ejercicio=2024, tipo_declaracion="normal",
-            numero_complementaria=None, tipo_documento="acuse",
             archivo=_upload_file(_acuse_reciente(rfc="TEST850101AB1", numero_operacion="77788899900011")),
+            emisor_id=emisor_temporal,
             db=db, x_negocio_id=str(negocio_temporal), x_usuario_rfc="TESTER",
         )
     declaracion_id = subido.declaracion_id
@@ -904,3 +947,70 @@ async def test_borrar_declaracion_aislada_por_negocio_id(negocio_temporal, emiso
             db=db, x_negocio_id=str(negocio_temporal),
         )
     assert resp.status_code == 204
+
+
+# ─── Migracion de datos 4db101a508ca (reporte 189d, R1) ───────────────────
+
+async def test_migracion_tipo_documento_acuse_no_toca_origen_manual(negocio_temporal, emisor_temporal):
+    """Verifica la MISMA logica de filtro que usa la migracion de datos
+    alembic/versions/4db101a508ca_declaraciones_documentos_tipo_documento_.py:
+    corrige tipo_documento='declaracion'->'acuse' SOLO para documentos de
+    declaraciones con origen='extraido', NUNCA para origen='manual'.
+
+    No se re-invoca Alembic aqui directamente (su `op` requiere una
+    MigrationContext SINCRONA, y este proyecto usa un engine async de
+    principio a fin - conectar ambos mundos solo para esta prueba es mas
+    riesgo que beneficio) - en su lugar se reproduce el MISMO WHERE que
+    la migracion real usa, sobre datos de prueba aislados. La migracion
+    REAL ya se verifico aparte, contra la base de datos de dev, con un
+    ciclo completo upgrade -> downgrade -> upgrade y conteos reales antes/
+    despues en cada paso (ver el reporte 189d) - esta prueba cubre que la
+    LOGICA del filtro sea correcta, no sustituye esa verificacion."""
+    async with AsyncSessionLocal() as db:
+        decl_extraido = DeclaracionAnual(
+            negocio_id=negocio_temporal, emisor_id=emisor_temporal,
+            ejercicio=2019, tipo_declaracion="normal", origen="extraido",
+            numero_operacion="MIGTEST00001", creado_por="TESTER",
+        )
+        db.add(decl_extraido)
+        decl_manual = DeclaracionAnual(
+            negocio_id=negocio_temporal, emisor_id=emisor_temporal,
+            ejercicio=2018, tipo_declaracion="normal", origen="manual",
+            creado_por="TESTER",
+        )
+        db.add(decl_manual)
+        await db.flush()
+        decl_extraido_id, decl_manual_id = decl_extraido.id, decl_manual.id
+
+        doc_extraido = DeclaracionAnualDocumento(
+            negocio_id=negocio_temporal, emisor_id=emisor_temporal, declaracion_id=decl_extraido_id,
+            ejercicio=2019, tipo_declaracion="normal", tipo_documento="declaracion",  # a corregir
+            nombre_archivo_original="viejo_extraido.pdf", tamano_bytes=10,
+            sha256=hashlib.sha256(b"migtest-extraido-189d").hexdigest(),
+            contenido_cifrado=b"x" * 10, creado_por="TESTER",
+        )
+        doc_manual = DeclaracionAnualDocumento(
+            negocio_id=negocio_temporal, emisor_id=emisor_temporal, declaracion_id=decl_manual_id,
+            ejercicio=2018, tipo_declaracion="normal", tipo_documento="declaracion",  # NUNCA debe tocarse
+            nombre_archivo_original="viejo_manual.pdf", tamano_bytes=10,
+            sha256=hashlib.sha256(b"migtest-manual-189d").hexdigest(),
+            contenido_cifrado=b"x" * 10, creado_por="TESTER",
+        )
+        db.add_all([doc_extraido, doc_manual])
+        await db.commit()
+        doc_extraido_id, doc_manual_id = doc_extraido.id, doc_manual.id
+
+    # Mismo WHERE que _FILTRO_UPGRADE en la migracion real.
+    async with AsyncSessionLocal() as db:
+        await db.execute(text("""
+            UPDATE declaraciones_anuales_documentos d SET tipo_documento = 'acuse'
+            WHERE d.declaracion_id IN (SELECT id FROM declaraciones_anuales WHERE origen = 'extraido')
+            AND d.tipo_documento = 'declaracion'
+        """))
+        await db.commit()
+
+    async with AsyncSessionLocal() as db:
+        doc_extraido_despues = await db.get(DeclaracionAnualDocumento, doc_extraido_id)
+        doc_manual_despues = await db.get(DeclaracionAnualDocumento, doc_manual_id)
+    assert doc_extraido_despues.tipo_documento == "acuse"  # SI se corrigio
+    assert doc_manual_despues.tipo_documento == "declaracion"  # NO se tocó

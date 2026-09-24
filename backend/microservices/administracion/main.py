@@ -24,7 +24,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_der_private_key
 from cryptography.x509 import load_der_x509_certificate
 from cryptography.x509.oid import ExtensionOID
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Depends, Response, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Query, Depends, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import delete, desc, func, select
@@ -42,7 +42,6 @@ from declaraciones_storage import (
     validar_ejercicio,
     validar_pdf,
     validar_tipo_declaracion,
-    validar_tipo_documento,
 )
 from logo_storage import subir_logo, validar_logo
 from sat_descarga_client import (
@@ -2455,6 +2454,18 @@ MENSAJE_OPINION_CUMPLIMIENTO = (
 )
 MENSAJE_RFC_AJENO = "Este documento pertenece a otro RFC"
 MENSAJE_NUMERO_OPERACION_DUPLICADO = "Ya existe una declaración registrada con este número de operación"
+# Reporte 189d - prueba real de usuario: un PDF cualquiera (no un acuse
+# del SAT) se guardaba como declaracion "manual", con el ejercicio/tipo
+# que el usuario tecleara a mano - exactamente el problema original que
+# el reporte 189 queria resolver (confiar en el usuario en vez de leer
+# el documento), solo que ahora aplicado a un archivo que ni siquiera
+# ES una declaracion. Ya NO se ofrece ese flujo manual - ver el
+# comentario junto a origen='manual' en database.py (DeclaracionAnual)
+# para el porque la columna se conserva de todas formas.
+MENSAJE_NO_RECONOCIDO = (
+    "No reconocimos este archivo como acuse de declaración anual del SAT. "
+    "Descarga el acuse desde el portal del SAT e inténtalo de nuevo."
+)
 
 
 class DeclaracionExtraidaResponse(BaseModel):
@@ -2514,7 +2525,11 @@ async def _evaluar_analisis(resultado, emisor: Emisor, negocio_id: int, db: Asyn
         return AnalisisPDFResponse(tipo_detectado="OPINION_CUMPLIMIENTO", puede_guardar=False, mensaje=MENSAJE_OPINION_CUMPLIMIENTO)
 
     if resultado.tipo_detectado == TipoDocumentoDetectado.NO_RECONOCIDO:
-        return AnalisisPDFResponse(tipo_detectado="NO_RECONOCIDO", puede_guardar=True, mensaje=resultado.error_lectura)
+        # Reporte 189d: ya no hay flujo manual para esto - se rechaza de
+        # plano (422), tanto aqui (preview) como al guardar de verdad.
+        # Antes de este cambio se devolvia puede_guardar=True (200 OK)
+        # para que el usuario llenara el formulario a mano.
+        raise HTTPException(status_code=422, detail=MENSAJE_NO_RECONOCIDO)
 
     datos = resultado.datos
     rfc_coincide = (datos.rfc == emisor.rfc) if datos.rfc else None
@@ -2599,34 +2614,26 @@ async def analizar_documento_declaracion_anual(
 )
 async def subir_documento_declaracion_anual(
     emisor_id: int,
-    ejercicio: int = Form(...),
-    tipo_declaracion: str = Form(...),
-    numero_complementaria: Optional[int] = Form(None),
-    tipo_documento: str = Form(...),
     archivo: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     x_negocio_id: Optional[str] = Header(None, alias="X-Negocio-Id"),
     x_usuario_rfc: Optional[str] = Header(None, alias="X-Usuario-Rfc"),
 ):
-    """1 archivo por request (pedido explicito). El SERVIDOR VUELVE A LEER
-    el PDF aqui (reporte 189) - nunca confia en ejercicio/tipo_declaracion/
-    numero_complementaria que mande el cliente cuando el contenido SI se
-    pudo clasificar como ACUSE_ANUAL: esos 3 campos del formulario se
-    IGNORAN y se reemplazan por lo extraido del documento. Solo se usan
-    los del formulario cuando el documento no se pudo clasificar
-    (NO_RECONOCIDO, origen='manual') o es una opinion de cumplimiento
-    (rechazada, nunca se guarda). Todo en UNA transaccion (la
-    DeclaracionAnual + sus DeclaracionAnualTipoIngreso + el
-    DeclaracionAnualDocumento se agregan a la misma sesion, un solo
+    """1 archivo por request. El SERVIDOR VUELVE A LEER el PDF aqui
+    (reporte 189) - ejercicio/tipo_declaracion/numero_complementaria/
+    tipo_documento YA NO se reciben del cliente en absoluto (reporte
+    189d, R1) - antes existia un flujo "manual" para cuando el documento
+    no se podia clasificar (NO_RECONOCIDO), confiando en lo que el
+    usuario escribiera a mano; una prueba real mostro que eso permitia
+    guardar CUALQUIER PDF como si fuera una declaracion. Ahora
+    NO_RECONOCIDO se rechaza de plano (ver mas abajo) y tipo_documento
+    siempre es 'acuse' - todo lo demas sale del documento. Todo en UNA
+    transaccion (la DeclaracionAnual + sus DeclaracionAnualTipoIngreso +
+    el DeclaracionAnualDocumento se agregan a la misma sesion, un solo
     commit al final - si algo falla antes de ese commit, nada se
     persiste)."""
     negocio_id = requerir_negocio_id(x_negocio_id)
     emisor = await _emisor_del_negocio_o_404(emisor_id, negocio_id, db)
-
-    try:
-        validar_tipo_documento(tipo_documento)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
 
     contenido = await archivo.read()
     try:
@@ -2651,67 +2658,52 @@ async def subir_documento_declaracion_anual(
 
     if resultado.tipo_detectado == TipoDocumentoDetectado.OPINION_CUMPLIMIENTO:
         raise HTTPException(status_code=422, detail=MENSAJE_OPINION_CUMPLIMIENTO)
+    if resultado.tipo_detectado == TipoDocumentoDetectado.NO_RECONOCIDO:
+        raise HTTPException(status_code=422, detail=MENSAJE_NO_RECONOCIDO)
 
-    if resultado.tipo_detectado == TipoDocumentoDetectado.ACUSE_ANUAL:
-        datos = resultado.datos
-        if datos.rfc and datos.rfc != emisor.rfc:
-            raise HTTPException(status_code=422, detail=MENSAJE_RFC_AJENO)
-        if datos.ejercicio is None:
-            raise HTTPException(status_code=422, detail="No se pudo determinar el ejercicio del documento")
-        if datos.numero_operacion:
-            existente_decl = await _declaracion_por_numero_operacion(negocio_id, emisor_id, datos.numero_operacion, db)
-            if existente_decl is not None:
-                raise HTTPException(status_code=409, detail=MENSAJE_NUMERO_OPERACION_DUPLICADO)
+    # Solo queda ACUSE_ANUAL en este punto (los otros 2 tipos ya
+    # rechazaron arriba) - ya no hace falta un "else" para un origen
+    # 'manual' que ya no existe.
+    datos = resultado.datos
+    if datos.rfc and datos.rfc != emisor.rfc:
+        raise HTTPException(status_code=422, detail=MENSAJE_RFC_AJENO)
+    if datos.ejercicio is None:
+        raise HTTPException(status_code=422, detail="No se pudo determinar el ejercicio del documento")
+    if datos.numero_operacion:
+        existente_decl = await _declaracion_por_numero_operacion(negocio_id, emisor_id, datos.numero_operacion, db)
+        if existente_decl is not None:
+            raise HTTPException(status_code=409, detail=MENSAJE_NUMERO_OPERACION_DUPLICADO)
 
-        # El documento (contenido) PREVALECE sobre el formulario - se
-        # sobreescriben las 3 variables locales para que el
-        # DeclaracionAnualDocumento de abajo quede consistente con la
-        # DeclaracionAnual que se crea aqui mismo.
-        ejercicio = datos.ejercicio
-        tipo_declaracion = datos.tipo_declaracion or "normal"
-        numero_complementaria = datos.numero_complementaria if tipo_declaracion == "complementaria" else None
+    ejercicio = datos.ejercicio
+    tipo_declaracion = datos.tipo_declaracion or "normal"
+    numero_complementaria = datos.numero_complementaria if tipo_declaracion == "complementaria" else None
+    # Unico tipo_documento que este flujo guarda hoy - ver comentario en
+    # MENSAJE_NO_RECONOCIDO arriba y en database.py (columna origen) para
+    # el porque ya no hay otros orígenes/tipos posibles aqui.
+    tipo_documento = "acuse"
 
-        try:
-            validar_ejercicio(ejercicio)
-            validar_tipo_declaracion(tipo_declaracion, numero_complementaria)
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+    try:
+        validar_ejercicio(ejercicio)
+        validar_tipo_declaracion(tipo_declaracion, numero_complementaria)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
-        nueva_declaracion = DeclaracionAnual(
-            negocio_id=negocio_id, emisor_id=emisor_id,
-            ejercicio=ejercicio, tipo_declaracion=tipo_declaracion,
-            numero_complementaria=numero_complementaria,
-            numero_operacion=datos.numero_operacion,
-            fecha_presentacion=datos.fecha_presentacion,
-            saldo_a_favor=datos.saldo_a_favor,
-            cantidad_a_cargo=datos.cantidad_a_cargo,
-            cantidad_a_pagar=datos.cantidad_a_pagar,
-            origen="extraido", creado_por=x_usuario_rfc,
-        )
-        db.add(nueva_declaracion)
-        await db.flush()  # necesitamos nueva_declaracion.id para los hijos, antes del commit
-        for tipo_ingreso in datos.ingresos_que_declara:
-            db.add(DeclaracionAnualTipoIngreso(declaracion_id=nueva_declaracion.id, tipo=tipo_ingreso))
-        declaracion_id = nueva_declaracion.id
-    else:
-        # NO_RECONOCIDO: origen='manual' - se confia en lo que el usuario
-        # capturo a mano en el formulario (mismas validaciones que ya
-        # existian antes de esta tarea).
-        try:
-            validar_ejercicio(ejercicio)
-            validar_tipo_declaracion(tipo_declaracion, numero_complementaria)
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-
-        nueva_declaracion = DeclaracionAnual(
-            negocio_id=negocio_id, emisor_id=emisor_id,
-            ejercicio=ejercicio, tipo_declaracion=tipo_declaracion,
-            numero_complementaria=numero_complementaria,
-            numero_operacion=None, origen="manual", creado_por=x_usuario_rfc,
-        )
-        db.add(nueva_declaracion)
-        await db.flush()
-        declaracion_id = nueva_declaracion.id
+    nueva_declaracion = DeclaracionAnual(
+        negocio_id=negocio_id, emisor_id=emisor_id,
+        ejercicio=ejercicio, tipo_declaracion=tipo_declaracion,
+        numero_complementaria=numero_complementaria,
+        numero_operacion=datos.numero_operacion,
+        fecha_presentacion=datos.fecha_presentacion,
+        saldo_a_favor=datos.saldo_a_favor,
+        cantidad_a_cargo=datos.cantidad_a_cargo,
+        cantidad_a_pagar=datos.cantidad_a_pagar,
+        origen="extraido", creado_por=x_usuario_rfc,
+    )
+    db.add(nueva_declaracion)
+    await db.flush()  # necesitamos nueva_declaracion.id para los hijos, antes del commit
+    for tipo_ingreso in datos.ingresos_que_declara:
+        db.add(DeclaracionAnualTipoIngreso(declaracion_id=nueva_declaracion.id, tipo=tipo_ingreso))
+    declaracion_id = nueva_declaracion.id
 
     nuevo = DeclaracionAnualDocumento(
         negocio_id=negocio_id,
